@@ -2,7 +2,13 @@ package dev.okumura.orcaremote
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import java.io.EOFException
+import java.io.IOException
+import java.net.ConnectException
 import java.net.InetSocketAddress
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -15,6 +21,41 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WriteApiTest {
+    @Test
+    fun healthChecksOnlyTheAuthenticatedHealthEndpoint() {
+        val requests = mutableListOf<List<String>>()
+        withServer({ exchange ->
+            requests.add(listOf(exchange.requestMethod, exchange.requestURI.path, exchange.requestHeaders.getFirst("Authorization")))
+            when (requests.size) {
+                1 -> exchange.reply(200, """{"ok":true}""")
+                2 -> exchange.reply(401, "{}")
+                else -> exchange.reply(200, """{"ok":false}""")
+            }
+        }) { api ->
+            api.health()
+            assertEquals(ApiError.UNAUTHORIZED, failureFrom { api.health() })
+            assertEquals(ApiError.RESPONSE, failureFrom { api.health() })
+        }
+        assertEquals(List(3) { listOf("GET", "/api/health", "Bearer mock-token") }, requests)
+    }
+
+    @Test
+    fun onlyFailuresKnownToPrecedeDeliveryAreConnectionErrors() = runBlocking {
+        val connection = requireNotNull(Connection.parse("https://example.com", "token"))
+        for ((exception, expected) in listOf(
+            ConnectException() to ApiError.CONNECTION,
+            UnknownHostException() to ApiError.CONNECTION,
+            NoRouteToHostException() to ApiError.CONNECTION,
+            SocketTimeoutException() to ApiError.UNKNOWN_RESULT,
+            EOFException() to ApiError.UNKNOWN_RESULT,
+            IOException() to ApiError.UNKNOWN_RESULT,
+        )) {
+            val client = OrcaApi.writeClient.newBuilder().addInterceptor { throw exception }.build()
+            val api = OrcaApi(connection, client)
+            assertEquals(expected, failureFrom { api.sendMessage("bot", "chat", "一回だけ") })
+        }
+    }
+
     @Test
     fun writeEndpointsDecodeReceiptsAndSendOwnerText() {
         val routes = mapOf(
@@ -130,7 +171,7 @@ class WriteApiTest {
         server.createContext("/") { exchange -> exchange.use(handle) }
         server.start()
         try {
-            val connection = requireNotNull(Connection.parse("http://127.0.0.1:${server.address.port}", "mock-token"))
+            val connection = requireNotNull(Connection.parse("http://127.0.0.1:${server.address.port}", "mock-token", allowLocalhost = true))
             runBlocking { test(OrcaApi(connection, client)) }
         } finally {
             server.stop(0)
@@ -150,6 +191,6 @@ class WriteApiTest {
         } catch (failure: ApiFailure) {
             return failure.error
         }
-        error("Expected a write failure")
+        error("Expected an API failure")
     }
 }

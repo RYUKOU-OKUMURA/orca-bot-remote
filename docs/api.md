@@ -1,6 +1,6 @@
 # Orca Bot Remote API
 
-ベース URL は `http://<Mac mini の Tailscale IP または MagicDNS 名 mac-mini>:8787` です。IPv6 のアドレスを URL に直接書く場合は角括弧で囲みます。
+ベース URL は Mac mini の Tailscale IP または完全な MagicDNS 名を使います（例 `http://mac-mini.example.ts.net:8787`）。IPv6 のアドレスを URL に直接書く場合は角括弧で囲みます。
 
 全エンドポイントで `Authorization: Bearer <token>` を送ります。応答の Content-Type は `application/json; charset=utf-8` です。以下の `?` は JSON の `null` を許す値を表します。時刻は Unix epoch ミリ秒の数値です。
 

@@ -26,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.createSavedStateHandle
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.compose.NavHost
@@ -33,6 +34,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 
 private data class NotificationOpen(val uri: Uri, val coldStart: Boolean)
@@ -84,12 +87,12 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
         updateNotificationSchedule()
     }
 
-    fun save(verified: Connection) {
+    suspend fun save(verified: Connection) = notificationSettingsMutex.withLock {
         val editor = preferences.edit()
             .putString("url", verified.url.toString())
             .putString("token", verified.token)
         if (verified.url != connection?.url) {
-            editor.remove(NotifiedItems).remove(NotifiedSummary)
+            editor.remove(NotifiedItems).remove(NotifiedSummary).remove(SummaryInitialized)
             getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
         }
         editor.apply()
@@ -98,9 +101,13 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
     }
 
     fun setNotifications(enabled: Boolean) {
-        preferences.edit().putBoolean(NotificationsEnabled, enabled).apply()
-        notificationsEnabled = enabled
-        updateNotificationSchedule()
+        viewModelScope.launch {
+            notificationSettingsMutex.withLock {
+                preferences.edit().putBoolean(NotificationsEnabled, enabled).apply()
+                notificationsEnabled = enabled
+                updateNotificationSchedule()
+            }
+        }
     }
 
     fun claimNotificationPrompt(): Boolean {
@@ -280,14 +287,14 @@ private fun RemoteApp(
             it.getOrNull(0).orEmpty() to it.getOrNull(1)?.toLongOrNull()
         }
         when (screen) {
-            "summary" -> nav.navigate(SummaryRoute)
-            "items" -> nav.navigate(ItemsRoute)
+            "summary" -> nav.navigate(SummaryRoute) { launchSingleTop = true }
+            "items" -> nav.navigate(ItemsRoute) { launchSingleTop = true }
             "item" -> if (bot.isNotBlank() && number != null && number > 0) {
                 val route = ItemRoute(bot, number)
                 if (runCatching { nav.getBackStackEntry(route) }.isSuccess) {
                     nav.popBackStack(route, inclusive = false)
                 } else {
-                    if (notificationTarget.coldStart) nav.navigate(ItemsRoute)
+                    if (notificationTarget.coldStart) nav.navigate(ItemsRoute) { launchSingleTop = true }
                     nav.navigate(route)
                 }
             }

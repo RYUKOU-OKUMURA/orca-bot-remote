@@ -19,8 +19,8 @@
 
 ## 3. Orca Bot Remote の接続先を設定する
 
-1. Mac mini で Orca と中継サーバーが起動していることを確認します。Pixel で **Orca Bot Remote** を開きます。
-2. **サーバー URL** に Mac mini のアドレスを入れます。例は `http://mac-mini:8787` です。MagicDNS 名が使えない場合は、Tailscale に表示される Mac mini の IP アドレスを `mac-mini` の代わりに入れます。IPv6 の場合はアドレスを `[` と `]` で囲みます。
+1. Mac mini で Orca と中継サーバーが起動していることを確認します。アプリの接続確認には、認証付きの `GET /api/health` に対応した中継サーバーが必要です。Pixel で **Orca Bot Remote** を開きます。
+2. **サーバー URL** に Tailscale に表示される Mac mini の IP アドレス（例 `http://100.64.0.1:8787`）、または末尾が `.ts.net` の完全な MagicDNS 名（例 `http://mac-mini.example.ts.net:8787`）を入れます。IPv6 の場合はアドレスを `[` と `]` で囲みます。
 3. **トークン**に中継サーバー用として受け取った値を入れ、**接続を確認して保存**をタップします。Android 17 以降でローカルネットワークへのアクセス許可を求められたら許可します。
 4. 「接続できました。設定を保存しました」と表示され、Bot 一覧が開きます。「トークンが違います」と出たらトークンを確認します。「Mac mini につながりません」と出たら Tailscale の接続、URL、中継サーバーの起動を確認します。
 
@@ -34,6 +34,6 @@
 
 ## 通信設定について
 
-アプリと Mac mini の間では、Tailscale の暗号化された接続の中で HTTP を使います。Android の通信設定 XML では `mac-mini` や `ts.net` のサブドメインを指定できますが、接続先として入力できる Tailscale の IP アドレスの範囲を指定できません。このためアプリ全体で平文 HTTP を許可しています。接続先には自分の Mac mini の Tailscale アドレスを入力してください。開発用のエミュレーター接続先 `10.0.2.2` への HTTP はデバッグ版に限って許可しています。
+アプリは HTTP の接続先を Tailscale IPv4（`100.64.0.0/10`）、Tailscale IPv6（`fd7a:115c:a1e0::/48`、ゾーン ID なし）、および `.ts.net` で終わるホスト名に制限します。これまで `mac-mini` のような短い名前を保存していた場合は、設定でアドレスを入れ直してください。デバッグ版では開発用の `10.0.2.2`、`127.0.0.1`、`localhost` への HTTP も許可します。HTTPS の接続先には任意の有効なホスト名または IP アドレスを指定できます。
 
 [Android のネットワークセキュリティ設定](https://developer.android.com/privacy-and-security/security-config)
