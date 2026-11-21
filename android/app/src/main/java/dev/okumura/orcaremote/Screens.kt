@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
@@ -294,15 +295,15 @@ internal fun ChatsScreen(
     back: () -> Unit,
     settings: () -> Unit,
     refreshChats: Boolean,
-    chatsRefreshStarted: () -> Unit,
+    chatsRefreshFinished: (Boolean) -> Unit,
     openNewChat: () -> Unit,
     openChat: (Chat) -> Unit,
 ) {
     val model = screenModel { api.chats(bot) }
     LaunchedEffect(refreshChats) {
         if (refreshChats) {
-            model.refresh(afterCurrent = true)
-            chatsRefreshStarted()
+            model.load(afterCurrent = true)
+            chatsRefreshFinished(model.error == null)
         }
     }
     Page(bot, back, action = { RefreshAction(model) }) { modifier ->
@@ -329,22 +330,35 @@ internal fun ChatsScreen(
 
 @Composable
 internal fun NewChatScreen(
-    api: OrcaApi,
+    sender: SendModel<String>,
     bot: String,
     back: () -> Unit,
     settings: () -> Unit,
+    checkChats: () -> Unit,
     openChat: (String) -> Unit,
 ) {
-    val sender: SendModel<String> = viewModel { SendModel { api.startChat(bot, it) } }
     val result = sender.result
-    LaunchedEffect(result) { if (result != null) openChat(result) }
+    LaunchedEffect(result) {
+        if (result != null) {
+            sender.resultShown()
+            openChat(result)
+        }
+    }
     BackHandler(sender.sending) {}
     Page("新しく頼む", back = { if (!sender.sending) back() }) { modifier ->
         DetailContent(modifier.imePadding()) {
             Text(bot, style = MaterialTheme.typography.titleMedium)
             DraftField(sender, "Bot に頼みたいこと", Modifier.fillMaxWidth(), minLines = 5)
-            SendButton(sender, Modifier.fillMaxWidth())
-            WriteError(sender.error, settings)
+            SendButton(sender, Modifier.fillMaxWidth(), enabled = !sender.needsChatListRefresh)
+            WriteError(
+                sender.error, settings,
+                unknown = "送れたか確認できませんでした。チャット一覧を更新して、新しいチャットができていないか確かめてください",
+            )
+            if (sender.error == ApiError.UNKNOWN_RESULT) {
+                OutlinedButton(onClick = checkChats, modifier = Modifier.fillMaxWidth()) {
+                    Text("チャット一覧で確かめる")
+                }
+            }
         }
     }
 }
@@ -359,7 +373,9 @@ internal fun ConversationScreen(
     settings: () -> Unit,
 ) {
     val model = screenModel { api.messages(bot, chatId) }
-    val sender: SendModel<Unit> = viewModel { SendModel { api.sendMessage(bot, chatId, it) } }
+    val sender: SendModel<Unit> = viewModel {
+        SendModel(createSavedStateHandle()) { api.sendMessage(bot, chatId, it) }
+    }
     val listState = rememberLazyListState()
     val result = sender.result
     LaunchedEffect(result) {
@@ -467,6 +483,8 @@ internal fun ItemsScreen(
     api: OrcaApi,
     back: () -> Unit,
     settings: () -> Unit,
+    refreshItems: Boolean,
+    itemsRefreshStarted: () -> Unit,
     answered: Boolean,
     answerShown: () -> Unit,
     openChat: (String, String, String) -> Unit,
@@ -474,9 +492,14 @@ internal fun ItemsScreen(
 ) {
     val model = screenModel { api.items() }
     val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(refreshItems) {
+        if (refreshItems) {
+            model.refresh(afterCurrent = true)
+            itemsRefreshStarted()
+        }
+    }
     LaunchedEffect(answered) {
         if (answered) {
-            model.refresh(afterCurrent = true)
             snackbar.showSnackbar("答えました")
             answerShown()
         }
@@ -512,16 +535,25 @@ internal fun ItemScreen(
     back: () -> Unit,
     settings: () -> Unit,
     openChat: (String, String, String) -> Unit,
+    refreshAfterAnswer: () -> Unit,
     answered: () -> Unit,
 ) {
     val model = screenModel { api.item(bot, number) }
     val sender: SendModel<Unit> = viewModel {
-        SendModel(onFailure = {
-            if (it == ApiError.CONFLICT) model.load(afterCurrent = true)
+        SendModel(createSavedStateHandle(), onFailure = {
+            if (it == ApiError.CONFLICT) {
+                refreshAfterAnswer()
+                model.load(afterCurrent = true)
+            }
         }) { api.answer(bot, number, it) }
     }
     val result = sender.result
-    LaunchedEffect(result) { if (result != null) answered() }
+    LaunchedEffect(result) {
+        if (result != null) {
+            refreshAfterAnswer()
+            answered()
+        }
+    }
     var choice by rememberSaveable { mutableStateOf<String?>(null) }
     val canAnswer = model.data?.status == "needs_you" && model.error == null
     val focus = LocalFocusManager.current
@@ -566,7 +598,11 @@ internal fun ItemScreen(
                     DraftField(sender, "自分の言葉で答える", Modifier.fillMaxWidth(), enabled = canAnswer)
                     if (canAnswer) SendButton(sender, Modifier.fillMaxWidth())
                 }
-                WriteError(sender.error, settings, conflict = "この項目はもう答え済みか、状態が変わりました")
+                WriteError(
+                    sender.error, settings,
+                    conflict = "この項目はもう答え済みか、状態が変わりました",
+                    badRequest = "1〜8,000文字で入力してください（空白を含め、絵文字などはUTF-16コード単位で数えます）",
+                )
                 item.chatId?.let { chatId ->
                     TextButton(
                         onClick = { openChat(item.bot, chatId, item.title) },
@@ -635,14 +671,14 @@ private fun DraftField(
 }
 
 @Composable
-private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier) {
+private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val focus = LocalFocusManager.current
     Button(
         onClick = {
             focus.clearFocus()
             sender.submit(sender.draft)
         },
-        enabled = sender.draft.isNotBlank() && !sender.sending && sender.result == null,
+        enabled = enabled && sender.draft.isNotBlank() && !sender.sending && sender.result == null,
         modifier = modifier,
     ) {
         if (sender.sending) {
@@ -657,10 +693,21 @@ private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun WriteError(error: ApiError?, settings: () -> Unit, conflict: String = ApiError.CONFLICT.text) {
+private fun WriteError(
+    error: ApiError?,
+    settings: () -> Unit,
+    conflict: String = ApiError.CONFLICT.text,
+    badRequest: String = ApiError.BAD_REQUEST.text,
+    unknown: String = ApiError.UNKNOWN_RESULT.text,
+) {
     if (error != null) {
         Text(
-            if (error == ApiError.CONFLICT) conflict else error.text,
+            when (error) {
+                ApiError.CONFLICT -> conflict
+                ApiError.BAD_REQUEST -> badRequest
+                ApiError.UNKNOWN_RESULT -> unknown
+                else -> error.text
+            },
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.error,
         )

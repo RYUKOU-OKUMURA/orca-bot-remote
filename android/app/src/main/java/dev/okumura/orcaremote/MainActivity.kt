@@ -21,7 +21,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -103,14 +105,19 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
 
 private const val RefreshCounts = "refreshCounts"
 private const val RefreshChats = "refreshChats"
+private const val RefreshItems = "refreshItems"
 private const val Answered = "answered"
+
+@Composable
+private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String): SendModel<String> =
+    viewModel(viewModelStoreOwner = entry) { SendModel(createSavedStateHandle()) { api.startChat(bot, it) } }
 
 @Composable
 private fun RemoteApp(store: ConnectionStore = viewModel()) {
     val nav = rememberNavController()
     val settingsFirst = rememberSaveable { store.connection == null }
     val connection = store.connection
-    val api = remember(connection) { connection?.let(::OrcaApi) }
+    val api = remember(connection) { connection?.let { OrcaApi(it) } }
     val openSettings = { nav.navigate(SettingsRoute) { launchSingleTop = true } }
     val back: () -> Unit = { nav.navigateUp() }
     val openConversation = { bot: String, chatId: String, title: String ->
@@ -148,19 +155,35 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
         composable<ChatsRoute> { entry ->
             val (bot) = entry.toRoute<ChatsRoute>()
             val refreshChats by entry.savedStateHandle.getStateFlow(RefreshChats, false).collectAsState()
-            if (api != null) ChatsScreen(
-                api, bot, back, openSettings, refreshChats,
-                { entry.savedStateHandle[RefreshChats] = false },
-                { nav.navigate(NewChatRoute(bot)) },
-                { openConversation(bot, it.id, it.displayTitle) },
-            )
+            if (api != null) {
+                val sender = newChatSender(entry, api, bot)
+                ChatsScreen(
+                    api, bot, back, openSettings, refreshChats,
+                    { refreshed ->
+                        if (refreshed && sender.needsChatListRefresh) sender.markChatListRefreshed()
+                        entry.savedStateHandle[RefreshChats] = false
+                    },
+                    { nav.navigate(NewChatRoute(bot)) },
+                    { openConversation(bot, it.id, it.displayTitle) },
+                )
+            }
         }
         composable<NewChatRoute> { entry ->
             val (bot) = entry.toRoute<NewChatRoute>()
-            if (api != null) NewChatScreen(api, bot, back, openSettings) { chatId ->
-                nav.previousBackStackEntry?.savedStateHandle?.set(RefreshChats, true)
-                nav.navigate(ConversationRoute(bot, chatId, bot)) {
-                    popUpTo<NewChatRoute> { inclusive = true }
+            val chatsEntry = remember(entry) { nav.getBackStackEntry<ChatsRoute>() }
+            if (api != null) {
+                val sender = newChatSender(chatsEntry, api, bot)
+                NewChatScreen(
+                    sender, bot, back, openSettings,
+                    checkChats = {
+                        chatsEntry.savedStateHandle[RefreshChats] = true
+                        nav.popBackStack()
+                    },
+                ) { chatId ->
+                    chatsEntry.savedStateHandle[RefreshChats] = true
+                    nav.navigate(ConversationRoute(bot, chatId, bot)) {
+                        popUpTo<NewChatRoute> { inclusive = true }
+                    }
                 }
             }
         }
@@ -170,17 +193,22 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
         }
         composable<ItemsRoute> { entry ->
             val answered by entry.savedStateHandle.getStateFlow(Answered, false).collectAsState()
+            val refreshItems by entry.savedStateHandle.getStateFlow(RefreshItems, false).collectAsState()
             if (api != null) ItemsScreen(
-                api, back, openSettings, answered, { entry.savedStateHandle[Answered] = false }, openConversation,
+                api, back, openSettings, refreshItems, { entry.savedStateHandle[RefreshItems] = false },
+                answered, { entry.savedStateHandle[Answered] = false }, openConversation,
             ) {
                 nav.navigate(ItemRoute(it.bot, it.number))
             }
         }
         composable<ItemRoute> { entry ->
             val (bot, number) = entry.toRoute<ItemRoute>()
-            if (api != null) ItemScreen(api, bot, number, back, openSettings, openConversation) {
+            val refreshAfterAnswer = {
                 nav.getBackStackEntry<HomeRoute>().savedStateHandle[RefreshCounts] = true
-                nav.previousBackStackEntry?.savedStateHandle?.set(Answered, true)
+                nav.getBackStackEntry<ItemsRoute>().savedStateHandle[RefreshItems] = true
+            }
+            if (api != null) ItemScreen(api, bot, number, back, openSettings, openConversation, refreshAfterAnswer) {
+                nav.getBackStackEntry<ItemsRoute>().savedStateHandle[Answered] = true
                 nav.popBackStack()
             }
         }
