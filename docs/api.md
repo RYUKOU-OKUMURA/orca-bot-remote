@@ -2,7 +2,7 @@
 
 ベース URL は Mac mini の Tailscale IP または完全な MagicDNS 名を使います（例 `http://mac-mini.example.ts.net:8787`）。IPv6 のアドレスを URL に直接書く場合は角括弧で囲みます。
 
-全エンドポイントで `Authorization: Bearer <token>` を送ります。APK のダウンロードを除き、応答の Content-Type は `application/json; charset=utf-8` です。以下の `?` は JSON の `null` を許す値を表します。時刻は Unix epoch ミリ秒の数値です。
+全エンドポイントで `Authorization: Bearer <token>` を送ります。SSE と APK のダウンロードを除き、応答の Content-Type は `application/json; charset=utf-8` です。以下の `?` は JSON の `null` を許す値を表します。時刻は Unix epoch ミリ秒の数値です。
 
 ## v1 読み取り
 
@@ -24,6 +24,18 @@
 - `chatId` は UUID 形式です。履歴を取得できるのは指定した Bot のチャットだけで、閉じたチャットも含みます。別の Bot や Bot 外のセッション、および旧パス `/api/chats/{chatId}/messages` は 404 です。履歴は古い行から順に返します。メッセージの `role` は通常 `user` または `assistant` です。`limit` は 1〜100 に丸めます。省略時や整数として読めない場合は 100 です。
 - 判断待ち一覧には全 Bot の `needs_you` 項目を新しい順に返します。`number` は正の整数です。質問があれば現在の質問イベントの本文と選択肢ラベルを返します。選択肢はイベント内の出現順です。質問が無ければ `question` は `null` です。
 - まとめは `automations runs --limit 20` で取得した、設定された自動化の直近20回の実行のうち、最新の完了済み定期実行を選びます。`bot` は自動化定義の Bot 名です。Bot 一覧から名前を特定できない場合は定義にある Bot ID を返します。`runAt` は予定時刻（Orca の `scheduledFor`）です。未設定、該当する実行が無い場合、または該当回の本文がまだ無い場合は `{"summary":null}` を返します。
+
+## リアルタイム通知
+
+`GET /api/events` は Bearer 認証後に `text/event-stream; charset=utf-8` で接続を維持します。トークンがない場合や不正な場合は 401、認証済みの GET 以外は 405（`Allow: GET`）です。同時接続はサーバー全体で8本までで、上限では `503 {"error":"too_many_connections","message":"リアルタイム通知の接続数が上限に達しています。"}` を返します。
+
+| フレーム | 送信条件とデータ |
+| --- | --- |
+| `event: ready` | 接続直後に `data: {"at":1795299000000}` を送ります。再接続までの変更履歴は配信しないため、現在値は各読み取り API で取得します |
+| `event: change` | 約10秒ごとに確認し、判断待ち一覧・最新まとめの予定時刻・Bot の返答や作業状態に変化があれば `data: {"items":true,"summary":false,"bots":true,"at":1795299010000}` の形式で知らせます。`true` の対象を再取得してください |
+| `: ping` | 接続維持のため約25秒ごとに送るコメントです |
+
+接続中の全端末で監視を共有します。最初の正常な取得は比較の基準とし、取得失敗時はその対象の直前の正常値を保持します。最後の端末が切断すると監視を停止します。
 
 ## アプリの更新
 

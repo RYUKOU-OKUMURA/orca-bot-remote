@@ -6,6 +6,7 @@ import { createOrcaWrite, OrcaWriteError, type OrcaWrite } from './orca-write.ts
 import { BadInput, inlineJsonLimit, inlineUploads, jsonLimit, messageExtras, uuid, withRawUpload } from './attachments.ts';
 import { parseCommand } from './commands.ts';
 import { createAppRelease } from './app-release.ts';
+import { createEvents } from './events.ts';
 
 const BOTS = /^\/api\/bots$/;
 const CHATS = /^\/api\/bots\/([^/]+)\/chats$/;
@@ -109,12 +110,15 @@ function readJson(request: IncomingMessage, signal: AbortSignal, maxBodyBytes: n
   });
 }
 
-export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(), shutdownSignal, appDir }: {
+export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(), shutdownSignal, appDir,
+  pollIntervalMs, keepaliveIntervalMs }: {
   orcaBin: string; digest: Buffer; summaryId?: string; write?: OrcaWrite; shutdownSignal?: AbortSignal; appDir?: string;
+  pollIntervalMs?: number; keepaliveIntervalMs?: number;
 }, requestTimeoutMs = 55_000) {
   const appRelease = createAppRelease(appDir);
+  const events = createEvents(orcaBin, summaryId, requestTimeoutMs, pollIntervalMs, keepaliveIntervalMs);
   const pendingAnswers = new Map<string, Promise<'unknown_result' | undefined>>();
-  return createServer({ keepAliveTimeout: 65_000, headersTimeout: 66_000 }, async (request, response) => {
+  const server = createServer({ keepAliveTimeout: 65_000, headersTimeout: 66_000 }, async (request, response) => {
     const started = performance.now();
     const deadline = started + requestTimeoutMs;
     const url = request.url ?? '';
@@ -124,14 +128,15 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     const posting = request.method === 'POST';
     const app = path === '/api/app';
     const apk = path === '/api/app/apk';
+    const streaming = path === '/api/events';
     let logPath = 'unauthenticated';
-    response.once('finish', () => {
+    response.once(streaming ? 'close' : 'finish', () => {
       console.log(`${JSON.stringify(logPath)} ${response.statusCode} ${Math.round(performance.now() - started)}ms`);
     });
     function send(status: number, body: object) {
       if (response.destroyed || response.writableEnded) return;
       if (shutdownSignal?.aborted) response.setHeader('Connection', 'close');
-      if (!posting && !app && !apk && performance.now() >= deadline) {
+      if (!posting && !app && !apk && !streaming && performance.now() >= deadline) {
         status = 502;
         body = timedOut;
       }
@@ -158,7 +163,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     const summary = SUMMARY.test(path);
     const health = path === '/api/health';
     if (health) logPath = '/api/health';
-    else if (app || apk) logPath = path;
+    else if (app || apk || streaming) logPath = path;
     else if (bots) logPath = '/api/bots';
     else if (chats) logPath = '/api/bots/:bot/chats';
     else if (action) logPath = '/api/bots/:bot/chats/:chat/' + route;
@@ -177,6 +182,13 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     }
 
     if (health) return send(200, { ok: true });
+    if (streaming) {
+      if (!server.listening || shutdownSignal?.aborted) return response.destroy();
+      if (!events.subscribe(response)) {
+        return send(503, { error: 'too_many_connections', message: 'リアルタイム通知の接続数が上限に達しています。' });
+      }
+      return;
+    }
     if (app) return send(200, { app: await appRelease.metadata() });
     if (apk) {
       if (!await appRelease.download(response)) send(404, notFound);
@@ -309,4 +321,13 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       stop();
     }
   });
+  shutdownSignal?.addEventListener('abort', events.close, { once: true });
+  // Node emits 'close' only after all active responses have ended.
+  const close = server.close.bind(server);
+  server.close = callback => {
+    shutdownSignal?.removeEventListener('abort', events.close);
+    events.close();
+    return close(callback);
+  };
+  return server;
 }

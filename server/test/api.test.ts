@@ -519,6 +519,24 @@ test('SIGTERM でアイドルの Keep-Alive を閉じ、強制終了タイマー
   assert.ok(performance.now() - started < 1800);
 });
 
+test('SIGTERM は SSE と監視 CLI を閉じ、強制終了タイマーを待たず終了する', { timeout: 5000 }, async t => {
+  const { bin } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.slow-ps`, '');
+  const { server, exited, port } = await forkServer(t, bin);
+  const response = await fetch(`http://127.0.0.1:${port}/api/events`, { headers: { Authorization: `Bearer ${token}` } });
+  const reader = response.body!.getReader();
+  assert.match(new TextDecoder().decode((await reader.read()).value), /^event: ready\n/);
+  while (!existsSync(`${bin}.ps-pid`)) await delay(10, undefined, { signal: t.signal });
+  const pid = Number(readFileSync(`${bin}.ps-pid`, 'utf8'));
+  assert.ok(pid > 1);
+  const started = performance.now();
+  assert.ok(server.kill('SIGTERM'));
+  assert.equal((await reader.read()).done, true);
+  assert.deepEqual(await exited, [0, null]);
+  assert.ok(performance.now() - started < 1800);
+  await assertProcessesStopped([pid]);
+});
+
 test('サーバーは SIGTERM で実行中の CLI とその子を停止して終了する', { timeout: 5000 }, async t => {
   const { bin } = recordOrcaCalls(t);
   writeFileSync(`${bin}.slow`, '');
