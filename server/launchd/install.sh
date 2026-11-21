@@ -60,17 +60,23 @@ host=$(tailscale ip -4)
     ' -- "$host"
 )
 
-automations=$(env -i HOME="$HOME" PATH=/usr/bin:/bin "$orca_bin" automations list --json)
-summary_id=$(printf '%s' "$automations" | "$node_bin" --input-type=module -e '
-  let input = "";
-  for await (const chunk of process.stdin.setEncoding("utf8")) input += chunk;
-  const reply = JSON.parse(input);
-  if (reply.ok !== true) throw new Error("Orca の自動化一覧を取得できません。");
-  const match = reply.result.automations.find(item => item.name === "専門Botの状況まとめ（毎日12:00）");
-  process.stdout.write(match?.id ?? "");
-')
+summary_id=${SUMMARY_AUTOMATION_ID:-}
 if [ -z "$summary_id" ]; then
-    printf '警告: 専門Botの状況まとめ（毎日12:00）が見つかりません。まとめは未設定になります。\n' >&2
+    automations=$(env -i HOME="$HOME" PATH=/usr/bin:/bin "$orca_bin" automations list --json)
+    summary_id=$(printf '%s' "$automations" | "$node_bin" --input-type=module -e '
+      let input = "";
+      for await (const chunk of process.stdin.setEncoding("utf8")) input += chunk;
+      const reply = JSON.parse(input);
+      if (reply.ok !== true) throw new Error("Orca の自動化一覧を取得できません。");
+      const { automations } = reply.result;
+      const match = automations.find(item => item.name === "秘書まとめ（朝8:00・昼12:00・夕18:00＋放置リマインド）")
+        ?? automations.find(item => item.name === "専門Botの状況まとめ（毎日12:00）")
+        ?? automations.find(item => item.enabled !== false && typeof item.name === "string" && item.name.includes("まとめ"));
+      process.stdout.write(match?.id ?? "");
+    ')
+fi
+if [ -z "$summary_id" ]; then
+    printf '警告: まとめ用の自動化が見つかりません。まとめは未設定になります。\n' >&2
 fi
 
 plist=$(mktemp "${TMPDIR:-/tmp}/orca-bot-remote.XXXXXXXX")
