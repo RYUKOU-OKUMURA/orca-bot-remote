@@ -16,6 +16,9 @@ agent_dir="$HOME/Library/LaunchAgents"
 token_file="$HOME/.config/orca-bot-remote/token"
 node_bin="$HOME/.nvm/versions/node/v24.19.0/bin/node"
 orca_bin=/Applications/Orca.app/Contents/Resources/bin/orca
+if [ "${1:-}" = '--dry-run' ]; then
+    orca_bin=${ORCA_BIN:-$orca_bin}
+fi
 domain="gui/$(id -u)"
 
 host=$(tailscale ip -4)
@@ -48,8 +51,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 cp "$server_dir/launchd/$label.plist" "$plist"
-/usr/bin/plutil -replace ProgramArguments.0 -string "$node_bin" "$plist"
-/usr/bin/plutil -replace ProgramArguments.1 -string "$install_dir/src/main.ts" "$plist"
+/usr/bin/plutil -replace ProgramArguments -array "$plist"
+/usr/bin/plutil -insert ProgramArguments -string "$node_bin" -append "$plist"
+/usr/bin/plutil -insert ProgramArguments -string "$install_dir/src/main.ts" -append "$plist"
 /usr/bin/plutil -replace EnvironmentVariables.HOST -string "$host" "$plist"
 /usr/bin/plutil -replace EnvironmentVariables.SUMMARY_AUTOMATION_ID -string "$summary_id" "$plist"
 /usr/bin/plutil -replace StandardOutPath -string "$log_dir/access.log" "$plist"

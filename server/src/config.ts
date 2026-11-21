@@ -36,7 +36,7 @@ export function readConfig(env = process.env) {
   }
 
   const tokenFile = env.TOKEN_FILE ?? join(homedir(), '.config/orca-bot-remote/token');
-  const fd = openSync(tokenFile, constants.O_RDONLY | constants.O_NONBLOCK);
+  const fd = openSync(tokenFile, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || (stat.mode & 0o7777) !== 0o600) {

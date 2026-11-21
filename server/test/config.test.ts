@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -38,4 +38,11 @@ test('トークンファイルの権限は厳密に 600 を要求する', t => {
   }
   chmodSync(file, 0o600);
   assert.doesNotThrow(() => readConfig({ HOST: '100.113.115.59', TOKEN_FILE: file }));
+});
+
+test('権限 600 の通常ファイルへのシンボリックリンクを拒否する', t => {
+  const file = tokenFile(t);
+  const link = `${file}.link`;
+  symlinkSync(file, link);
+  assert.throws(() => readConfig({ HOST: '100.113.115.59', TOKEN_FILE: link }), { code: 'ELOOP' });
 });

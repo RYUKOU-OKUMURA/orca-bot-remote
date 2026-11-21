@@ -11,7 +11,7 @@ server/launchd/install.sh --dry-run
 server/launchd/install.sh
 ```
 
-`--dry-run` は生成した plist を標準出力に表示します。トークンの発行や LaunchAgent の登録は通常実行で行います。初回の通常実行でランダムなトークンを `~/.config/orca-bot-remote/token` に権限 `600` で保存します。インストーラーは保存場所を表示します。Android に設定する際は、そのファイルを信頼できる方法で開き、値を Android のトークン欄へ入力します。
+`--dry-run` は生成した plist を標準出力に表示します。`ProgramArguments` は Node と `main.ts` の絶対パスの2要素です。トークンの発行や LaunchAgent の登録は通常実行で行います。初回の通常実行でランダムなトークンを `~/.config/orca-bot-remote/token` に権限 `600` で保存します。インストーラーは保存場所を表示します。Android に設定する際は、そのファイルを信頼できる方法で開き、値を Android のトークン欄へ入力します。
 
 インストーラーは `server/` を `~/Library/Application Support/orca-bot-remote/server/` にコピーします。この配置なら LaunchAgent が macOS の TCC で保護された Desktop にアクセスする必要がありません。plist は `~/Library/LaunchAgents/dev.okumura.orca-bot-remote.plist` に置きます。更新時は通常のインストールコマンドを再実行します。既存のジョブを停止し、コピーを更新してから再登録します。
 
@@ -26,9 +26,9 @@ printf 'Authorization: Bearer %s\n' "$(cat ~/.config/orca-bot-remote/token)" |
   curl --noproxy '*' --fail-with-body --silent --show-error --header @- "http://$host:8787/api/bots"
 ```
 
-Bot 一覧を受け取れたら、Android から同じ IP または MagicDNS 名とポート `8787`、同じトークンで接続します。API のパスと応答は [API v1](api.md) を参照してください。
+Bot 一覧を受け取れたら、Android から同じ IP または MagicDNS 名とポート `8787`、同じトークンで接続します。会話履歴の確認には `/api/bots/{botName}/chats/{chatId}/messages?limit=10` を使います。`botName` には URL エンコードした Bot 名、`chatId` にはその Bot のチャット ID を指定します。API のパスと応答は [API v1](api.md) を参照してください。
 
-標準出力は `~/Library/Logs/orca-bot-remote/access.log` に保存され、1リクエストにつきパス、HTTP ステータス、所要時間が1行で出ます。起動エラーは同じディレクトリの `error.log` に出ます。
+標準出力は `~/Library/Logs/orca-bot-remote/access.log` に保存され、1リクエストにつきルートのテンプレート、HTTP ステータス、所要時間が1行で出ます。認証失敗時は `unauthenticated`、不明なルートは `unknown` と記録します。起動エラーは同じディレクトリの `error.log` に出ます。
 
 ## 停止とアンインストール
 
@@ -47,7 +47,7 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/dev.okumura.orca-
 | --- | --- |
 | `HOST` | 必須。Tailscale IPv4 `100.64.0.0/10` または IPv6 `fd7a:115c:a1e0::/48` の IP アドレス。インストーラーは Mac mini の Tailscale IPv4 を設定します |
 | `PORT` | 既定 `8787` |
-| `TOKEN_FILE` | 既定 `~/.config/orca-bot-remote/token`。権限 `600` の通常ファイル |
+| `TOKEN_FILE` | 既定 `~/.config/orca-bot-remote/token`。権限 `600` の通常ファイル。ファイルへのシンボリックリンクは拒否します |
 | `ORCA_BIN` | 既定 `/Applications/Orca.app/Contents/Resources/bin/orca`。絶対パス |
 | `SUMMARY_AUTOMATION_ID` | まとめの自動化 ID。空の場合は `{"summary":null}` |
 

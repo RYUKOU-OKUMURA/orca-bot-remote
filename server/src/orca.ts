@@ -67,6 +67,10 @@ export function createOrca(orcaBin: string, summaryId?: string) {
     return (await read<{ bots: Bot[] }>('bot', 'list')).bots;
   }
 
+  async function listChats(bot: Bot, ...filters: string[]) {
+    return (await read<{ chats: Chat[] }>('bot', 'chats', `--bot=${bot.name}`, ...filters)).chats;
+  }
+
   async function* itemPages(bot: Bot, ...filters: string[]) {
     let cursor: string | undefined;
     do {
@@ -94,13 +98,16 @@ export function createOrca(orcaBin: string, summaryId?: string) {
       })));
     },
     async chats(bot: Bot) {
-      const { chats } = await read<{ chats: Chat[] }>('bot', 'chats', `--bot=${bot.name}`);
+      const chats = await listChats(bot);
       return chats.filter(chat => !chat.closed).sort(newestFirst).map(chat => ({
         id: chat.id, title: chat.title ?? null, home: chat.home, lastActivityAt: chat.lastActivityAt ?? null,
         lastAsked: chat.lastAsked ?? null, lastSaid: chat.lastSaid ?? null
       }));
     },
-    async messages(chatId: string, limit: number) {
+    async messages(bot: Bot, chatId: string, limit: number) {
+      const chats = await listChats(bot, '--all');
+      if (!chats.some(chat => chat.id === chatId)) return null;
+
       const { state, entries } = await read<{ state?: string; entries: Entry[] }>(
         'agent', 'read', `orca_session_id:${chatId}`, '--limit', String(limit)
       );
@@ -166,7 +173,13 @@ export function createOrca(orcaBin: string, summaryId?: string) {
       const { runs } = await read<{ runs: Run[] }>('automations', 'runs', '--id', summaryId, '--limit', '20');
       const run = runs.find(run => run.trigger === 'scheduled' && run.status === 'completed');
       if (!run || typeof run.outputSnapshot?.content !== 'string') return null;
-      return { runAt: run.scheduledFor, content: run.outputSnapshot.content, chatId: run.chatSessionId ?? null };
+      const { automation } = await read<{ automation: { bot?: { botId: string } } }>(
+        'automations', 'show', '--id', summaryId
+      );
+      const botId = automation.bot?.botId;
+      if (typeof botId !== 'string' || !botId) throw new OrcaError();
+      const bot = (await listBots()).find(bot => bot.id === botId)?.name ?? botId;
+      return { bot, runAt: run.scheduledFor, content: run.outputSnapshot.content, chatId: run.chatSessionId ?? null };
     }
   };
 }
