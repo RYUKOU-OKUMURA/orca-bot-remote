@@ -119,7 +119,7 @@ internal fun Page(
 }
 
 @Composable
-private fun <T> screenModel(key: String? = null, fetch: suspend () -> T): ScreenModel<T> {
+internal fun <T> screenModel(key: String? = null, fetch: suspend () -> T): ScreenModel<T> {
     val model: ScreenModel<T> = viewModel(key = key) { ScreenModel(fetch) }
     LaunchedEffect(model) {
         if (model.data == null && model.error == null) model.refresh()
@@ -128,7 +128,7 @@ private fun <T> screenModel(key: String? = null, fetch: suspend () -> T): Screen
 }
 
 @Composable
-private fun <T> DataContent(
+internal fun <T> DataContent(
     modifier: Modifier,
     model: ScreenModel<T>,
     settings: () -> Unit,
@@ -428,6 +428,7 @@ internal fun ConversationScreen(
     bot: String,
     chatId: String,
     title: String,
+    destination: androidx.lifecycle.SavedStateHandle,
     back: () -> Unit,
     settings: () -> Unit,
 ) {
@@ -441,6 +442,7 @@ internal fun ConversationScreen(
             ""
         }
     }
+    ApplySharedDraft(destination, sender)
     val model = screenModel {
         val requestedAt = System.currentTimeMillis()
         sender.loadHistory { api.messages(bot, chatId) }.also { meta.markRead(bot, chatId, requestedAt) }
