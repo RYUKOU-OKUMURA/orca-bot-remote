@@ -1,10 +1,20 @@
 package dev.okumura.orcaremote
 
+import android.Manifest
 import android.app.Application
+import android.app.NotificationManager
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
@@ -19,11 +29,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -31,17 +43,34 @@ import androidx.navigation.toRoute
 import kotlinx.serialization.Serializable
 
 class MainActivity : ComponentActivity() {
+    private var notificationTarget by mutableStateOf<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationTarget = if (savedInstanceState == null) {
+            intent.data?.takeIf { it.scheme == NotificationScheme }
+        } else {
+            savedInstanceState.getString("notificationTarget")?.let(Uri::parse)
+        }
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
                 colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
                 typography = LargeType,
             ) {
-                RemoteApp()
+                RemoteApp(notificationTarget) { notificationTarget = null }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        notificationTarget = intent.data?.takeIf { it.scheme == NotificationScheme }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("notificationTarget", notificationTarget?.toString())
     }
 }
 
@@ -76,23 +105,51 @@ private val LargeType = Typography().run {
 }
 
 internal class ConnectionStore(application: Application) : AndroidViewModel(application) {
-    private val preferences = application.getSharedPreferences("connection", Application.MODE_PRIVATE)
-    var connection by mutableStateOf(
-        Connection.parse(
-            preferences.getString("url", "").orEmpty(),
-            preferences.getString("token", "").orEmpty(),
-        )
-    )
+    private val preferences = application.connectionPreferences()
+    var connection by mutableStateOf(preferences.savedConnection())
+        private set
+    var notificationsEnabled by mutableStateOf(preferences.getBoolean(NotificationsEnabled, true))
         private set
 
+    init {
+        createNotificationChannels(application)
+        updateNotificationSchedule()
+    }
+
     fun save(verified: Connection) {
-        preferences.edit()
+        val editor = preferences.edit()
             .putString("url", verified.url.toString())
             .putString("token", verified.token)
-            .apply()
+        if (verified.url != connection?.url) {
+            editor.remove(NotifiedItems).remove(NotifiedSummary)
+            getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
+        }
+        editor.apply()
         connection = verified
+        updateNotificationSchedule()
+    }
+
+    fun setNotifications(enabled: Boolean) {
+        preferences.edit().putBoolean(NotificationsEnabled, enabled).apply()
+        notificationsEnabled = enabled
+        updateNotificationSchedule()
+    }
+
+    fun claimNotificationPrompt(): Boolean {
+        if (preferences.getBoolean("notificationPermissionAsked", false)) return false
+        preferences.edit().putBoolean("notificationPermissionAsked", true).apply()
+        return true
+    }
+
+    private fun updateNotificationSchedule() {
+        scheduleNotifications(getApplication(), notificationsEnabled && connection != null)
     }
 }
+
+internal fun Context.connectionPreferences(): SharedPreferences = getSharedPreferences("connection", Context.MODE_PRIVATE)
+
+internal fun SharedPreferences.savedConnection(): Connection? =
+    Connection.parse(getString("url", "").orEmpty(), getString("token", "").orEmpty())
 
 @Serializable private object SettingsRoute
 @Serializable private data class HomeRoute(val connectionVerified: Boolean = false)
@@ -113,7 +170,11 @@ private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String): 
     viewModel(viewModelStoreOwner = entry) { SendModel(createSavedStateHandle()) { api.startChat(bot, it) } }
 
 @Composable
-private fun RemoteApp(store: ConnectionStore = viewModel()) {
+private fun RemoteApp(
+    notificationTarget: Uri?,
+    store: ConnectionStore = viewModel(),
+    consumeNotification: () -> Unit,
+) {
     val nav = rememberNavController()
     val settingsFirst = rememberSaveable { store.connection == null }
     val connection = store.connection
@@ -126,7 +187,12 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
 
     NavHost(nav, startDestination = if (settingsFirst) SettingsRoute else HomeRoute()) {
         composable<SettingsRoute> {
-            SettingsScreen(connection, if (nav.previousBackStackEntry != null) back else null) {
+            SettingsScreen(
+                connection,
+                if (nav.previousBackStackEntry != null) back else null,
+                store.notificationsEnabled,
+                store::setNotifications,
+            ) {
                 store.save(it)
                 nav.navigate(HomeRoute(connectionVerified = true)) {
                     popUpTo(nav.graph.id)
@@ -139,6 +205,7 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
             val refreshCounts by entry.savedStateHandle.getStateFlow(RefreshCounts, false).collectAsState()
             LaunchedEffect(api) { if (api == null) openSettings() }
             if (api != null) {
+                RequestNotificationPermission(store)
                 HomeScreen(
                     api,
                     showSuccess,
@@ -211,5 +278,39 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
         composable<SummaryRoute> {
             if (api != null) SummaryScreen(api, back, openSettings, openConversation)
         }
+    }
+
+    LaunchedEffect(notificationTarget, api) {
+        if (notificationTarget == null) return@LaunchedEffect
+        consumeNotification()
+        if (api == null) return@LaunchedEffect
+        val screen = notificationTarget.authority
+        val (bot, number) = notificationTarget.pathSegments.let {
+            it.getOrNull(0).orEmpty() to it.getOrNull(1)?.toLongOrNull()
+        }
+        if (screen !in listOf("item", "items", "summary") ||
+            (screen == "item" && (bot.isBlank() || number == null || number <= 0))
+        ) return@LaunchedEffect
+        if (nav.currentDestination?.hasRoute<HomeRoute>() != true && !nav.popBackStack<HomeRoute>(false)) {
+            nav.navigate(HomeRoute()) { popUpTo(nav.graph.id) }
+        }
+        if (screen == "summary") {
+            nav.navigate(SummaryRoute)
+        } else {
+            nav.navigate(ItemsRoute)
+            if (screen == "item" && number != null) nav.navigate(ItemRoute(bot, number))
+        }
+    }
+}
+
+@Composable
+private fun RequestNotificationPermission(store: ConnectionStore) {
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(store.notificationsEnabled) {
+        if (store.notificationsEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            store.claimNotificationPrompt()
+        ) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
