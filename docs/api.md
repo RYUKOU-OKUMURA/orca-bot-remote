@@ -36,7 +36,7 @@
 
 ## v2 書き込み
 
-Bearer トークンに加え、`Content-Type: application/json` を指定します。本文は最大 64 KiB です。チャットの `text` は前後の空白を除いて 1〜10000 文字です。判断待ちへの回答は空白以外の文字を1文字以上含み、前後の空白を含めて 1〜8000 UTF-16 コード単位です（Orca の制限）。Orca には入力された文字列を渡します。
+通常の書き込みは Bearer トークンに加え、`Content-Type: application/json` を指定します。JSON 本文は最大 64 KiB です。添付の例外は後述します。チャットの `text` は前後の空白を除いて 1〜10000 文字です。判断待ちへの回答は空白以外の文字を1文字以上含み、前後の空白を含めて 1〜8000 UTF-16 コード単位です（Orca の制限）。Orca には入力された文字列を渡します。
 
 | メソッドとパス | 本文 | 成功応答 |
 | --- | --- | --- |
@@ -62,3 +62,58 @@ Bearer トークンに加え、`Content-Type: application/json` を指定しま�
 Pi エージェントを使う Bot は書き込みの対象外です。
 
 サーバーとアプリは書き込みを自動で再送しません。`unknown_result` のときはアプリで応答の文言を表示し、会話を更新して結果を確認します。
+
+## チャットのコマンドとスキル
+
+以下の `{chat}` は `/api/bots/{botName}/chats/{chatId}` です。チャットは指定した Bot に所属する必要があります。3つの追加エンドポイントも Bearer 認証が必須で、405 の `Allow` には表のメソッドを返します。Orca とのペアリングが未設定・無効な場合は、一覧取得を含めて 503 `write_unavailable` です。
+
+| メソッドとパス | 入力 | 成功応答 |
+| --- | --- | --- |
+| `GET {chat}/commands` | なし | 200。現在のセッションの `commands`、`skills`、`options` |
+| `POST {chat}/command` | `{"name":"compact","argument":"決定事項を残す"}` | `200 {"ok":true}` |
+| `POST {chat}/attachments` | 単一ファイルの生バイト列と `X-File-Name` ヘッダー | 201。次のメッセージで使える添付情報 |
+
+一覧の応答例です。配列の内容はセッションごとに変わります。
+
+```json
+{
+  "commands": [
+    {"name":"compact","description":"会話を要約して圧縮","kind":"conversation","argumentHint":"[指示]"},
+    {"name":"model","description":"モデルを変更","kind":"option","argumentHint":"<モデル>"},
+    {"name":"help","description":"Show help","kind":"text","argumentHint":null}
+  ],
+  "skills": [
+    {"name":"review","description":"変更をレビュー","path":"/skills/review/SKILL.md","argumentHint":null}
+  ],
+  "options": {
+    "model":{"current":"example","choices":[{"value":"example","label":"Example"}]}
+  }
+}
+```
+
+- `clear` は引数を省略するか空文字にします。`compact` は任意で最大10,000文字の指示を取ります。指示を受け付けるセッションでは `argumentHint` に `[指示]` が付きます。
+- `model` と `effort` は選択肢の `value` を `argument` に指定します。空白だけの値は使えません。上限は512 UTF-16コード単位です。`options.effort.choices` は対象モデルの推論強度です。候補のないキーは省略され、現在値が不明なときは `current: null` になります。
+- `kind: "text"` のセッション報告コマンドは、例として `{"text":"/help"}` を既存のメッセージ送信 API に渡します。`POST {chat}/command` が受け付ける名前は上記4種類です。未知の名前や不正な引数は400、閉じたチャットへの書き込みは409です。
+- スキルを使う場合は `POST {chat}/messages` に `skills: [{"name":"review","path":"/skills/review/SKILL.md"}]` を追加します。上限16件、名前は512、パスは4096 UTF-16コード単位までの空でない文字列で、制御文字は使えません。Orca が一覧でパスを報告しないスキルの `path` は `null` です。
+
+## ファイル添付
+
+**既存チャット**では、先に `POST {chat}/attachments` でファイルを1つずつアップロードします。`X-File-Name` は UTF-8 のファイル名を URL エンコードした値です。デコード後の上限は256 UTF-16コード単位です。`Content-Type` は `application/octet-stream` やファイルの MIME タイプを使えます。`Content-Length` がない転送にも対応します。1ファイルは1バイト〜20 MiBです。空ファイル、上限超過、不正なヘッダー、multipart 形式は400です。
+
+```json
+{"path":"/Users/example/Library/Application Support/Orca/agent-session-attachments/12345678-abcd-1234-abcd-123456789abc/図.png","name":"図.png","kind":"image","byteLength":12345}
+```
+
+次に `POST {chat}/messages` の `attachments` 配列に、201応答の `path`、`kind`、任意の `name` を渡します。最大10件です。添付があれば `text` は省略または空文字にでき、成功時は従来どおり202です。`skills` も同時に指定できます。サーバーは同じ Mac の Orca 添付ストアにある確定済みの通常ファイルを照合します。外部パス、親ディレクトリ参照、シンボリックリンクは400です。
+
+画像の判定には拡張子、MIME タイプ、ファイル先頭のバイトを使います（PNG、JPEG、GIF、WebP、HEIC/HEIF、AVIF、BMP）。画像は `image-ref` ブロックにし、一般ファイルは本文中の `@パス` 参照にします。空白を含むパスは `@"パス"` で囲みます。
+
+**新規チャット**では `POST /api/bots/{botName}/chats` に直接添付を含められます。
+
+```json
+{"text":"この資料を見て","inlineAttachments":[{"name":"memo.txt","mimeType":"text/plain","contentBase64":"SGVsbG8="}]}
+```
+
+`mimeType` は任意です。`contentBase64` は改行・data URL 接頭辞を含まない標準のパディング付き Base64 です。最大5件、デコード後は1件1バイト〜15 MiB、合計20 MiBまでです。Base64 文字列の内容を除く JSON 全体の上限は64 KiBです。添付だけでも作成でき、成功応答は従来どおり `201 {"chatId":"…"}` です。
+
+サーバーは入力を確認してからチャットを開始し、すべての添付をアップロードして最初のメッセージを送ります。開始後に失敗した場合は、空のチャットや確定済みの添付が残ることがあります。再送前にチャット一覧と履歴を更新してください。コマンドもメッセージも自動再送しません。確定した拒否は502 `orca_failed`、送信後の切断など結果不明の場合は502 `unknown_result` です。

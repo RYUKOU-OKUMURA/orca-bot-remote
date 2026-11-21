@@ -125,6 +125,7 @@ export async function withRawUpload<T>(request: IncomingMessage, signal: AbortSi
       if (byteLength > maxUploadBytes) throw new BadInput();
       await file.writeFile(chunk);
     }
+    signal.removeEventListener('abort', stop);
     if (!byteLength) throw new BadInput();
     const chunks = file.createReadStream({ start: 0, highWaterMark: chunkSize, autoClose: false });
     try {

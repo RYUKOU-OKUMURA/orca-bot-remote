@@ -206,7 +206,6 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       const body = json?.body ?? {};
       const extras = posting && messages ? await messageExtras(body) : undefined;
       const uploads = posting && chats ? inlineUploads(body.inlineAttachments, json!.size) : undefined;
-      const operation = command ? parseCommand(body) : undefined;
       let text: string | null = null;
       if (posting && !command && !upload) {
         const hasFiles = !!(extras?.attachments?.length || uploads?.length);
@@ -226,8 +225,8 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
         if (posting && chat.closed) return send(409, { error: 'conflict', message: 'このチャットは閉じています。' });
         signal.throwIfAborted();
         if (menu) return send(200, await write.commands(chatId, signal));
-        if (operation) {
-          await write.command(chatId, operation, signal);
+        if (command) {
+          await write.command(chatId, parseCommand(body), signal);
           return send(200, { ok: true });
         }
         if (upload) {
@@ -288,7 +287,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
         return send(404, notFound);
       }
       if (posting || menu) {
-        if (!request.readableEnded) response.setHeader('Connection', 'close');
+        if (!request.readableEnded || (upload && error instanceof BadInput)) response.setHeader('Connection', 'close');
         if (error instanceof BadInput) return send(400, { error: 'bad_request', message: error.message || '本文の形式、値、またはサイズが無効です。' });
         const code = error instanceof OrcaWriteError ? error.code : 'orca_failed';
         if (code === 'not_found') return send(404, notFound);

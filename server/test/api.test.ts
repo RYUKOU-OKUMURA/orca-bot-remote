@@ -584,6 +584,7 @@ function fakeWrite(calls: string[][], failure?: OrcaWriteError['code']): OrcaWri
     if (failure) throw new OrcaWriteError(failure);
   }
   return {
+    ...createOrcaWrite(join(tokenDir, 'missing-device')),
     async start(id, text) {
       await record('start', id, text);
       return openChat;

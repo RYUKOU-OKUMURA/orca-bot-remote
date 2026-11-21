@@ -79,8 +79,11 @@ function mutationEnvelope(method: string, sessionId: string, expectedRuntimeFenc
 
 export function messageParams(sessionId: string, text: string, fence: number, extras: MessageExtras = {}) {
   const attachments = extras.attachments ?? [];
-  const fileRefs = attachments.filter(a => a.kind === 'file').map(a =>
-    /[\s@]/.test(a.path) ? '@"' + a.path + '"' : '@' + a.path);
+  const fileRefs = attachments.filter(a => a.kind === 'file').map(({ path }) => {
+    if (!/[\s@]/.test(path)) return '@' + path;
+    if (path.includes('"') && !path.includes("'")) return "@'" + path + "'";
+    return '@"' + path.replaceAll('"', '\\"') + '"';
+  });
   const content = [text, ...fileRefs].filter(value => value.trim()).join('\n');
   const body = {
     kind: 'message', role: 'user',
@@ -198,7 +201,7 @@ async function runtimeFence(call: Call, sessionId: string) {
     'agentSession.history', { sessionId, direction: 'tail', limit: 1 }
   );
   const fence = history?.page?.fence;
-  if (history?.ok !== true || typeof fence !== 'number' || !Number.isSafeInteger(fence)) {
+  if (history?.ok !== true || typeof fence !== 'number' || !Number.isSafeInteger(fence) || fence < 1) {
     throw new OrcaWriteError('orca_failed');
   }
   return fence;
