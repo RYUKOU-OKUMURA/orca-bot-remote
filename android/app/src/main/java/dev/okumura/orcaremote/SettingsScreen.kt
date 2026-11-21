@@ -25,8 +25,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -37,7 +35,10 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 
-internal class SettingsModel : ViewModel() {
+internal class SettingsModel(connection: Connection?) : ViewModel() {
+    var url by mutableStateOf(connection?.url?.toString().orEmpty())
+    val token = TextFieldState(initialText = connection?.token.orEmpty())
+
     var checking by mutableStateOf(false)
         private set
     var errorText by mutableStateOf<String?>(null)
@@ -45,8 +46,8 @@ internal class SettingsModel : ViewModel() {
     var verified by mutableStateOf<Connection?>(null)
         private set
 
-    fun check(url: String, token: String) {
-        val candidate = Connection.parse(url, token)
+    fun check() {
+        val candidate = Connection.parse(url, token.text.toString())
         if (candidate == null) {
             errorText = "サーバー URL とトークンを確認してください"
             return
@@ -77,10 +78,8 @@ internal fun SettingsScreen(
     back: (() -> Unit)?,
     onSaved: (Connection) -> Unit,
 ) {
-    val model: SettingsModel = viewModel()
-    var url by rememberSaveable { mutableStateOf(connection?.url?.toString().orEmpty()) }
-    val token = remember { TextFieldState(initialText = connection?.token.orEmpty()) }
-    val checkConnection = withLocalNetworkPermission(model::permissionDenied) { model.check(url, token.text.toString()) }
+    val model: SettingsModel = viewModel { SettingsModel(connection) }
+    val checkConnection = withLocalNetworkPermission(model::permissionDenied, model::check)
     LaunchedEffect(model.verified) { model.verified?.let(onSaved) }
 
     Page("設定", back = back) { modifier ->
@@ -91,8 +90,8 @@ internal fun SettingsScreen(
             Text("Mac mini への接続", style = MaterialTheme.typography.headlineSmall)
             Text("Tailscale をオンにして、Mac mini のアドレスとトークンを入力してください。")
             OutlinedTextField(
-                value = url,
-                onValueChange = { url = it },
+                value = model.url,
+                onValueChange = { model.url = it },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("サーバー URL") },
                 placeholder = { Text("http://mac-mini:8787") },
@@ -101,7 +100,7 @@ internal fun SettingsScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             )
             OutlinedSecureTextField(
-                state = token,
+                state = model.token,
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("トークン") },
                 textObfuscationMode = TextObfuscationMode.Hidden,
@@ -109,7 +108,7 @@ internal fun SettingsScreen(
             )
             Button(
                 onClick = checkConnection,
-                enabled = !model.checking && url.isNotBlank() && token.text.isNotBlank(),
+                enabled = !model.checking && model.url.isNotBlank() && model.token.text.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(if (model.checking) "接続を確認中…" else "接続を確認して保存")
