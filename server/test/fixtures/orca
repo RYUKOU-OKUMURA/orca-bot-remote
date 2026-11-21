@@ -3,6 +3,12 @@ if [ -f "$0.calls" ]; then
     printf '%s\n' "$*" >> "$0.calls"
 fi
 case "$*" in
+    'worktree ps --json')
+        if [ -f "$0.fail-ps" ]; then exit 1; fi
+        if [ -f "$0.slow-ps" ]; then sleep 10; fi
+        result='{"worktrees":[]}'
+        if [ -f "$0.ps-result" ]; then result=$(/bin/cat "$0.ps-result"); fi
+        ;;
     'bot list --json')
         result='{"bots":[{"id":"main","name":"メインBot","specialty":"総合","paused":false,"agent":"codex"},{"id":"other","name":"専門Bot","paused":true}]}'
         ;;
