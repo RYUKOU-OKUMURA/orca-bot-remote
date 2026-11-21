@@ -119,10 +119,10 @@ internal fun Page(
 }
 
 @Composable
-internal fun <T> screenModel(key: String? = null, fetch: suspend () -> T): ScreenModel<T> {
+internal fun <T> screenModel(key: String? = null, refreshOnEnter: Boolean = false, fetch: suspend () -> T): ScreenModel<T> {
     val model: ScreenModel<T> = viewModel(key = key) { ScreenModel(fetch) }
     LaunchedEffect(model) {
-        if (model.data == null && model.error == null) model.refresh()
+        if (refreshOnEnter || (model.data == null && model.error == null)) model.refresh()
     }
     return model
 }
@@ -208,7 +208,7 @@ internal fun HomeScreen(
     openChat: (String, String, String) -> Unit,
 ) {
     val context = LocalContext.current.applicationContext
-    val bots = screenModel("bots") {
+    val bots = screenModel("bots", refreshOnEnter = true) {
         api.bots().bots.also { list ->
             meta.observeBots(list)
             QuickMemoWidgetProvider.updateCount(context, list.sumOf { it.needsYou })
@@ -363,7 +363,7 @@ internal fun ChatsScreen(
     openNewChat: () -> Unit,
     openChat: (Chat) -> Unit,
 ) {
-    val model = screenModel { api.chats(bot).also { meta.observeChats(bot, it.chats) } }
+    val model = screenModel(refreshOnEnter = true) { api.chats(bot).also { meta.observeChats(bot, it.chats) } }
     LaunchedEffect(refreshChats) {
         if (refreshChats) {
             model.load(afterCurrent = true)
@@ -428,6 +428,8 @@ internal fun NewChatScreen(
     }
 }
 
+private data class ConversationSnapshot(val messages: Messages, val requestedAt: Long)
+
 @Composable
 internal fun ConversationScreen(
     api: OrcaApi,
@@ -450,9 +452,16 @@ internal fun ConversationScreen(
         }
     }
     ApplySharedDraft(destination, sender)
-    val model = screenModel {
+    val model = screenModel(refreshOnEnter = true) {
         val requestedAt = System.currentTimeMillis()
-        sender.loadHistory { api.messages(bot, chatId) }.also { meta.markRead(bot, chatId, requestedAt) }
+        ConversationSnapshot(sender.loadHistory { api.messages(bot, chatId) }, requestedAt)
+    }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val snapshot = model.data
+    LaunchedEffect(snapshot, lifecycle) {
+        if (snapshot != null) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            meta.markRead(bot, chatId, snapshot.requestedAt)
+        }
     }
     val commands: ScreenModel<ChatCommands> = viewModel(key = "commands") { ScreenModel { api.commands(bot, chatId) } }
     val ready = model.data != null
@@ -482,13 +491,16 @@ internal fun ConversationScreen(
         }
     }
     BackHandler(sender.sending) {}
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val polling = shouldPoll(model.data?.state, model.error, model.data?.activeWorkers.orEmpty())
+    fun shouldPollNow(): Boolean {
+        val messages = model.data?.messages ?: return false
+        return shouldPoll(messages.state, model.error, messages.activeWorkers)
+    }
+    val polling = shouldPollNow()
     LaunchedEffect(lifecycle, model, polling) {
         if (polling) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 delay(5_000)
-                if (!shouldPoll(model.data?.state, model.error, model.data?.activeWorkers.orEmpty())) break
+                if (!shouldPollNow()) break
                 model.load()
             }
         }
@@ -500,7 +512,7 @@ internal fun ConversationScreen(
         }, enabled = !model.loading) { Text("更新") }
     }) { modifier ->
         Column(modifier.imePadding()) {
-            DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { result ->
+            DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { (result, _) ->
                 if (result.entries.isEmpty() && sender.sentMessages.isEmpty() && pending == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("メッセージはまだありません")
@@ -550,7 +562,7 @@ internal fun ConversationScreen(
                 Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(ListPadding),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                model.data?.let { data ->
+                model.data?.messages?.let { data ->
                     if (data.activeWorkers.isNotEmpty()) {
                         WorkingBadge("作業中 · " + data.activeWorkers.joinToString("、") { it.title })
                     } else if (data.state == "working" || data.state == "running") {

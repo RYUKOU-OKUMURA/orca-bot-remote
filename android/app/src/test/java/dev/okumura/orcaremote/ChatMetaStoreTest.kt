@@ -4,6 +4,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ChatMetaStoreTest {
+    @Test fun directConversationBeforeFirstHomeStillBaselinesOtherBots() {
+        val meta = ChatMetaStore(emptyMap()) { _, _ -> }
+        meta.markRead("opened", "chat", 5)
+        val bot = Bot("1", "other", paused = false, needsYou = 0, lastActivityAt = 20)
+        meta.observeBots(listOf(bot))
+        assertFalse(meta.unread(bot))
+        meta.observeBots(listOf(bot.copy(lastActivityAt = 30)))
+        assertTrue(meta.unread(bot.copy(lastActivityAt = 30)))
+    }
+
+    @Test fun newBotAfterAnEmptyBaselineIsUnread() {
+        val meta = ChatMetaStore(emptyMap()) { _, _ -> }
+        meta.observeBots(emptyList())
+        val bot = Bot("1", "B", paused = false, needsYou = 0, lastActivityAt = 10)
+        meta.observeBots(listOf(bot))
+        assertTrue(meta.unread(bot))
+    }
+
     @Test fun baselineUpdatesPinsAndRestoration() {
         val saved = mutableMapOf<String, BotMeta>()
         val meta = ChatMetaStore(saved) { k, v -> saved[k] = v }

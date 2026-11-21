@@ -14,12 +14,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -82,20 +86,21 @@ internal fun BotRow(bot: Bot, unread: Boolean, expanded: Boolean, open: () -> Un
 internal fun ChatRow(chat: Chat, bot: String, meta: ChatMetaStore, modifier: Modifier = Modifier, showPreview: Boolean = true, open: () -> Unit) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         ListRow(
-        title = chat.displayTitle,
-        onClick = open,
-        modifier = Modifier.weight(1f),
-        unread = meta.unread(bot, chat),
-        work = if (chat.working) "作業中" else null,
-        leading = { OrcaIcon(if (chat.home) R.drawable.ic_home else R.drawable.ic_chat) },
-        titleMaxLines = if (showPreview) 2 else 1,
-        subtitle = if (showPreview) markdownPreview(chat.lastSaid) ?: markdownPreview(chat.lastAsked) else null,
-        caption = relativeTime(chat.lastActivityAt, compact = true),
-        showChevron = false,
+            title = chat.displayTitle,
+            onClick = open,
+            modifier = Modifier.weight(1f),
+            unread = meta.unread(bot, chat),
+            work = if (chat.working) "作業中" else null,
+            leading = { OrcaIcon(if (chat.home) R.drawable.ic_home else R.drawable.ic_chat) },
+            titleMaxLines = if (showPreview) 2 else 1,
+            subtitle = if (showPreview) markdownPreview(chat.lastSaid) ?: markdownPreview(chat.lastAsked) else null,
+            caption = relativeTime(chat.lastActivityAt, compact = true),
+            showChevron = false,
         )
         val pinned = meta.pinned(bot, chat.id)
-        IconButton(onClick = { meta.togglePin(bot, chat.id) }) {
-            OrcaIcon(R.drawable.ic_pin, if (pinned) "ピン留めを解除" else "ピン留め",
+        IconToggleButton(checked = pinned, onCheckedChange = { meta.togglePin(bot, chat.id) }) {
+            OrcaIcon(if (pinned) R.drawable.ic_pin_filled else R.drawable.ic_pin,
+                if (pinned) "${chat.displayTitle}のピン留めを解除" else "${chat.displayTitle}をピン留め",
                 tint = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
         }
     }
@@ -131,11 +136,11 @@ internal fun ListRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (unread) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape)
+                if (unread) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape)
                     .semantics { contentDescription = "未読" })
                 Text(
                     title,
-                    fontWeight = if (unread) androidx.compose.ui.text.font.FontWeight.Bold else null,
+                    fontWeight = if (unread) FontWeight.Bold else null,
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = titleMaxLines,
@@ -166,8 +171,8 @@ internal fun ListRow(
 @Composable
 internal fun WorkingBadge(label: String) {
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-        androidx.compose.material3.CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary,
+        CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = orcaAccentText,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

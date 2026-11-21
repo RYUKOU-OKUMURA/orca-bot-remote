@@ -3,6 +3,7 @@ package dev.okumura.orcaremote
 import android.content.Context
 import androidx.compose.runtime.mutableStateMapOf
 import kotlinx.serialization.Serializable
+import okio.ByteString.Companion.encodeUtf8
 
 @Serializable
 internal data class BotMeta(
@@ -15,8 +16,11 @@ internal data class BotMeta(
 
 internal class ChatMetaStore(
     initial: Map<String, BotMeta>,
+    homeInitialized: Boolean = false,
+    private val finishHomeBaseline: () -> Unit = {},
     private val persist: (String, BotMeta) -> Unit,
 ) {
+    private var homeInitialized = homeInitialized
     private val bots = mutableStateMapOf<String, BotMeta>().apply { putAll(initial) }
     private fun meta(bot: String) = bots[bot] ?: BotMeta()
     private fun save(bot: String, value: BotMeta) {
@@ -27,15 +31,21 @@ internal class ChatMetaStore(
     }
 
     fun observeBots(list: List<Bot>) {
-        if (bots.isEmpty()) list.forEach { save(it.name, BotMeta(readAt = it.lastActivityAt ?: 0)) }
+        if (homeInitialized) return
+        list.forEach { bot ->
+            val old = meta(bot.name)
+            save(bot.name, old.copy(readAt = maxOf(old.readAt, bot.lastActivityAt ?: 0)))
+        }
+        homeInitialized = true
+        finishHomeBaseline()
     }
 
     fun observeChats(bot: String, chats: List<Chat>) {
         val old = meta(bot)
         val activity = chats.associate { it.id to (it.lastActivityAt ?: 0) }
-        val baseline = if (old.initialized) old.read else activity.mapValues { (id, at) ->
+        val baseline = if (old.initialized) old.read else old.read + activity.mapValues { (id, at) ->
             maxOf(at, old.read[id] ?: 0)
-        } + old.read.filterKeys { it !in activity }
+        }
         save(bot, old.copy(initialized = true, read = baseline, activity = activity,
             readAt = if (old.initialized) old.readAt else maxOf(old.readAt, activity.values.maxOrNull() ?: 0)))
     }
@@ -64,9 +74,12 @@ internal class ChatMetaStore(
 }
 
 internal fun Context.chatMetaStore(server: String): ChatMetaStore {
-    val prefs = getSharedPreferences("chat-meta-" + android.net.Uri.encode(server), Context.MODE_PRIVATE)
-    val initial = prefs.all.mapValues { apiJson.decodeFromString<BotMeta>(it.value as String) }
-    return ChatMetaStore(initial) { bot, value ->
-        prefs.edit().putString(bot, apiJson.encodeToString(value)).apply()
+    val prefs = getSharedPreferences("chat-meta-" + server.encodeUtf8().sha256().hex(), Context.MODE_PRIVATE)
+    val initial = prefs.all.filterKeys { it.startsWith("bot/") }.mapKeys { it.key.removePrefix("bot/") }
+        .mapValues { apiJson.decodeFromString<BotMeta>(it.value as String) }
+    return ChatMetaStore(initial, prefs.getBoolean("initialized", false), {
+        prefs.edit().putBoolean("initialized", true).apply()
+    }) { bot, value ->
+        prefs.edit().putString("bot/$bot", apiJson.encodeToString(value)).apply()
     }
 }
