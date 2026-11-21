@@ -32,13 +32,17 @@ case "$*" in
         result='{"items":[{"number":2,"title":"確認","status":"needs_you","lastActivityAt":200}]}'
         ;;
     'bot item list --bot=メインBot --all --limit 100 --json')
-        if [ -f "$0.slow" ]; then sleep 0.8; fi
+        if [ -f "$0.slow" ]; then sleep 0.6; fi
         result='{"items":[{"uid":"uid-1","number":1}],"nextCursor":"400:1"}'
         ;;
     'bot item list --bot=メインBot --all --limit 100 --cursor 400:1 --json')
         if [ -f "$0.slow" ]; then
-            printf '%s\n' "$$" > "$0.pid"
-            sleep 0.8
+            trap '' TERM
+            sleep 4 &
+            sleeper=$!
+            printf '%s %s\n' "$$" "$sleeper" > "$0.pids.tmp"
+            mv "$0.pids.tmp" "$0.pids"
+            wait "$sleeper"
         fi
         result='{"items":[{"uid":"uid-7","number":7}]}'
         ;;
@@ -73,6 +77,14 @@ case "$*" in
         printf '%s\n' '{"ok":false,"error":{"code":"runtime_unavailable","message":"LEAK-CANARY-stdout"}}'
         printf '%s\n' 'LEAK-CANARY-stderr' >&2
         exit 1
+        ;;
+    'automations runs --id overflow-stdout --limit 20 --json')
+        head -c 4194305 /dev/zero | tr '\000' ' '
+        result='{"runs":[]}'
+        ;;
+    'automations runs --id overflow-stderr --limit 20 --json')
+        head -c 4194305 /dev/zero >&2
+        result='{"runs":[]}'
         ;;
     *)
         printf '%s\n' 'unexpected CLI arguments' >&2

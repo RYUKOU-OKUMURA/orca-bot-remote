@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.ts';
 import { createApi } from '../src/http.ts';
+import { createOrca, OrcaError } from '../src/orca.ts';
 
 const orcaBin = fileURLToPath(new URL('./fixtures/orca', import.meta.url));
 const token = 'test-token';
@@ -34,7 +36,7 @@ function recordOrcaCalls(t: TestContext) {
   return { bin, calls: () => readFileSync(`${bin}.calls`, 'utf8').trim().split('\n') };
 }
 
-async function openApi(t: TestContext, summaryId?: string, bin = orcaBin, requestTimeoutMs?: number) {
+async function listenApi(t: TestContext, summaryId?: string, bin = orcaBin, requestTimeoutMs?: number) {
   const server = createApi(readConfig({
     HOST: '100.113.115.59', TOKEN_FILE: join(tokenDir, 'token'),
     ORCA_BIN: bin, SUMMARY_AUTOMATION_ID: summaryId
@@ -46,6 +48,11 @@ async function openApi(t: TestContext, summaryId?: string, bin = orcaBin, reques
     server.closeAllConnections();
     await once(server, 'close');
   });
+  return server;
+}
+
+async function openApi(t: TestContext, summaryId?: string, bin = orcaBin, requestTimeoutMs?: number) {
+  const server = await listenApi(t, summaryId, bin, requestTimeoutMs);
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return async (path: string, status = 200, authorization: string | null = `Bearer ${token}`, method = 'GET') => {
     const response = await fetch(base + path, {
@@ -56,6 +63,35 @@ async function openApi(t: TestContext, summaryId?: string, bin = orcaBin, reques
     if (status === 405) assert.equal(response.headers.get('allow'), 'GET');
     return response.json();
   };
+}
+
+const slowItemCalls = [
+  'bot list --json',
+  'bot item list --bot=メインBot --all --limit 100 --json',
+  'bot item list --bot=メインBot --all --limit 100 --cursor 400:1 --json'
+];
+
+function readPids(bin: string) {
+  const pids = readFileSync(`${bin}.pids`, 'utf8').trim().split(' ').map(Number);
+  assert.equal(pids.length, 2);
+  assert.ok(pids.every(pid => Number.isInteger(pid) && pid > 1));
+  return pids;
+}
+
+async function assertProcessesStopped(pids: number[]) {
+  for (const pid of pids) {
+    const deadline = performance.now() + 500;
+    while (true) {
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        assert.equal((error as NodeJS.ErrnoException).code, 'ESRCH');
+        break;
+      }
+      assert.ok(performance.now() < deadline, `CLI の PID ${pid} が残っています`);
+      await delay(10);
+    }
+  }
 }
 
 test('Bot 一覧は判断待ちの全ページを集計する', async t => {
@@ -178,16 +214,90 @@ test('リクエスト全体の期限で実行中の CLI を停止し、残りを
   const { bin, calls } = recordOrcaCalls(t);
   writeFileSync(`${bin}.slow`, '');
   const get = await openApi(t, undefined, bin, 1200);
+  const started = performance.now();
   assert.deepEqual(await get(`/api/items/${bot}/7`, 502), {
     error: 'orca_failed', message: 'Orca の読み取りが制限時間内に終わりませんでした。'
   });
-  await delay(50);
-  assert.throws(() => process.kill(Number(readFileSync(`${bin}.pid`, 'utf8')), 0), { code: 'ESRCH' });
-  assert.deepEqual(calls(), [
-    'bot list --json',
-    'bot item list --bot=メインBot --all --limit 100 --json',
-    'bot item list --bot=メインBot --all --limit 100 --cursor 400:1 --json'
-  ]);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed <= 1700, `期限は1200msですが応答まで${elapsed}msかかりました`);
+  await assertProcessesStopped(readPids(bin));
+  assert.deepEqual(calls(), slowItemCalls);
+});
+
+test('期限タイマーが発火する前でも期限に達したら次の CLI を起動しない', async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const { signal } = new AbortController();
+  const orca = createOrca(bin, undefined, signal, 100);
+  const [bot] = await orca.listBots();
+  now = 100;
+  await assert.rejects(orca.chats(bot), OrcaError);
+  assert.deepEqual(calls(), ['bot list --json']);
+});
+
+test('個別の CLI の期限でも親と子を停止して 502 を返す', { timeout: 5000 }, async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.slow`, '');
+  const realSetTimeout = setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) =>
+    realSetTimeout(callback, ms === 20_000 ? 1000 : ms, ...args));
+  const get = await openApi(t, undefined, bin);
+  assert.deepEqual(await get(`/api/items/${bot}/7`, 502), {
+    error: 'orca_failed', message: 'Orca の読み取りに失敗しました。'
+  });
+  await assertProcessesStopped(readPids(bin));
+  assert.deepEqual(calls(), slowItemCalls);
+});
+
+test('クライアント切断時は CLI を停止し、後続の CLI 起動と応答書き込みを行わない', { timeout: 5000 }, async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.slow`, '');
+  const timers = t.mock.method(globalThis, 'setTimeout');
+  const realClearTimeout = clearTimeout;
+  let cliTimer: ReturnType<typeof setTimeout> | undefined;
+  const cliClosed = Promise.withResolvers<void>();
+  const cleared = t.mock.method(globalThis, 'clearTimeout', timer => {
+    realClearTimeout(timer);
+    if (cliTimer && timer === cliTimer) cliClosed.resolve();
+  });
+  const server = await listenApi(t, undefined, bin, 4990);
+  const received = once(server, 'request');
+  const client = request({
+    host: '127.0.0.1', port: (server.address() as AddressInfo).port,
+    path: `/api/items/${bot}/7`, headers: { Authorization: `Bearer ${token}` }
+  });
+  client.on('error', () => {});
+  t.after(() => { client.destroy(); });
+  client.end();
+  const [, response] = await received;
+  const writeHead = t.mock.method(response, 'writeHead');
+  const closed = once(response, 'close');
+  const deadline = performance.now() + 2000;
+  while (!existsSync(`${bin}.pids`)) {
+    assert.ok(performance.now() < deadline, 'CLI の親と子が起動しませんでした');
+    await delay(10);
+  }
+  const pids = readPids(bin);
+  const requestTimer = timers.mock.calls.find(({ arguments: [, ms] }) => ms > 4900 && ms <= 4990)?.result;
+  cliTimer = timers.mock.calls.findLast(({ arguments: [, ms] }) => ms === 20_000)?.result;
+  assert.ok(requestTimer && cliTimer);
+  client.destroy();
+  await closed;
+  assert.ok(cleared.mock.calls.some(({ arguments: [timer] }) => timer === requestTimer));
+  await assertProcessesStopped(pids);
+  await cliClosed.promise;
+  assert.deepEqual(calls(), slowItemCalls);
+  assert.equal(writeHead.mock.callCount(), 0);
+});
+
+test('標準出力と標準エラー出力はそれぞれ4 MiBを超えると 502 を返す', async t => {
+  for (const id of ['overflow-stdout', 'overflow-stderr']) {
+    const get = await openApi(t, id);
+    assert.deepEqual(await get('/api/summary', 502), {
+      error: 'orca_failed', message: 'Orca の読み取りに失敗しました。'
+    });
+  }
 });
 
 test('既知パスの GET 以外は 405', async t => {

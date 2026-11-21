@@ -42,7 +42,7 @@ export function createApi({ orcaBin, digest, summaryId }: {
       console.log(`${JSON.stringify(logPath)} ${response.statusCode} ${Math.round(performance.now() - started)}ms`);
     });
     function send(status: number, body: object) {
-      if (response.writableEnded) return;
+      if (response.destroyed || response.writableEnded) return;
       if (performance.now() >= deadline) {
         status = 502;
         body = timedOut;
@@ -78,10 +78,17 @@ export function createApi({ orcaBin, digest, summaryId }: {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => {
+    function stop() {
+      clearTimeout(timer);
       controller.abort();
+    }
+    const timer = setTimeout(() => {
+      stop();
       send(502, timedOut);
     }, Math.max(0, Math.ceil(deadline - performance.now())));
+    response.once('close', () => {
+      if (!response.writableEnded) stop();
+    });
     const orca = createOrca(orcaBin, summaryId, controller.signal, deadline);
     try {
       if (bots) return send(200, { bots: await orca.bots() });
@@ -113,8 +120,7 @@ export function createApi({ orcaBin, digest, summaryId }: {
       }
       return send(502, { error: 'orca_failed', message: 'Orca の読み取りに失敗しました。' });
     } finally {
-      clearTimeout(timer);
-      controller.abort();
+      stop();
     }
   });
 }

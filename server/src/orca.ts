@@ -1,5 +1,7 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
+
+const maxOutputBytes = 4 * 1024 * 1024;
 
 export class OrcaError extends Error {
   code: string | undefined;
@@ -49,15 +51,51 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     signal.throwIfAborted();
     if (performance.now() >= deadline) throw new OrcaError();
     return new Promise((resolve, reject) => {
-      execFile(orcaBin, [...args, '--json'], {
+      const child = spawn(orcaBin, [...args, '--json'], {
         env: { HOME: homedir(), PATH: '/usr/bin:/bin' },
-        signal,
-        timeout: 20_000,
-        killSignal: 'SIGKILL',
-        maxBuffer: 4 * 1024 * 1024
-      }, (error, stdout) => {
-        const reply = parseResult(stdout);
-        if (error || reply.ok !== true || !reply.result) {
+        // Give the CLI and its descendants a process group of their own.
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      const output: Buffer[] = [];
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let stopped = false;
+      function stop() {
+        if (stopped) return;
+        stopped = true;
+        if (child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') child.kill('SIGKILL');
+          }
+        }
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
+
+      const timer = setTimeout(stop, 20_000);
+      signal.addEventListener('abort', stop, { once: true });
+      child.on('error', stop);
+      child.stdout.on('error', stop);
+      child.stderr.on('error', stop);
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > maxOutputBytes) return stop();
+        output.push(chunk);
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrBytes += chunk.length;
+        if (stderrBytes > maxOutputBytes) stop();
+      });
+      child.once('close', code => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', stop);
+        if (stopped) return reject(new OrcaError());
+
+        const reply = parseResult(Buffer.concat(output).toString('utf8'));
+        if (code !== 0 || reply.ok !== true || !reply.result) {
           reject(new OrcaError(reply.error?.code));
         } else {
           resolve(reply.result as T);
