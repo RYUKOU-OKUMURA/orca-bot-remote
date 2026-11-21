@@ -12,6 +12,7 @@ const SUMMARY = /^\/api\/summary$/;
 const UUID = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 
 const notFound = { error: 'not_found', message: '対象が見つかりません。' };
+const timedOut = { error: 'orca_failed', message: 'Orca の読み取りが制限時間内に終わりませんでした。' };
 
 function decode(segment: string) {
   try {
@@ -28,11 +29,10 @@ function messageLimit(query: string) {
 
 export function createApi({ orcaBin, digest, summaryId }: {
   orcaBin: string; digest: Buffer; summaryId?: string;
-}) {
-  const orca = createOrca(orcaBin, summaryId);
-
+}, requestTimeoutMs = 55_000) {
   return createServer(async (request, response) => {
     const started = performance.now();
+    const deadline = started + requestTimeoutMs;
     const url = request.url ?? '';
     const queryAt = url.indexOf('?');
     const path = queryAt === -1 ? url : url.slice(0, queryAt);
@@ -42,6 +42,11 @@ export function createApi({ orcaBin, digest, summaryId }: {
       console.log(`${JSON.stringify(logPath)} ${response.statusCode} ${Math.round(performance.now() - started)}ms`);
     });
     function send(status: number, body: object) {
+      if (response.destroyed || response.writableEnded) return;
+      if (performance.now() >= deadline) {
+        status = 502;
+        body = timedOut;
+      }
       response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
       response.end(JSON.stringify(body));
     }
@@ -72,6 +77,19 @@ export function createApi({ orcaBin, digest, summaryId }: {
       return send(405, { error: 'bad_request', message: 'GET のみ使用できます。' });
     }
 
+    const controller = new AbortController();
+    function stop() {
+      clearTimeout(timer);
+      controller.abort();
+    }
+    const timer = setTimeout(() => {
+      stop();
+      send(502, timedOut);
+    }, Math.max(0, Math.ceil(deadline - performance.now())));
+    response.once('close', () => {
+      if (!response.writableEnded) stop();
+    });
+    const orca = createOrca(orcaBin, summaryId, controller.signal, deadline);
     try {
       if (bots) return send(200, { bots: await orca.bots() });
       if (items) return send(200, { items: await orca.items() });
@@ -101,6 +119,8 @@ export function createApi({ orcaBin, digest, summaryId }: {
         return send(404, notFound);
       }
       return send(502, { error: 'orca_failed', message: 'Orca の読み取りに失敗しました。' });
+    } finally {
+      stop();
     }
   });
 }
