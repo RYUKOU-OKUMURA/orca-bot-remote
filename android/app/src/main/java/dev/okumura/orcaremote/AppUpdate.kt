@@ -65,16 +65,18 @@ internal fun AppUpdateSection(connection: Connection?) {
     }
     OrcaOutlinedButton(enabled = canUpdate && !downloading, onClick = {
         if (api == null || latest == null || downloading) return@OrcaOutlinedButton
-        downloading = true
-        downloaded = 0
         installStatus = null
         scope.launch {
             try {
-                if (!prepareAppInstall(context, api, latest) { downloaded = it }) {
-                    installStatus = "「この提供元のアプリを許可」をオンにして、戻ったらもう一度「更新」を押してください"
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    installStatus = "「常に許可」（古い Android では「この提供元のアプリを許可」）を選んで、戻ったらもう一度「更新」を押してください"
                     context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                         Uri.fromParts("package", context.packageName, null)))
+                    return@launch
                 }
+                downloaded = 0
+                downloading = true
+                prepareAppInstall(context, api, latest) { downloaded = it }
             } catch (_: InvalidAppDownload) {
                 installStatus = "ダウンロードしたファイルを確認できませんでした"
             } catch (_: IOException) {
@@ -102,7 +104,7 @@ private suspend fun prepareAppInstall(
     api: OrcaApi,
     release: AppRelease,
     onProgress: (Long) -> Unit,
-): Boolean = withContext(Dispatchers.IO) {
+) = withContext(Dispatchers.IO) {
     val dir = File(context.cacheDir, "update")
     if (!dir.mkdirs() && !dir.isDirectory) throw IOException("Cannot create update directory")
     val apk = File.createTempFile("orca-", ".apk", dir)
@@ -114,8 +116,6 @@ private suspend fun prepareAppInstall(
         if (!matchesAppArchive(release, context.packageName, archive?.packageName, archive?.longVersionCode)) {
             throw InvalidAppDownload()
         }
-        if (!manager.canRequestPackageInstalls()) return@withContext false
-
         val installer = manager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)
@@ -139,7 +139,6 @@ private suspend fun prepareAppInstall(
         } finally {
             if (!committed) installer.abandonSession(id)
         }
-        true
     } finally {
         apk.delete()
     }
