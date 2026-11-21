@@ -17,8 +17,11 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
 @Serializable
@@ -97,6 +100,18 @@ internal val apiJson = Json {
     ignoreUnknownKeys = true
 }
 
+@Serializable
+internal data class NewChat(val chatId: String)
+
+@Serializable
+internal data class WriteReceipt(val ok: Boolean)
+
+@Serializable
+private data class WriteInput(val text: String)
+
+@Serializable
+private data class WriteError(val error: String)
+
 internal class Connection private constructor(val url: HttpUrl, val token: String) {
     companion object {
         fun parse(url: String, token: String): Connection? {
@@ -118,6 +133,11 @@ internal enum class ApiError(val text: String) {
     NOT_FOUND("対象が見つかりません"),
     ORCA("Orca の読み取りに失敗しました"),
     RESPONSE("サーバーの応答を読み取れませんでした"),
+    BAD_REQUEST("1〜10,000文字で入力してください"),
+    CONFLICT("状態が変わったため送れませんでした"),
+    WRITE_FAILED("Bot に送れませんでした"),
+    WRITE_UNAVAILABLE("Mac mini の書き込み設定が済んでいません。"),
+    UNKNOWN_RESULT("送れたか確認できませんでした。会話を更新して確かめてください。"),
 }
 
 internal class ApiFailure(val error: ApiError) : Exception()
@@ -131,13 +151,32 @@ internal class OrcaApi(private val connection: Connection) {
     suspend fun item(bot: String, number: Long): ItemDetail = get("items", bot, number.toString())
     suspend fun summary(): LatestSummary = get("summary")
 
-    private suspend inline fun <reified T> get(vararg path: String, limit: Int? = null): T {
+    suspend fun startChat(bot: String, text: String): String {
+        val result = post<NewChat>(201, text, "bots", bot, "chats")
+        if (result.chatId.isBlank()) throw ApiFailure(ApiError.UNKNOWN_RESULT)
+        return result.chatId
+    }
+
+    suspend fun sendMessage(bot: String, chatId: String, text: String) {
+        val result = post<WriteReceipt>(202, text, "bots", bot, "chats", chatId, "messages")
+        if (!result.ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
+    }
+
+    suspend fun answer(bot: String, number: Long, text: String) {
+        val result = post<WriteReceipt>(200, text, "items", bot, number.toString(), "answer")
+        if (!result.ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
+    }
+
+    private fun request(path: Array<out String>, limit: Int? = null): Request.Builder {
         val url = connection.url.newBuilder().addPathSegment("api")
         path.forEach { url.addPathSegment(it) }
         if (limit != null) url.addQueryParameter("limit", limit.toString())
-        val request = Request.Builder().url(url.build())
+        return Request.Builder().url(url.build())
             .header("Authorization", "Bearer ${connection.token}")
-            .build()
+    }
+
+    private suspend inline fun <reified T> get(vararg path: String, limit: Int? = null): T {
+        val request = request(path, limit).build()
         return try {
             val body = client.newCall(request).readBody()
             withContext(Dispatchers.Default) { apiJson.decodeFromString(body) }
@@ -150,6 +189,18 @@ internal class OrcaApi(private val connection: Connection) {
         }
     }
 
+    private suspend inline fun <reified T> post(status: Int, text: String, vararg path: String): T {
+        val request = request(path).post(writeBody(text)).build()
+        return try {
+            val body = writeClient.newCall(request).readBody(status)
+            withContext(Dispatchers.Default) { apiJson.decodeFromString(body) }
+        } catch (_: IOException) {
+            throw ApiFailure(ApiError.UNKNOWN_RESULT)
+        } catch (_: SerializationException) {
+            throw ApiFailure(ApiError.UNKNOWN_RESULT)
+        }
+    }
+
     companion object {
         private val client = OkHttpClient.Builder()
             .proxy(Proxy.NO_PROXY)
@@ -159,10 +210,39 @@ internal class OrcaApi(private val connection: Connection) {
             .readTimeout(65, TimeUnit.SECONDS)
             .callTimeout(70, TimeUnit.SECONDS)
             .build()
+        internal val writeClient = client.newBuilder().retryOnConnectionFailure(false).build()
     }
 }
 
-private suspend fun Call.readBody(): String = suspendCancellableCoroutine { continuation ->
+internal fun writeBody(text: String): RequestBody {
+    val body = apiJson.encodeToString(WriteInput(text)).toRequestBody("application/json".toMediaType())
+    // Even a response-driven follow-up must never replay the owner's input.
+    return object : RequestBody() {
+        override fun contentType() = body.contentType()
+        override fun contentLength() = body.contentLength()
+        override fun writeTo(sink: okio.BufferedSink) = body.writeTo(sink)
+        override fun isOneShot() = true
+    }
+}
+
+internal fun writeResponseError(status: Int, body: String = ""): ApiError = when (status) {
+    400 -> ApiError.BAD_REQUEST
+    401 -> ApiError.UNAUTHORIZED
+    404 -> ApiError.NOT_FOUND
+    409 -> ApiError.CONFLICT
+    502 -> {
+        val code = try {
+            apiJson.decodeFromString<WriteError>(body).error
+        } catch (_: SerializationException) {
+            null
+        }
+        if (code == "orca_failed") ApiError.WRITE_FAILED else ApiError.UNKNOWN_RESULT
+    }
+    503 -> ApiError.WRITE_UNAVAILABLE
+    else -> ApiError.UNKNOWN_RESULT
+}
+
+private suspend fun Call.readBody(writeStatus: Int? = null): String = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
@@ -172,7 +252,11 @@ private suspend fun Call.readBody(): String = suspendCancellableCoroutine { cont
         override fun onResponse(call: Call, response: Response) {
             try {
                 val body = response.use {
-                    if (!it.isSuccessful) {
+                    if (writeStatus != null && it.code != writeStatus) {
+                        val errorBody = if (it.code == 502) it.body.string() else ""
+                        throw ApiFailure(writeResponseError(it.code, errorBody))
+                    }
+                    if (writeStatus == null && !it.isSuccessful) {
                         throw ApiFailure(when (it.code) {
                             401 -> ApiError.UNAUTHORIZED
                             404 -> ApiError.NOT_FOUND
