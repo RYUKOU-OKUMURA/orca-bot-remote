@@ -123,7 +123,7 @@ async function assertProcessesStopped(pids: number[]) {
   }
 }
 
-test('Bot 一覧は判断待ちの全ページ、ID が一致するマスコット、最新の開いたチャットを返す', async t => {
+function isolatedHome(t: TestContext) {
   const testHome = mkdtempSync(join(tokenDir, 'home-'));
   const home = process.env.HOME;
   process.env.HOME = testHome;
@@ -131,6 +131,11 @@ test('Bot 一覧は判断待ちの全ページ、ID が一致するマスコッ�
     if (home === undefined) delete process.env.HOME;
     else process.env.HOME = home;
   });
+  return testHome;
+}
+
+test('Bot 一覧は判断待ちの全ページ、ID が一致するマスコット、最新の開いたチャットを返す', async t => {
+  const testHome = isolatedHome(t);
   const get = await openApi(t);
   const expected = { bots: [
     { id: 'main', name: 'メインBot', specialty: '総合', paused: false, needsYou: 2,
@@ -150,6 +155,86 @@ test('Bot 一覧は判断待ちの全ページ、ID が一致するマスコッ�
   }
   expected.bots[0].avatar = 'mascot:A1';
   assert.deepEqual(await get('/api/bots'), expected);
+});
+
+test('秘書ボードは認証とメソッドを検査し、アクセスログにはパスだけを記録する', async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  const get = await openApi(t, undefined, bin);
+  const log = t.mock.method(console, 'log', () => {});
+  assert.deepEqual(await get('/api/board', 401, null), { error: 'unauthorized' });
+  assert.deepEqual(await get('/api/board', 401, 'Bearer wrong', 'POST'), { error: 'unauthorized' });
+  assert.equal((await get('/api/board?private', 405, undefined, 'POST')).error, 'bad_request');
+  assert.match(log.mock.calls.at(-1)!.arguments[0], /^"\/api\/board" 405 \d+ms$/);
+  assert.deepEqual(calls(), ['']);
+});
+
+test('秘書ボードはボット・稼働中セッション・全ページの優先順タスクを同じ読み取りで返す', async t => {
+  const mascotDir = join(isolatedHome(t), '.orca', 'bots', 'main');
+  mkdirSync(mascotDir, { recursive: true });
+  writeFileSync(join(mascotDir, 'bot.json'), '{"id":"main","avatar":"mascot:A1"}');
+  const { bin, calls } = recordOrcaCalls(t);
+  const main = { bot: 'メインBot', avatar: 'mascot:A1' };
+  const other = { bot: '専門Bot', avatar: null };
+  writeFileSync(bin + '.ps-result', JSON.stringify({ worktrees: [
+    { bot: main.bot, agents: [{ state: 'working', taskTitle: '担当\n作業', toolName: 'execute' }] },
+    { bot: main.bot, botHome: true, agents: [
+      { state: 'running', orcaSessionId: 'new', taskTitle: '予備' },
+      { state: 'done', orcaSessionId: 'old' }
+    ] },
+    { bot: other.bot, botHome: true, agents: [
+      { mainAgent: { state: 'working' }, orcaSessionId: 'running', conversationName: '別の会話', toolName: 'read' }
+    ] }
+  ] }));
+  const get = await openApi(t, undefined, bin);
+  const before = Date.now();
+  const { updatedAt, bots, sessions, tasks } = await get('/api/board');
+  assert.ok(Number.isSafeInteger(updatedAt) && updatedAt >= before && updatedAt <= Date.now());
+  assert.deepEqual(bots, [
+    { id: 'main', name: main.bot, avatar: main.avatar, working: true, activeWork: '担当 作業', needsYou: 1, paused: false },
+    { id: 'other', name: other.bot, avatar: null, working: true, activeWork: '応答を作成中', needsYou: 1, paused: true }
+  ]);
+  assert.deepEqual(sessions, [
+    { ...main, kind: 'worker', title: '担当 作業', tool: 'execute', chatId: null },
+    { ...main, kind: 'chat', title: '会話', tool: null, chatId: 'new' },
+    { ...other, kind: 'chat', title: '別の会話', tool: 'read', chatId: 'running' }
+  ]);
+  assert.deepEqual(tasks, [
+    { ...other, number: 2, title: '確認', status: 'needs_you', chatId: null, lastActivityAt: 200 },
+    { ...main, number: 7, title: '判断待ち', status: 'needs_you', chatId: 'chat-7', lastActivityAt: 100 },
+    { ...main, number: 6, title: '進行中', status: 'in_progress', chatId: null, lastActivityAt: null },
+    { ...main, number: 5, title: '予定', status: 'planned', chatId: null, lastActivityAt: 900 }
+  ]);
+  assert.deepEqual(calls().filter(call => call.startsWith('bot item')).sort(), [
+    'bot item list --bot=メインBot --limit 100 --json', 'bot item list --bot=メインBot --limit 100 --cursor 100:7 --json',
+    'bot item list --bot=専門Bot --limit 100 --json'
+  ].sort());
+  clearReadCache();
+  writeFileSync(bin + '.fail-chats', '');
+  assert.equal((await get('/api/board')).sessions[1].title, '予備');
+});
+
+test('秘書ボードは同名ワーカーを含む20セッションと上位30項目を返し、判断待ちは全件数える', async t => {
+  const { bin } = recordOrcaCalls(t);
+  writeFileSync(bin + '.ps-result', JSON.stringify({ worktrees: [{ bot: 'メインBot', agents:
+    Array.from({ length: 25 }, () => ({ state: 'working', taskTitle: '同一作業' })) }] }));
+  writeFileSync(bin + '.items-result', JSON.stringify({ items: Array.from({ length: 35 }, (_, i) =>
+    ({ number: i + 1, title: '予定の確認', status: 'needs_you', lastActivityAt: i || null })) }));
+  const get = await openApi(t, undefined, bin);
+  const board = await get('/api/board');
+  assert.equal(board.sessions.length, 20);
+  assert.equal(board.bots[1].needsYou, 35);
+  assert.deepEqual(board.tasks.map(row => row.lastActivityAt), [100, ...Array.from({ length: 29 }, (_, i) => 34 - i)]);
+});
+
+test('秘書ボードは worktree ps が失敗してもボットと項目を返す', async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  writeFileSync(bin + '.fail-ps', '');
+  const get = await openApi(t, undefined, bin);
+  const { bots, sessions, tasks } = await get('/api/board');
+  assert.deepEqual(bots.map(bot => [bot.working, bot.activeWork, bot.needsYou]), [[false, null, 1], [false, null, 1]]);
+  assert.deepEqual(sessions, []);
+  assert.equal(tasks.length, 4);
+  assert.ok(!calls().some(call => call.startsWith('bot chats')));
 });
 
 test('最新のチャットを取得できなくても Bot と判断待ちの件数は返す', async t => {

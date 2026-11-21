@@ -116,7 +116,7 @@ printf '{"ok":true,"result":%s}\\n' "$result"
 
   const log = calls();
   for (const bot of bots) {
-    assert.ok(log.includes(`- bot item list --bot=${bot.name} --status`));
+    assert.ok(log.includes(`- bot item list --bot=${bot.name} --limit 100 --json`));
     assert.ok(log.includes(`- bot chats --bot=${bot.name} --json`));
   }
   let active = 0;
@@ -135,7 +135,7 @@ test('one poller broadcasts only changed fields and retains good values across C
   await until(() => polls() >= 3);
   const changes = (frames: string[]) => frames.filter(frame => frame !== ': ping').slice(1);
   let count = 0;
-  async function expectChange(items: boolean, summary: boolean, bots: boolean) {
+  async function expectChange(items: boolean, summary: boolean, bots: boolean, board = items) {
     count++;
     for (const { frames } of [first, second]) {
       await until(() => changes(frames).length >= count);
@@ -143,7 +143,7 @@ test('one poller broadcasts only changed fields and retains good values across C
       assert.match(frame, /^event: change\ndata: /);
       const { at, ...flags } = JSON.parse(frame.split('\ndata: ')[1]);
       assert.ok(Number.isSafeInteger(at));
-      assert.deepEqual(flags, { items, summary, bots });
+      assert.deepEqual(flags, { items, summary, bots, board });
     }
   }
   assert.equal(changes(first.frames).length, 0);
@@ -169,6 +169,10 @@ test('one poller broadcasts only changed fields and retains good values across C
   await expectChange(false, false, true);
   writeFileSync(bin + '.items-result', '{"items":[]}');
   await expectChange(true, false, true);
+  for (const [status, title] of [['planned', '準備'], ['in_progress', '準備'], ['in_progress', '実装']]) {
+    writeFileSync(bin + '.items-result', JSON.stringify({ items: [{ number: 3, status, title }] }));
+    await expectChange(false, false, false, true);
+  }
   writeFileSync(bin + '.ps-result', JSON.stringify({ worktrees: [{ bot: 'メインBot', agents: [{ state: 'working' }] }] }));
   clearReadCache();
   await expectChange(false, false, true);

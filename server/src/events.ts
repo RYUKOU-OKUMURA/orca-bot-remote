@@ -1,7 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import { createOrca } from './orca.ts';
 
-type Snapshot = { items?: string; summary?: number | null; bots?: string };
+type Snapshot = { items?: string; summary?: number | null; bots?: string; board?: string };
 
 // A different CLI listing order alone is not a change.
 function digest(rows: unknown[][]) {
@@ -47,16 +47,18 @@ export function createEvents(orcaBin: string, summaryId: string | undefined, rea
     if (controller.signal.aborted) return;
     controller.abort(); // Cancel sibling CLI reads left running after a failed page.
     const next: Snapshot = {
+      board: rows ? digest(rows.board) : previous.board,
       items: rows ? digest(rows.items) : previous.items,
       bots: rows?.bots ? digest(rows.bots) : previous.bots,
       summary: summary === undefined ? previous.summary : summary
     };
     const changes = {
+      board: previous.board !== undefined && previous.board !== next.board,
       items: previous.items !== undefined && previous.items !== next.items,
       summary: previous.summary !== undefined && previous.summary !== next.summary,
       bots: previous.bots !== undefined && previous.bots !== next.bots
     };
-    if (changes.items || changes.summary || changes.bots) {
+    if (changes.items || changes.summary || changes.bots || changes.board) {
       broadcast(event('change', { ...changes, at: Date.now() }));
     }
     timer = setTimeout(poll, pollIntervalMs, next);

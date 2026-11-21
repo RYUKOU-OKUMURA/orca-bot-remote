@@ -90,7 +90,8 @@ type Worktree = {
     taskTitle?: unknown; conversationName?: unknown; toolName?: unknown;
   }[];
 };
-type ActiveWork = { chatIds: Set<string>; workers: { title: string; tool: string | null }[] };
+type WorkLabel = { title: string; tool: string | null };
+type ActiveWork = { chats: Map<string, WorkLabel>; workers: WorkLabel[] };
 type Entry = { kind: 'message'; role: string; text: string } | { kind: 'tool'; name: string; state?: string | null };
 type Item = {
   uid: string; number: number; title: string; status: string; owner: { botId: string };
@@ -114,8 +115,20 @@ function validChats(chats: Chat[] | null): chats is Chat[] {
   );
 }
 
-const newestFirst = (a: { lastActivityAt?: number }, b: { lastActivityAt?: number }) =>
+const newestFirst = (a: { lastActivityAt?: number | null }, b: { lastActivityAt?: number | null }) =>
   (b.lastActivityAt ?? -Infinity) - (a.lastActivityAt ?? -Infinity);
+
+const boardStatuses = ['needs_you', 'in_progress', 'planned'];
+
+function label(value: unknown, limit = 80) {
+  if (typeof value !== 'string') return '';
+  const line = value.replace(/[\s\p{Cc}]+/gu, ' ').trimStart();
+  return Array.from(line).slice(0, limit).join('').trimEnd();
+}
+
+function activeWorkTitle(work?: ActiveWork) {
+  return work?.workers[0]?.title ?? (work?.chats.size ? '応答を作成中' : null);
+}
 
 async function readMascots(signal: AbortSignal) {
   const root = join(homedir(), '.orca', 'bots');
@@ -232,11 +245,6 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
   async function activeWorkByBot(required = false) {
     const byBot = new Map<string, ActiveWork>();
     const working = (state: unknown) => state === 'working' || state === 'running';
-    function label(value: unknown) {
-      if (typeof value !== 'string') return '';
-      const line = value.replace(/[\s\p{Cc}]+/gu, ' ').trimStart();
-      return line.match(/^.{0,80}/u)![0].trimEnd();
-    }
     const valid = (trees: Worktree[]) => trees.every(tree => Array.isArray(tree?.agents) &&
       tree.agents.every(agent => agent && typeof agent === 'object' && !Array.isArray(agent)));
     const worktrees = await readList<Worktree>('worktrees', 3_000, valid, () => true, 'worktree', 'ps').catch(() => null);
@@ -251,16 +259,17 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
         if (!working(agent.state) && !working(agent.mainAgent?.state)) continue;
         let work = byBot.get(wt.bot);
         if (!work) {
-          work = { chatIds: new Set(), workers: [] };
+          work = { chats: new Map(), workers: [] };
           byBot.set(wt.bot, work);
         }
+        const title = label(agent.taskTitle) || label(agent.conversationName);
+        const tool = label(agent.toolName) || null;
         if (wt.botHome === true) {
-          if (typeof agent.orcaSessionId === 'string' && agent.orcaSessionId) work.chatIds.add(agent.orcaSessionId);
-        } else if (work.workers.length < 10) {
-          const title = label(agent.taskTitle) || label(agent.conversationName) || label(wt.displayName) || 'ワーカー作業中';
-          if (!work.workers.some(worker => worker.title === title)) {
-            work.workers.push({ title, tool: label(agent.toolName) || null });
+          if (typeof agent.orcaSessionId === 'string' && agent.orcaSessionId) {
+            work.chats.set(agent.orcaSessionId, { title: title || '応答を作成中', tool });
           }
+        } else {
+          work.workers.push({ title: title || label(wt.displayName) || 'ワーカー作業中', tool });
         }
       }
     }
@@ -309,6 +318,34 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     return items;
   }
 
+  async function openItems(bot: Bot) {
+    const items: Item[] = [];
+    for await (const page of itemPages(bot)) items.push(...page.filter(item => boardStatuses.includes(item.status)));
+    return items;
+  }
+
+  async function boardSessions(bots: Bot[], activity: Map<string, ActiveWork>, avatars: Map<string, string>) {
+    const sessions = bots.flatMap(bot => {
+      const work = activity.get(bot.name);
+      if (!work) return [];
+      const owner = { bot: bot.name, avatar: avatars.get(bot.id) ?? null };
+      return [
+        ...work.workers.map(worker => ({ ...owner, kind: 'worker', ...worker, chatId: null })),
+        ...Array.from(work.chats, ([chatId, chat]) => ({ ...owner, kind: 'chat', ...chat, chatId }))
+      ];
+    }).slice(0, 20);
+    await Promise.all(bots.map(async bot => {
+      const active = sessions.filter(session => session.bot === bot.name && session.chatId !== null);
+      if (!active.length) return;
+      const chats = await listChats(bot).catch(() => null);
+      if (!validChats(chats)) return;
+      for (const session of active) {
+        session.title = label(chats.find(chat => chat.id === session.chatId)?.title) || session.title;
+      }
+    }));
+    return sessions;
+  }
+
   async function findItemUid(bot: Bot, number: number) {
     // Orca's item show takes a UID or an unscoped number.
     for await (const page of itemPages(bot, '--all')) {
@@ -344,16 +381,42 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
         const chats = await readEachBot(bot => latestChat(bot, true));
         return { activity, chats };
       }
-      const [lists, details] = await Promise.all([readEachBot(needsYou), detailsByBot().catch(() => null)]);
+      const [lists, details] = await Promise.all([readEachBot(openItems), detailsByBot().catch(() => null)]);
+      const waiting = lists.map(items => items.filter(item => item.status === 'needs_you'));
       return {
-        items: lists.flatMap((items, i) => items.map(item =>
+        board: lists.flatMap((items, i) => items.map(item =>
+          [bots[i].name, item.number, item.status, item.lastActivityAt ?? null, item.title, item.chat?.id ?? null])),
+        items: waiting.flatMap((items, i) => items.map(item =>
           [bots[i].name, item.number, item.status, item.lastActivityAt ?? null])),
         bots: details && bots.map((bot, i) => {
           const chat = details.chats[i];
           const work = details.activity.get(bot.name);
-          return [bot.id, chat?.lastActivityAt ?? null, chat?.lastSaid ?? null, lists[i].length,
-            !!(work?.chatIds.size || work?.workers.length)];
+          return [bot.id, chat?.lastActivityAt ?? null, chat?.lastSaid ?? null, waiting[i].length,
+            activeWorkTitle(work) !== null];
         })
+      };
+    },
+    async board() {
+      const bots = await listBots();
+      const [activity, avatars, lists] = await Promise.all([
+        activeWorkByBot(), readMascots(signal), Promise.all(bots.map(openItems))
+      ]);
+      const sessions = await boardSessions(bots, activity, avatars);
+      signal.throwIfAborted();
+      const tasks = lists.flatMap((items, i) => items.map(item => ({
+        bot: bots[i].name, avatar: avatars.get(bots[i].id) ?? null, number: item.number,
+        title: label(item.title, 120), status: item.status, chatId: item.chat?.id ?? null,
+        lastActivityAt: item.lastActivityAt ?? null
+      })));
+      tasks.sort((a, b) => boardStatuses.indexOf(a.status) - boardStatuses.indexOf(b.status) || newestFirst(a, b));
+      return {
+        updatedAt: Date.now(),
+        bots: bots.map((bot, i) => {
+          const activeWork = activeWorkTitle(activity.get(bot.name));
+          return { id: bot.id, name: bot.name, avatar: avatars.get(bot.id) ?? null, paused: bot.paused,
+            working: activeWork !== null, activeWork, needsYou: lists[i].filter(item => item.status === 'needs_you').length };
+        }),
+        sessions, tasks: tasks.slice(0, 30)
       };
     },
     async bots() {
@@ -366,7 +429,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       return bots.map((bot, index) => {
         const [items, chat] = previews[index];
         const work = activity.get(bot.name);
-        const activeWork = work?.workers[0]?.title ?? (work?.chatIds.size ? '応答を作成中' : null);
+        const activeWork = activeWorkTitle(work);
         return {
           id: bot.id, name: bot.name, specialty: bot.specialty ?? null, paused: bot.paused,
           working: activeWork !== null, activeWork,
@@ -377,10 +440,10 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     },
     async chats(bot: Bot) {
       const [chats, activity] = await Promise.all([listChats(bot), activeWorkByBot()]);
-      const chatIds = activity.get(bot.name)?.chatIds;
+      const activeChats = activity.get(bot.name)?.chats;
       return openChats(chats).map(chat => ({
         id: chat.id, title: chat.title ?? null, home: chat.home, lastActivityAt: chat.lastActivityAt ?? null,
-        working: chatIds?.has(chat.id) ?? false,
+        working: activeChats?.has(chat.id) ?? false,
         lastAsked: chat.lastAsked ?? null, lastSaid: chat.lastSaid ?? null
       }));
     },
@@ -391,9 +454,14 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
         read<{ state?: string; entries: Entry[] }>('agent', 'read', `orca_session_id:${chatId}`, '--limit', String(limit)),
         activeWorkByBot()
       ]);
+      const workers: WorkLabel[] = [];
+      for (const worker of activity.get(bot.name)?.workers ?? []) {
+        if (!workers.some(existing => existing.title === worker.title)) workers.push(worker);
+        if (workers.length === 10) break;
+      }
       return {
         state: state ?? null,
-        activeWorkers: activity.get(bot.name)?.workers ?? [],
+        activeWorkers: workers,
         entries: entries.flatMap((entry): Entry[] => {
           if (entry.kind === 'message') return [{ kind: entry.kind, role: entry.role, text: entry.text }];
           if (entry.kind === 'tool') return [{ kind: entry.kind, name: entry.name, state: entry.state ?? null }];

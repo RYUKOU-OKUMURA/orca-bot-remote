@@ -81,16 +81,40 @@ test('Node 24 未満しかない場合は分かりやすい理由で終了する
   assert.equal(result.stdout, '');
 });
 
-test('自動化が見つからないときは stderr に警告し、有効な plist を出力する', darwin, t => {
-  const { home, env, script } = fixture(t);
-  const bin = join(home, 'orca');
-  script(bin, `echo '{"ok":true,"result":{"automations":[]}}'`);
+test('まとめ ID の明示指定時は Orca の自動化一覧を必要としない', darwin, t => {
+  const { home, env } = fixture(t);
   const result = spawnSync(install, ['--dry-run'], {
-    env: { ...env, NODE_BIN: process.execPath, ORCA_BIN: bin }, encoding: 'utf8'
+    env: { ...env, NODE_BIN: process.execPath, ORCA_BIN: join(home, 'missing'), SUMMARY_AUTOMATION_ID: 'explicit' },
+    encoding: 'utf8'
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /警告.*専門Botの状況まとめ/);
-  assert.equal(parsePlist(result.stdout).EnvironmentVariables.SUMMARY_AUTOMATION_ID, '');
+  assert.equal(result.stderr, '');
+  assert.equal(parsePlist(result.stdout).EnvironmentVariables.SUMMARY_AUTOMATION_ID, 'explicit');
+});
+
+test('まとめ ID は新名、旧名、有効な部分一致の順で検出し、候補なしなら警告する', darwin, t => {
+  const { home, env, script } = fixture(t);
+  const bin = join(home, 'orca');
+  script(bin, 'cat "$HOME/automations.json"');
+  const candidates = [
+    { id: 'invalid-name', name: null },
+    { id: 'unrelated', name: '予定' },
+    { id: 'disabled', name: '週次まとめ', enabled: false },
+    { id: 'first', name: '朝のまとめ' },
+    { id: 'second', name: '夕方まとめ', enabled: true },
+    { id: 'old', name: '専門Botの状況まとめ（毎日12:00）' },
+    { id: 'new', name: '秘書まとめ（朝8:00・昼12:00・夕18:00＋放置リマインド）' }
+  ];
+  for (const [count, expected] of [[7, 'new'], [6, 'old'], [5, 'first'], [3, ''], [0, '']] as const) {
+    writeFileSync(join(home, 'automations.json'), JSON.stringify({ ok: true, result: { automations: candidates.slice(0, count) } }));
+    const result = spawnSync(install, ['--dry-run'], {
+      env: { ...env, NODE_BIN: process.execPath, ORCA_BIN: bin, SUMMARY_AUTOMATION_ID: '' }, encoding: 'utf8'
+    });
+    assert.equal(result.status, 0, result.stderr);
+    if (expected) assert.equal(result.stderr, '');
+    else assert.match(result.stderr, /警告.*まとめ用の自動化が見つかりません/);
+    assert.equal(parsePlist(result.stdout).EnvironmentVariables.SUMMARY_AUTOMATION_ID, expected);
+  }
 });
 
 function installedFixture(t: TestContext) {
