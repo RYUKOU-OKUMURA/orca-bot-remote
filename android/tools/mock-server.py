@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Local fixtures for the Phase 1 Android emulator."""
+"""Local fixtures for the Orca Remote Android emulator."""
 import argparse
 import hmac
 import json
 import time
+from threading import Lock
+from uuid import uuid4
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
 TOKEN = "mock-orca-token"
+# Match the server's JavaScript trim() when counting message characters.
+JS_WHITESPACE = "\t\n\v\f\r \xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 BOT = "メインBot"
 HOME_ID = "00000000-0000-4000-8000-000000000001"
 REVIEW_ID = "00000000-0000-4000-8000-000000000002"
@@ -43,7 +47,7 @@ BOTS = [
     }
     for index, (name, specialty) in enumerate(SPECIALTIES.items(), 1)
 ]
-CHATS = [
+CHATS = {BOT: [
     {
         "id": REVIEW_ID,
         "title": "週末のお知らせ",
@@ -60,7 +64,7 @@ CHATS = [
         "lastAsked": "今日の進み具合を教えて",
         "lastSaid": "午前中の作業がまとまりました。確認が必要なのは週末のお知らせの公開時間だけです。",
     },
-]
+]}
 ITEM = {
     "bot": BOT,
     "number": 7,
@@ -96,59 +100,182 @@ MESSAGES = {
     ),
 }
 
+LOCK = Lock()
+WORKING_UNTIL = {}
+
 
 class MockHandler(BaseHTTPRequestHandler):
-    def reply(self, status, data):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    def reply(self, status, data, allow=None):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8", "backslashreplace")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        if allow:
+            self.send_header("Allow", allow)
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self):
+    def authorized(self):
         authorization = self.headers.get("Authorization", "").encode("utf-8")
-        if not hmac.compare_digest(authorization, f"Bearer {TOKEN}".encode("utf-8")):
-            self.reply(401, {"error": "unauthorized"})
-            return
+        if hmac.compare_digest(authorization, f"Bearer {TOKEN}".encode("utf-8")):
+            return True
+        self.reply(401, {"error": "unauthorized"})
+        return False
 
+    def method_not_allowed(self, allowed):
+        self.reply(405, {"error": "bad_request"}, allow=allowed)
+
+    def do_GET(self):
+        if not self.authorized():
+            return
         url = urlsplit(self.path)
         path = [unquote(part) for part in url.path.split("/")[1:]]
+        with LOCK:
+            match path:
+                case ["api", "bots"]:
+                    data = {"bots": BOTS}
+                case ["api", "bots", name, "chats"] if name in SPECIALTIES:
+                    data = {"chats": sorted(
+                        CHATS.get(name, []), key=lambda chat: chat.get("lastActivityAt", 0), reverse=True
+                    )}
+                case ["api", "bots", name, "chats", chat_id, "messages"] if any(
+                    chat["id"] == chat_id for chat in CHATS.get(name, [])
+                ):
+                    state, entries = MESSAGES[chat_id]
+                    if chat_id in WORKING_UNTIL:
+                        state = "working" if time.monotonic() < WORKING_UNTIL[chat_id] else "done"
+                    limit = parse_qs(url.query).get("limit", ["100"])[0]
+                    try:
+                        limit = max(1, min(100, int(limit)))
+                    except ValueError:
+                        limit = 100
+                    data = {"state": state, "entries": entries[-limit:]}
+                case ["api", "items"]:
+                    data = {"items": (
+                        [{**ITEM, "lastActivityAt": START_MS - 60_000}]
+                        if ITEM["status"] == "needs_you" else []
+                    )}
+                case ["api", "items", name, "7"] if name == BOT:
+                    data = {
+                        **ITEM,
+                        "question": {
+                            "text": "週末のお知らせは下書きができています。いつ公開しますか？",
+                            "options": ["今日の18:00に公開する", "明日の9:00に公開する"],
+                        } if ITEM["status"] == "needs_you" else None,
+                    }
+                case ["api", "summary"]:
+                    data = {"summary": SUMMARY}
+                case ["api", "items", _, _, "answer"]:
+                    self.method_not_allowed("POST")
+                    return
+                case _:
+                    self.reply(404, {"error": "not_found", "message": "対象が見つかりません。"})
+                    return
+            self.reply(200, data)
+
+    def do_POST(self):
+        if not self.authorized():
+            return
+        path = [unquote(part) for part in urlsplit(self.path).path.split("/")[1:]]
         match path:
-            case ["api", "bots"]:
-                data = {"bots": BOTS}
-            case ["api", "bots", name, "chats"] if name in SPECIALTIES:
-                data = {"chats": CHATS if name == BOT else []}
-            case ["api", "bots", name, "chats", chat_id, "messages"] if name == BOT and chat_id in MESSAGES:
-                state, entries = MESSAGES[chat_id]
-                limit = parse_qs(url.query).get("limit", ["100"])[0]
-                try:
-                    limit = max(1, min(100, int(limit)))
-                except ValueError:
-                    limit = 100
-                data = {"state": state, "entries": entries[-limit:]}
-            case ["api", "items"]:
-                data = {"items": [{**ITEM, "lastActivityAt": START_MS - 60_000}]}
-            case ["api", "items", name, "7"] if name == BOT:
-                data = {
-                    **ITEM,
-                    "question": {
-                        "text": "週末のお知らせは下書きができています。いつ公開しますか？",
-                        "options": ["今日の18:00に公開する", "明日の9:00に公開する"],
-                    },
-                }
-            case ["api", "summary"]:
-                data = {"summary": SUMMARY}
+            case ["api", "bots", name, "chats"]:
+                operation = "start"
+            case ["api", "bots", name, "chats", chat_id, "messages"]:
+                operation = "message"
+            case ["api", "items", name, "7", "answer"] if name == BOT:
+                operation = "answer"
+                chat_id = REVIEW_ID
+            case ["api", "bots" | "items" | "summary"] | ["api", "items", _, _]:
+                self.method_not_allowed("GET")
+                return
             case _:
                 self.reply(404, {"error": "not_found", "message": "対象が見つかりません。"})
                 return
-        self.reply(200, data)
+        if name not in SPECIALTIES:
+            self.reply(404, {"error": "not_found", "message": "対象が見つかりません。"})
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json" or not 0 < length <= 64 * 1024:
+                raise ValueError()
+            body = json.loads(self.rfile.read(length).decode("utf-8-sig"))
+            message = body.get("text") if isinstance(body, dict) else None
+            if not isinstance(message, str):
+                raise ValueError()
+            trimmed = message.strip(JS_WHITESPACE)
+            if not 1 <= len(trimmed) <= 10000:
+                raise ValueError()
+            if operation == "answer" and len(message.encode("utf-16-le", "surrogatepass")) // 2 > 8000:
+                raise ValueError()
+        except ValueError:
+            self.reply(400, {"error": "bad_request", "message": "入力内容を確認してください。"})
+            return
+
+        time.sleep(self.server.write_delay)
+        failure = self.server.write_failure
+        with LOCK:
+            if failure == "409":
+                if operation == "answer":
+                    finish_item()
+                self.reply(409, {"error": "conflict", "message": "状態が変わりました。"})
+                return
+            if failure == "502":
+                self.reply(502, {"error": "orca_failed", "message": "Orca に送れませんでした。"})
+                return
+            if operation == "start":
+                chat_id = str(uuid4())
+                CHATS.setdefault(name, []).insert(0, {
+                    "id": chat_id,
+                    "title": trimmed.splitlines()[0][:60],
+                    "home": False,
+                })
+                MESSAGES[chat_id] = ("done", [])
+            chat = next((chat for chat in CHATS.get(name, []) if chat["id"] == chat_id), None)
+            if not chat:
+                self.reply(404, {"error": "not_found", "message": "対象が見つかりません。"})
+                return
+            if operation == "answer" and ITEM["status"] != "needs_you":
+                self.reply(409, {"error": "conflict", "message": "状態が変わりました。"})
+                return
+
+            chat["lastActivityAt"] = int(time.time() * 1000)
+            chat["lastAsked"] = message
+            MESSAGES[chat_id][1].append({"kind": "message", "role": "user", "text": message})
+            WORKING_UNTIL[chat_id] = time.monotonic() + 8
+            if operation == "answer":
+                finish_item()
+
+        if failure == "unknown_result":
+            self.reply(502, {
+                "error": "unknown_result",
+                "message": "送れたか確認できませんでした。会話を更新して確かめてください。",
+            })
+        elif operation == "start":
+            self.reply(201, {"chatId": chat_id})
+        else:
+            self.reply(200 if operation == "answer" else 202, {"ok": True})
+
+
+def finish_item():
+    ITEM["status"] = "done"
+    next(bot for bot in BOTS if bot["name"] == BOT)["needsYou"] = 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--write-failure", choices=("409", "502", "unknown_result"),
+                        help="Inject this failure for POST requests")
+    parser.add_argument("--write-delay", type=float, default=0, metavar="SECONDS",
+                        help="Delay POST replies, including injected failures")
     options = parser.parse_args()
+    if options.write_delay < 0:
+        parser.error("--write-delay must be non-negative")
     with ThreadingHTTPServer(("127.0.0.1", options.port), MockHandler) as server:
+        server.write_failure = options.write_failure
+        server.write_delay = options.write_delay
         print(f"Mock API listening on 127.0.0.1:{server.server_port}", flush=True)
         server.serve_forever()
