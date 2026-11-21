@@ -67,8 +67,15 @@ internal class SendModel<T>(
 
     val lastCommand: String? get() = savedState["lastCommand"]
 
+    fun canStartCommand(): Boolean {
+        if (!deliveryUncertain || lastCommand != null) return true
+        chat?.notice = "前の送信を確認してください。「送信済みとして閉じる」か、再送確認で「もう一度送る」を選んでからコマンドを使えます"
+        return false
+    }
+
     fun submit(text: String, resendConfirmed: Boolean = false, command: (suspend (String) -> T)? = null) {
         if (sending || result != null || chat?.reading == true || (text.isBlank() && chat?.attachments.isNullOrEmpty())) return
+        if (command != null && !canStartCommand()) return
         if (!canSubmit(deliveryUncertain, resendConfirmed)) return
         savedState["lastCommand"] = text.takeIf { command != null }
         sending = true

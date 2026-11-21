@@ -54,7 +54,7 @@ private fun Suggestion(name: String, hint: String?, description: String, skill: 
 }
 
 @Composable
-internal fun ConversationInput(
+internal fun ColumnScope.ConversationInput(
     sender: SendModel<String>,
     catalog: ChatCommands?,
     run: (CommandInput, Boolean) -> Unit,
@@ -74,7 +74,9 @@ internal fun ConversationInput(
         sender.draft = listOfNotNull("/" + command.name, command.argument).joinToString(" ")
         guarded { confirmed -> run(command, confirmed) }
     }
-    fun select(command: CommandInput) {
+    fun select(command: CommandInput, clearQuery: Boolean = false) {
+        if (!sender.canStartCommand()) return
+        if (clearQuery) sender.draft = ""
         when (command.name) {
             "clear" -> dialog = "clear"
             "model", "effort" -> {
@@ -130,16 +132,14 @@ internal fun ConversationInput(
     val query = slashQuery(sender.draft)
     val suggestions = remember(catalog, query) { query?.let { catalog?.filtered(it) } }
     if (enabled && suggestions != null && (suggestions.commands.isNotEmpty() || suggestions.skills.isNotEmpty())) {
-        Card {
+        Card(Modifier.weight(1f, fill = false)) {
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 220.dp)) {
                 items(suggestions.commands) { cmd ->
                     Suggestion(cmd.name, cmd.argumentHint, cmd.description, false) {
                         when {
                             cmd.kind == "option" -> select(CommandInput(cmd.name))
-                            cmd.kind == "conversation" && cmd.name == "clear" -> {
-                                sender.draft = ""
-                                select(CommandInput("clear"))
-                            }
+                            cmd.kind == "conversation" && cmd.name == "clear" ->
+                                select(CommandInput("clear"), clearQuery = true)
                             cmd.kind == "conversation" && cmd.name == "compact" && cmd.argumentHint == null ->
                                 select(CommandInput("compact"))
                             else -> sender.draft = "/${cmd.name} "

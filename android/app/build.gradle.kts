@@ -40,5 +40,6 @@ dependencies {
     implementation(libs.commonmark.autolink)
     implementation(libs.commonmark.tables)
     implementation(libs.commonmark.strikethrough)
+    testImplementation(libs.coroutines.test)
     testImplementation(libs.junit)
 }
