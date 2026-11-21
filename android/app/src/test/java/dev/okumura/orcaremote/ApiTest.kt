@@ -148,6 +148,25 @@ class ApiTest {
     }
 
     @Test
+    fun workFieldsSupportOldAndNewServers() {
+        val oldBot = """{"id":"1","name":"B","paused":false,"needsYou":0}"""
+        val bot = apiJson.decodeFromString<Bot>(oldBot)
+        assertFalse(bot.working)
+        assertNull(bot.activeWork)
+        val busy = apiJson.decodeFromString<Bot>(oldBot.dropLast(1) + ""","working":true,"activeWork":"review"}""")
+        assertTrue(busy.working)
+        assertEquals("review", busy.activeWork)
+        assertFalse(apiJson.decodeFromString<Chat>("""{"id":"1","home":true}""").working)
+        assertTrue(apiJson.decodeFromString<Chat>("""{"id":"1","home":true,"working":true}""").working)
+        assertTrue(apiJson.decodeFromString<Messages>("""{"entries":[]}""").activeWorkers.isEmpty())
+        val workers = apiJson.decodeFromString<Messages>("""{"entries":[],"activeWorkers":[{"title":"review"}]}""").activeWorkers
+        assertEquals(listOf(ActiveWorker("review")), workers)
+        assertTrue(shouldPoll(null, null, workers))
+        assertFalse(shouldPoll(null, ApiError.UNAUTHORIZED, workers))
+        assertTrue(shouldPoll("running", null))
+    }
+
+    @Test
     fun onlyWorkingStatePolls() {
         assertTrue(shouldPoll("working", null))
         for (state in listOf(null, "done", "idle", "blocked", "waiting", "unknown")) {

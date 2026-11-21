@@ -474,12 +474,12 @@ internal fun ConversationScreen(
     }
     BackHandler(sender.sending) {}
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val polling = shouldPoll(model.data?.state, model.error)
+    val polling = shouldPoll(model.data?.state, model.error, model.data?.activeWorkers.orEmpty())
     LaunchedEffect(lifecycle, model, polling) {
         if (polling) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 delay(5_000)
-                if (!shouldPoll(model.data?.state, model.error)) break
+                if (!shouldPoll(model.data?.state, model.error, model.data?.activeWorkers.orEmpty())) break
                 model.load()
             }
         }
@@ -541,6 +541,13 @@ internal fun ConversationScreen(
                 Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(ListPadding),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                model.data?.let { data ->
+                    if (data.activeWorkers.isNotEmpty()) {
+                        WorkingBadge("作業中 · " + data.activeWorkers.joinToString("、") { it.title })
+                    } else if (data.state == "working" || data.state == "running") {
+                        WorkingBadge("応答を作成中…")
+                    }
+                }
                 if (model.data != null) {
                     ConversationInput(sender, catalog) { cmd, confirmed ->
                         sender.submit(sender.draft, confirmed) {

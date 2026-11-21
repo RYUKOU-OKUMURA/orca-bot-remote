@@ -145,6 +145,12 @@ OPTIONS = {}
 UPLOADS = {}
 
 
+def chat_state(chat_id):
+    if chat_id in WORKING_UNTIL:
+        return "working" if time.monotonic() < WORKING_UNTIL[chat_id] else "done"
+    return MESSAGES[chat_id][0]
+
+
 def chat_options(chat_id):
     selected = OPTIONS.get(chat_id, {})
     return {key: {"current": selected.get(key, choices[0][0]),
@@ -229,27 +235,29 @@ class MockHandler(BaseHTTPRequestHandler):
                     data = {"bots": []}
                     for bot in BOTS:
                         latest = max(CHATS.get(bot["name"], []), key=lambda chat: chat["lastActivityAt"], default={})
+                        working = any(chat_state(chat["id"]) == "working" for chat in CHATS.get(bot["name"], []))
                         data["bots"].append({
+                            "working": working, "activeWork": "状況を確認中" if working else None,
                             **bot,
                             "lastActivityAt": latest.get("lastActivityAt"),
                             "lastSaid": latest.get("lastSaid"),
                         })
                 case ["api", "bots", name, "chats"] if name in BOT_FIXTURES:
                     data = {"chats": sorted(
-                        CHATS.get(name, []), key=lambda chat: chat.get("lastActivityAt", 0), reverse=True
+                        (dict(chat, working=chat_state(chat["id"]) == "working") for chat in CHATS.get(name, [])),
+                        key=lambda chat: chat.get("lastActivityAt", 0), reverse=True
                     )}
                 case ["api", "bots", name, "chats", chat_id, "messages"] if any(
                     chat["id"] == chat_id for chat in CHATS.get(name, [])
                 ):
-                    state, entries = MESSAGES[chat_id]
-                    if chat_id in WORKING_UNTIL:
-                        state = "working" if time.monotonic() < WORKING_UNTIL[chat_id] else "done"
+                    state, entries = chat_state(chat_id), MESSAGES[chat_id][1]
                     limit = parse_qs(url.query).get("limit", ["100"])[0]
                     try:
                         limit = max(1, min(100, int(limit)))
                     except ValueError:
                         limit = 100
-                    data = {"state": state, "entries": entries[-limit:]}
+                    workers = [{"title": "進捗確認", "tool": "read"}] if state == "working" else []
+                    data = {"state": state, "entries": entries[-limit:], "activeWorkers": workers}
                 case ["api", "bots", name, "chats", chat_id, "commands"] if any(
                     chat["id"] == chat_id for chat in CHATS.get(name, [])
                 ):

@@ -184,7 +184,8 @@ internal class SendModel<T>(
 internal fun canSubmit(deliveryUncertain: Boolean, resendConfirmed: Boolean): Boolean =
     deliveryUncertain == resendConfirmed
 
-internal fun shouldPoll(state: String?, error: ApiError?): Boolean = state == "working" && when (error) {
+internal fun shouldPoll(state: String?, error: ApiError?, activeWorkers: List<ActiveWorker> = emptyList()): Boolean =
+    (state == "working" || state == "running" || activeWorkers.isNotEmpty()) && when (error) {
     null, ApiError.ORCA, ApiError.TIMEOUT, ApiError.CONNECTION -> true
     else -> false
 }

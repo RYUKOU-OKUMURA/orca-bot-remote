@@ -53,6 +53,7 @@ internal fun BotRow(bot: Bot, unread: Boolean, expanded: Boolean, open: () -> Un
         ListRow(
             title = bot.name,
             unread = unread,
+            work = if (bot.working) listOfNotNull("作業中", bot.activeWork?.takeIf(String::isNotBlank)).joinToString(" · ") else null,
             onClick = open,
             modifier = Modifier.weight(1f),
             leading = { Mascot(bot) },
@@ -85,6 +86,7 @@ internal fun ChatRow(chat: Chat, bot: String, meta: ChatMetaStore, modifier: Mod
         onClick = open,
         modifier = Modifier.weight(1f),
         unread = meta.unread(bot, chat),
+        work = if (chat.working) "作業中" else null,
         leading = { OrcaIcon(if (chat.home) R.drawable.ic_home else R.drawable.ic_chat) },
         titleMaxLines = if (showPreview) 2 else 1,
         subtitle = if (showPreview) markdownPreview(chat.lastSaid) ?: markdownPreview(chat.lastAsked) else null,
@@ -110,6 +112,7 @@ internal fun ListRow(
     subtitleColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     caption: String? = null,
     unread: Boolean = false,
+    work: String? = null,
     showChevron: Boolean = true,
     titleMaxLines: Int = 1,
     subtitleMaxLines: Int = 1,
@@ -142,6 +145,7 @@ internal fun ListRow(
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            work?.let { WorkingBadge(it) }
             subtitle?.let {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     subtitleIcon?.let { id -> OrcaIcon(id, modifier = Modifier.size(16.dp), tint = subtitleColor) }
@@ -156,6 +160,15 @@ internal fun ListRow(
             }
         }
         if (showChevron) OrcaIcon(R.drawable.ic_chevron, modifier = Modifier.size(18.dp))
+    }
+}
+
+@Composable
+internal fun WorkingBadge(label: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        androidx.compose.material3.CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
