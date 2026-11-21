@@ -164,7 +164,9 @@ internal class ChatDraft(private val saved: SavedStateHandle, limits: Attachment
                                     ?.let { size = rows.getLong(it).takeIf { bytes -> bytes >= 0 } }
                             }
                         }
-                        val bytes = size ?: resolver.open(uri).use { it.copyLimited(minOf(limits.perFile, limits.total - total)) { _, _ -> } }
+                        val bytes = resolver.open(uri).use { input ->
+                            size ?: input.copyLimited(minOf(limits.perFile, limits.total - total)) { _, _ -> }
+                        }
                         val displayName = name?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "添付ファイル"
                         val item = LocalAttachment(uri.toString(), displayName, resolver.getType(uri), bytes).sanitized()
                         limits.error(attachments.size, total, bytes)?.let { throw AttachmentProblem("${item.name}：$it") }

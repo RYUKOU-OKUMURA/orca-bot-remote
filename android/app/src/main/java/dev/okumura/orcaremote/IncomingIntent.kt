@@ -17,9 +17,12 @@ internal fun sharedDraft(action: String?, subject: String?, text: String?, strea
     if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return null
     val title = subject?.trim().orEmpty()
     val body = text.orEmpty()
+    val trimmed = body.trimStart()
+    val includesTitle = trimmed.startsWith(title) &&
+        (trimmed.length == title.length || trimmed.getOrNull(title.length)?.isWhitespace() == true)
     val combined = when {
         body.isBlank() -> title
-        title.isEmpty() || body.trimStart().startsWith(title) -> body
+        title.isEmpty() || includesTitle -> body
         else -> "$title\n$body"
     }
     return SharedDraft(combined, (streams + clips).distinct()).takeIf { it.text.isNotBlank() || it.uris.isNotEmpty() }
