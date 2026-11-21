@@ -19,7 +19,9 @@ Apple Silicon の Mac mini で、Android Studio を使わずにビルドと動�
 | Compose BOM | 2026.11.01 |
 | Activity Compose | 1.13.0 |
 
-最新安定の SDK 37.2 に揃う、Play ストアを含まない Google APIs の ARM64 イメージとして、16 KB ページ版の `google_apis_ps16k` を採用した。指定当初の `google_apis` タグの 37.0 では、最新安定の Compose UI が求めるコンパイル時の API 37.1 以上を満たせない。
+ビルドには `compileSdk` で指定した API 37.2（`platforms;android-37.2`）を使う。採用した Compose UI が要求するコンパイル時の API 37.1 以上を満たす。
+
+今回の画面確認に使った仮想端末の実行環境は、Play ストアを含まない Google APIs の ARM64 システムイメージ（API 37.2、16 KB ページの `google_apis_ps16k`）。
 
 ## 初回セットアップ
 

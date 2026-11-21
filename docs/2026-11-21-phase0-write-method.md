@@ -4,7 +4,11 @@
 
 ## 1. 結論
 
-**候補2。本人として送る経路は、オーナーが正規にペアリングしたクライアントによる Orca の WebSocket RPC。** メインBotの別チャットを開く `bots.session.start`、チャットの入力を送る `agentSession.send`、判断待ちのボタンに答える `bots.items.owner.comment` が該当する。既存チャットへの通常入力は、そのチャットのセッションIDを指定した `agentSession.send` で行う設計。
+**候補2の Orca WebSocket RPC を第一候補とする。** オーナーが正規にペアリングしたクライアントで、別チャットを開く `bots.session.start`、チャットへ入力する `agentSession.send`、判断待ちに答える `bots.items.owner.comment` を使う。既存チャットへはそのセッションIDを指定する。
+
+「本人として送る」には三つの確認点がある。通常入力は `userSend: true` とジャーナルの `USER_MESSAGE_SOURCE` で確認する。送信元の来歴は `typedBy` で、ペア済みの非エージェント端末なら `device` と端末ID、ホスト画面なら `host`、CLIなら `agent` になる。端末とホストの両方に照合可能なアカウントがあり、IDが一致した場合に `own: true` が付く。Bot側のオーナー依頼の分類は通常の未スタンプ入力と会話の帰属で決まり、`typedBy.own` は参照しない。根拠と実測項目は第5節に記す。
+
+採用の前提として、クライアントは接続時に `agent-session.structured.v1` を通知し、`clientOperationId` は `createStructuredAgentSessionOperationId` と同じ形式（13桁の時刻、ハイフン、32桁の小文字16進数）で生成する。Orcaへの接続はモバイル資格を第一候補とし、CLIでの発行はオーナー承認待ち。
 
 現時点で Mac mini のセッション外プロセスから実測できたのは読み取りまで。候補1の `orchestration send` は送信元の生きた Orca セッションを要求し、届いてもワーカーからのメールとして扱われる。ローカルランタイムソケットは CLI をエージェントとして識別し、オーナー用の items RPC を拒否した。候補2のサーバー採用可否は、正規にペアリングしたクライアントで本人入力とカード回答を実測するまで保留。
 
@@ -104,13 +108,41 @@ error: no_active_sender_terminal: Could not determine the calling terminal for t
 ### 認証と試作
 
 - **ローカル IPC。** `src/cli/runtime/profile/metadata.ts` と `src/cli/runtime/connection/transport.ts` は、当該 macOS ユーザーの Orca プロファイルのランタイム情報にある Unix ソケットへ接続する。RPC は `{id, authToken, method, params}` を改行区切りの JSON で送る。 `src/main/runtime/rpc/server/runtime-rpc-request-admission.ts` がローカルの正規トークンを照合し、呼び出し元を `local-cli` として判定する。 `src/main/runtime/rpc/callers/rpc-caller-typed-by.ts` の `typedByOf` は `local-cli` を `{by:"agent"}` と記録する。オーナー専用の items RPC は `bots-caller-gates.ts` の `ownerOnly` により拒否される。
-- **ペアリング。** `src/cli/runtime/pairing/runtime-remote-pairing.ts` は `--pairing-code <pairing-code>` を解析するか、`--environment <id-or-name>` から保存済み接続を解決する。 `--environment local` での `bot list` は6件返った。保存済み環境は `environment list --json` で0件。これはCLIの保存済み環境の件数。正規のモバイル接続は `mobile/src/transport/rpc/direct-socket-framing.ts` で E2EE WebSocket を確立してデバイストークンで認証し、`{id, method, params}` 形式の RPC を送る。サーバーは `runtime-rpc-websocket-dispatch.ts` で認証結果のデバイスとスコープを採用する。一方、ペアリング付きCLIは `src/cli/runtime/connection/websocket-transport.ts` で `CLI_AGENT_CALLER_CLIENT_CAPABILITY` を送る。 `resolveRpcCallerIdentity` はこれをペア済みCLIエージェントと識別するため、ペアリングフラグを付けるだけでは本人操作にならない。
-- **試作。** Scratch の `/private/tmp/orca-bot-phase0.hCDd0u/read-rpc.cjs` は、展開した配布版の `RuntimeClient` を使用。 `ORCA_*` を空にした環境で `status.get`、`agentSession.history`（tail、before）は成功。 `bots.items.owner.list` は `invalid_argument: Only your owner changes items this way, in Orca.` を返した。承認済みの試験用ペアリングが今回の作業範囲にないため、本人名義の試作送信は0通。生トークンやペアリングコードは文書と試作コードに保存していない。
+- **モバイル直結のフレーム。** RPC 呼び出し側の基本形は `{id, method, params}`。直結では E2EE WebSocket を確立し、`rpc-envelope-fields.ts:19–41` と `direct-rpc-client.ts:298–301` で暗号化前に `deviceToken` を加えて送る。ホストは認証済み接続ならフレームごとのトークンを省略でき、接続の資格と異なるトークンが併記されていれば拒否する。RPC の権限には認証済みデバイスのスコープを使う（`runtime-rpc-websocket-dispatch.ts:156–184`）。
+- **ペアリング付きCLI。** `src/cli/runtime/pairing/runtime-remote-pairing.ts` は `--pairing-code <pairing-code>` を解析するか、`--environment <id-or-name>` から保存済み接続を解決する。 `--environment local` での `bot list` は6件、`environment list --json` でのCLIの保存済み環境は0件。ペアリング付きCLIは `src/cli/runtime/connection/websocket-transport.ts` で `CLI_AGENT_CALLER_CLIENT_CAPABILITY` を通知し、`resolveRpcCallerIdentity` によりペア済みCLIエージェントとして扱われる。
+- **試作。** Scratch の `/private/tmp/orca-bot-phase0.hCDd0u/read-rpc.cjs` は、展開した配布版の `RuntimeClient` を使用する。再実行時は `NODE_PATH=/Applications/Orca.app/Contents/Resources/node_modules` を指定し、引数に Bot ID とチャットのセッションIDを渡す。 `ORCA_*` を空にした環境で `status.get`、`agentSession.history`（tail、before）は成功。 `bots.items.owner.list` は `invalid_argument: Only your owner changes items this way, in Orca.` を返した。本人名義の試作送信は0通。
 
 ソースは配布コミットの [Orca リポジトリ](https://github.com/stablyai/orca/tree/3df243e7d5610fe956c7776144571c7d3640fadb) とローカルの `app.asar` 展開物を照合した。`dev.orca.app` は調査環境から TLS 接続できなかったため、モバイルの呼び出しは当該コミットの実装で確認した。
 
 ## 5. 残る不確実性とオーナー確認
 
-- サーバー用の正規ペアリングをオーナーが許可した場合に、試験専用クライアントで本人入力1通と判断待ち1件を確認する。入力の来歴、同じチャットに返答が載ること、カードのイベントと状態が変わることを確認できれば、候補2を採用判断できる。現時点の送信成功はワーカー名義の質問1通のみ。
+### 本人としての送信の判定
+
+1. **通常のユーザー入力。** `agentSession.send` は `userSend: true` でホストに渡り、ジャーナルの `source` が `USER_MESSAGE_SOURCE`（`{kind:"user"}`）になる（`structured-agent-session-send-compatibility.ts:23–34`、`structured-agent-session-send-admission.ts:66–73`）。
+2. **送信元の来歴。** 認証済みの非エージェント端末は `typedBy.by=device` と端末ID、ホストのデスクトップ画面からの入力は `host`、ローカル・ペア済みCLIは `agent`。端末側のアカウント情報とホストのサインイン済みアカウントIDの両方を照合できる場合に `own` が付き、一致で `true`、不一致で `false` になる。モバイル資格のアカウント情報は発行元端末の記録から解決する経路があり、照合情報が揃わない場合は `own` が省略される（`rpc-caller-typed-by.ts:19–44`、`paired-device-typist.ts:13–31`）。
+3. **Botのオーナー依頼の分類。** 依頼者スタンプやメール由来の印がない通常入力は、Botがオーナーからの入力として扱う。分類は `typedBy.own` を参照しない。別人への代理が記録された会話では、会話が誰のために動くかも判定に効く（`bot-request-asker.ts:112–141, 173–200, 303–325`）。
+
+遠隔クライアントには `agent-session.structured.v1` の通知が必要。公式モバイルは直結時に `runtime.clientCapabilities.update` で通知し、ホストはこの対応機能が欠けた structured chat の送信を拒否する（`mobile-runtime-client-capabilities.ts:32–39, 65–71`、`mobile-runtime-capability-negotiation.ts:11–19`、`structured-agent-session-gate.ts:21–40, 61–69`、`structured-agent-session-policy.ts:27–35, 71–80`）。
+
+操作IDは `createStructuredAgentSessionOperationId` の形式（13桁の Unix 時刻のミリ秒値、ハイフン、32桁の小文字16進数）を使う。ホストは形式不正や許容範囲を超える未来時刻を拒否する（`structured-agent-session-mutation.ts:76–86`、`agent-session-host-authority.ts:40–49`、`agent-session-operation-ledger.ts:180–199`）。
+
+### 接続とオーナーによる発行
+
+**Android → 中継サーバー。** サーバーの待ち受けを Tailscale に限定し、Android からの要求を Bearer で認証する。
+
+**中継サーバー → Orca。** Mac 上の中継サーバーが Orca に接続するための資格には、次の二つの候補がある。
+
+| 候補 | オーナーが発行する操作と資格の範囲 | Orca の待ち受けへの影響 | 判断待ち回答の見込み |
+| --- | --- | --- | --- |
+| (A) モバイル資格 | ホストで `orca pair --mobile --address <Tailscaleアドレス>`。オーナー画面では Settings → Mobile → LAN → Generate QR code → Copy pairing code。 `mobile` スコープの許可リスト内の RPC を使える。 | LAN でも初回のネットワークペアリングは、loopback だった Orca の待ち受けを全 IPv4 インターフェースに広げる。 `--address` はクライアントに案内する接続先を指定する。 | `bots.items.owner.comment` はモバイルの許可リストにあり、非エージェント端末として認証されれば `ownerOnly` を通る見込み。実機のカード回答は未検証。 |
+| (B) アクセスリンク＋loopback | `orca pair`（`--mobile` なし）は、モバイルの許可リストより広い `runtime` スコープのアクセスリンクを発行する。同じ Mac 内に限るリンクは、オーナー画面で Share this computer → This computer → Create link を選び、loopback に接続する。 | 画面の This computer で発行して接続先が loopback の場合、待ち受けを広げない。CLI の `orca pair` には This computer の指定がなく、通常のネットワーク用アクセスリンクの発行では初回に全 IPv4 インターフェースに広がる。 | 判定の鍵は非エージェント端末として認証されること。アクセスリンク＋loopback で `ownerOnly` を通るかは未検証。 |
+
+`ownerOnly` はエージェント呼び出しを拒否する。許可されたペア済み端末からのカード回答は owner と端末IDを記録する（`bots-caller-gates.ts:5–10`、`bots-items-owner-methods.ts:33–38`、`runtime-rpc-mobile-bot-methods.ts:61–64`）。
+
+11月21日にこの Mac で `lsof -nP -iTCP:6768 -sTCP:LISTEN` を実行し、Orca が既に IPv4 の `TCP *:6768 (LISTEN)` で待ち受けていることを確認した。広がった時期と他端末からの到達可否は未確認。発行と待ち受けの根拠は `orca pair --help`、`src/cli/server/pair.ts:54–77`、`runtime-rpc-mobile-pairing.ts:37–57, 141–167`、`runtime-rpc-network-exposure.ts:12–54`、`pairing-offer-requests.ts:43–49, 109–136, 172–181`。
+
+### 採用前に実測する項目
+
+- (A) を第一候補とし、オーナーの承認後に CLI で発行する。承認後の試験では通常入力1通についてジャーナルの `source` と `typedBy` を照合し、Botがオーナーの依頼として扱い、同じチャットに返答することを確認する。判断待ち1件について、回答イベントの発行とカードの状態更新を確認する。現時点の送信成功はワーカー名義の質問1通のみ。
 - 実際の launchd 実行ユーザーと HOME で、起動後に読み取りが通るかは未検証。今回の結果は、同じユーザーの環境変数を消したプロセスでのもの。
-- 11月22日12:00の初回予定以降に、定期実行の `chatSessionId` と `outputSnapshot.content` を照合する。項目回答と長い履歴の全件ページングも、実データを使った確認は残っている。
+- 11月22日12:00の初回予定以降に、定期実行の `chatSessionId` と `outputSnapshot.content` を照合する。長い履歴の全件ページングも、実データを使った確認は残っている。
