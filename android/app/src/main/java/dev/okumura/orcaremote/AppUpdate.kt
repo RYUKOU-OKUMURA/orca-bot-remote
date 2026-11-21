@@ -65,6 +65,8 @@ internal fun AppUpdateSection(connection: Connection?) {
     }
     OrcaOutlinedButton(enabled = canUpdate && !downloading, onClick = {
         if (api == null || latest == null || downloading) return@OrcaOutlinedButton
+        downloaded = 0
+        downloading = true
         installStatus = null
         scope.launch {
             try {
@@ -74,8 +76,6 @@ internal fun AppUpdateSection(connection: Connection?) {
                         Uri.fromParts("package", context.packageName, null)))
                     return@launch
                 }
-                downloaded = 0
-                downloading = true
                 prepareAppInstall(context, api, latest) { downloaded = it }
             } catch (_: InvalidAppDownload) {
                 installStatus = "ダウンロードしたファイルを確認できませんでした"
