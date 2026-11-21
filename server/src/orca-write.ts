@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { attachmentKind, storePath, type MessageExtras, type Upload, type Uploaded } from './attachments.ts';
+import { commandMenu, type Command, type CommandReport, type SessionOptions } from './commands.ts';
 import { isTailscaleAddress } from './config.ts';
 import { createPairedE2EEClientHandshake } from '../vendor/orca/shared/remote-runtime/e2ee/paired-e2ee-client-handshake.js';
 import { NODE_PAIRED_E2EE_PRIMITIVES } from '../vendor/orca/shared/remote-runtime/e2ee/node/paired-e2ee-node-primitives.js';
@@ -13,8 +15,11 @@ export const DEVICE_FILE = join(homedir(), '.config/orca-bot-remote/orca-device.
 
 export type Device = { endpoint: string; publicKeyB64: string; deviceToken: string };
 export type OrcaWrite = {
-  start: (botId: string, text: string, signal: AbortSignal) => Promise<string>;
-  send: (chatId: string, text: string, signal: AbortSignal) => Promise<void>;
+  start: (botId: string, text: string, signal: AbortSignal, uploads?: Upload[]) => Promise<string>;
+  send: (chatId: string, text: string, signal: AbortSignal, extras?: MessageExtras) => Promise<void>;
+  commands: (chatId: string, signal: AbortSignal) => Promise<ReturnType<typeof commandMenu>>;
+  command: (chatId: string, command: Command, signal: AbortSignal) => Promise<void>;
+  upload: (chatId: string, upload: Upload, signal: AbortSignal) => Promise<Uploaded>;
   answer: (uid: string, text: string, signal: AbortSignal) => Promise<void>;
 };
 
@@ -64,19 +69,30 @@ export function readDevice(file = DEVICE_FILE): Device {
 const refusedRpcCodes = new Set(['method_not_found', 'method_not_supported', 'invalid_argument', 'forbidden']);
 const maxFrameCharacters = 8 * 1024 * 1024 + 64;
 
-export function messageParams(sessionId: string, text: string, expectedRuntimeFence: number) {
-  const body = { kind: 'message', role: 'user', blocks: [{ type: 'text', text }] };
+function mutationEnvelope(method: string, sessionId: string, expectedRuntimeFence: number, fields: object) {
   return {
-    envelope: {
-      sessionId,
-      clientOperationId: createStructuredAgentSessionOperationId(randomUUID),
-      expectedRuntimeFence,
-      payloadFingerprint: structuredAgentSessionPayloadFingerprint({
-        method: 'agentSession.send', sessionId, fields: { body }
-      })
-    },
-    body
+    sessionId, expectedRuntimeFence,
+    clientOperationId: createStructuredAgentSessionOperationId(randomUUID),
+    payloadFingerprint: structuredAgentSessionPayloadFingerprint({ method, sessionId, fields })
   };
+}
+
+export function messageParams(sessionId: string, text: string, fence: number, extras: MessageExtras = {}) {
+  const attachments = extras.attachments ?? [];
+  const fileRefs = attachments.filter(a => a.kind === 'file').map(a =>
+    /[\s@]/.test(a.path) ? '@"' + a.path + '"' : '@' + a.path);
+  const content = [text, ...fileRefs].filter(value => value.trim()).join('\n');
+  const body = {
+    kind: 'message', role: 'user',
+    blocks: [
+      ...(content ? [{ type: 'text', text: content }] : []),
+      ...attachments.filter(a => a.kind === 'image').map(a => ({
+        type: 'image-ref', path: a.path, ...(a.name ? { alt: a.name } : {})
+      }))
+    ],
+    ...(extras.skills?.length ? { skills: extras.skills } : {})
+  };
+  return { envelope: mutationEnvelope('agentSession.send', sessionId, fence, { body }), body };
 }
 
 type Call = <T>(method: string, params?: object, mutates?: boolean) => Promise<T>;
@@ -158,11 +174,13 @@ export async function withOrcaDevice<T>(
       if (reply.ok) return reply.result;
       const code = reply.error?.code;
       if (code === 'unauthorized' || code === 'device_revoked') throw new OrcaWriteError('write_unavailable');
+      if (code === 'not_found' && ['agentSession.commands', 'agentSession.options', 'agentSession.setOption',
+        'agentSession.conversationCommand'].includes(method)) throw new OrcaWriteError('not_found');
       if ((method === 'bots.items.owner.comment' && code === 'not_found') ||
           (method === 'bots.session.start' && code === 'bot_not_found')) throw new OrcaWriteError('not_found');
       if ((method === 'bots.session.start' || method === 'bots.items.owner.comment') &&
           code === 'bots_disabled') throw new OrcaWriteError('orca_failed');
-      if (method === 'agentSession.send' && code === 'runtime_error' &&
+      if (method.startsWith('agentSession.') && code === 'runtime_error' &&
           reply.error.data?.refusal?.code === 'structured_agent_session_unsupported') throw new OrcaWriteError('orca_failed');
       throw new OrcaWriteError(mutates && !refusedRpcCodes.has(code) ? 'unknown_result' : 'orca_failed');
     };
@@ -175,7 +193,7 @@ export async function withOrcaDevice<T>(
   }
 }
 
-async function sendMessage(call: Call, sessionId: string, text: string) {
+async function runtimeFence(call: Call, sessionId: string) {
   const history = await call<{ ok: boolean; page?: { fence: number } }>(
     'agentSession.history', { sessionId, direction: 'tail', limit: 1 }
   );
@@ -183,7 +201,20 @@ async function sendMessage(call: Call, sessionId: string, text: string) {
   if (history?.ok !== true || typeof fence !== 'number' || !Number.isSafeInteger(fence)) {
     throw new OrcaWriteError('orca_failed');
   }
-  const params = messageParams(sessionId, text, fence);
+  return fence;
+}
+
+type MutationOutcome = { ok: boolean; refusal?: { code?: string; details?: { reason?: string } } };
+
+function unsuccessful(result: MutationOutcome | undefined): never {
+  const refusal = result?.refusal;
+  const rejected = result?.ok === false && typeof refusal?.code === 'string' &&
+    (refusal.code !== 'agent_session_operation_unknown' || refusal.details?.reason === 'rewindUnconfirmed');
+  throw new OrcaWriteError(rejected ? 'orca_failed' : 'unknown_result');
+}
+
+async function sendMessage(call: Call, sessionId: string, text: string, extras?: MessageExtras) {
+  const params = messageParams(sessionId, text, await runtimeFence(call, sessionId), extras);
   const result = await call<{
     ok: boolean;
     value?: { clientMessageId?: string; submission?: { reason?: string }; queued?: { messageId?: string } };
@@ -193,32 +224,95 @@ async function sendMessage(call: Call, sessionId: string, text: string) {
   if (result?.ok === true && receipt?.clientMessageId === params.envelope.clientOperationId &&
       ((receipt.submission && receipt.submission.reason !== 'durable_send_submission_missing') ||
         receipt.queued?.messageId)) return;
-  const refusal = result?.refusal;
-  const rejected = result?.ok === false && typeof refusal?.code === 'string' &&
-    (refusal.code !== 'agent_session_operation_unknown' || refusal.details?.reason === 'rewindUnconfirmed');
-  throw new OrcaWriteError(rejected ? 'orca_failed' : 'unknown_result');
+  unsuccessful(result);
+}
+
+async function uploadFile(device: Device, call: Call, sessionId: string, upload: Upload): Promise<Uploaded> {
+  const { name, byteLength, mimeType, chunks } = upload;
+  const start = await call<{ uploadId: string }>('agentSessionAttachment.uploadStart', { sessionId, name, byteLength }, true);
+  if (typeof start?.uploadId !== 'string' || !start.uploadId) throw new OrcaWriteError('unknown_result');
+  const { uploadId } = start;
+  try {
+    let offset = 0;
+    let kind: Uploaded['kind'] = 'file';
+    for await (const chunk of chunks) {
+      if (offset === 0) kind = attachmentKind(name, mimeType, chunk);
+      const reply = await call<{ receivedBytes: number }>('agentSessionAttachment.uploadAppend', {
+        uploadId, offset, contentBase64: chunk.toString('base64')
+      }, true);
+      offset += chunk.length;
+      if (reply?.receivedBytes !== offset) throw new OrcaWriteError('unknown_result');
+    }
+    if (offset !== byteLength) throw new OrcaWriteError('orca_failed');
+    const result = await call<Uploaded>('agentSessionAttachment.uploadCommit', { uploadId }, true);
+    if (!storePath(result?.path) || !result.path.endsWith('/' + uploadId + '/' + name) ||
+        result.name !== name || result.byteLength !== byteLength) throw new OrcaWriteError('unknown_result');
+    return { path: result.path, name, kind, byteLength };
+  } catch (error) {
+    // The original socket may be closed or have an unmatched reply after cancellation.
+    await withOrcaDevice(device, AbortSignal.timeout(3000), cleanup =>
+      cleanup('agentSessionAttachment.uploadAbort', { uploadId })).catch(() => {});
+    throw error;
+  }
 }
 
 export function createOrcaWrite(file = DEVICE_FILE): OrcaWrite {
+  function withChat<T>(chatId: string, signal: AbortSignal, run: (call: Call, sessionId: string, device: Device) => Promise<T>) {
+    const device = readDevice(file);
+    return withOrcaDevice(device, signal, async call => {
+      const result = await call<{ location: { kind: string; sessionId?: string } | null; lost?: string }>(
+        'orchestration.partyLocation', { address: `orca_session_id:${chatId}` }
+      );
+      const location = result?.location;
+      if (location?.kind !== 'chat' || typeof location.sessionId !== 'string' || !location.sessionId) {
+        throw new OrcaWriteError(location === null && result.lost === 'chat' ? 'not_found' : 'orca_failed');
+      }
+      return run(call, location.sessionId, device);
+    });
+  }
   return {
-    async start(botId, text, signal) {
-      return withOrcaDevice(readDevice(file), signal, async call => {
+    async start(botId, text, signal, uploads = []) {
+      const device = readDevice(file);
+      return withOrcaDevice(device, signal, async call => {
         const result = await call<{ sessionId: string }>('bots.session.start', { botId }, true);
         if (typeof result?.sessionId !== 'string' || !result.sessionId) throw new OrcaWriteError('unknown_result');
-        await sendMessage(call, result.sessionId, text);
+        const attachments = [];
+        for (const upload of uploads) attachments.push(await uploadFile(device, call, result.sessionId, upload));
+        await sendMessage(call, result.sessionId, text, { attachments });
         return result.sessionId;
       });
     },
-    async send(chatId, text, signal) {
-      await withOrcaDevice(readDevice(file), signal, async call => {
-        const result = await call<{ location: { kind: string; sessionId?: string } | null; lost?: string }>(
-          'orchestration.partyLocation', { address: `orca_session_id:${chatId}` }
-        );
-        const location = result?.location;
-        if (location?.kind !== 'chat' || typeof location.sessionId !== 'string' || !location.sessionId) {
-          throw new OrcaWriteError(location === null && result.lost === 'chat' ? 'not_found' : 'orca_failed');
+    send(chatId, text, signal, extras) {
+      return withChat(chatId, signal, (call, id) => sendMessage(call, id, text, extras));
+    },
+    upload(chatId, upload, signal) {
+      return withChat(chatId, signal, (call, id, device) => uploadFile(device, call, id, upload));
+    },
+    commands(chatId, signal) {
+      return withChat(chatId, signal, async (call, sessionId) => {
+        const report = await call<CommandReport>('agentSession.commands', { sessionId });
+        const options = await call<SessionOptions>('agentSession.options', { sessionId });
+        return commandMenu(report, options);
+      });
+    },
+    command(chatId, { name, argument }, signal) {
+      return withChat(chatId, signal, async (call, sessionId) => {
+        const option = name === 'model' || name === 'effort';
+        const method = option ? 'agentSession.setOption' : 'agentSession.conversationCommand';
+        const fields = option ? { key: name, value: argument } : { command: name, ...(argument ? { instructions: argument } : {}) };
+        const envelope = mutationEnvelope(method, sessionId, await runtimeFence(call, sessionId), fields);
+        const result = await call<MutationOutcome & {
+          value?: { key?: string; value?: string; command?: string; state?: string; error?: string; operationId?: string }
+        }>(method, { envelope, ...fields }, true);
+        const receipt = result?.value;
+        if (result?.ok !== true || !receipt) unsuccessful(result);
+        if (option && receipt.key === name && receipt.value === argument) return;
+        if (!option && receipt.command === name && receipt.state === 'completed' &&
+            (receipt.operationId === undefined || receipt.operationId === envelope.clientOperationId)) {
+          if (receipt.error !== undefined) throw new OrcaWriteError('orca_failed');
+          return;
         }
-        await sendMessage(call, location.sessionId, text);
+        throw new OrcaWriteError('unknown_result');
       });
     },
     async answer(uid, text, signal) {
