@@ -42,7 +42,6 @@ test('dry-run の ProgramArguments は候補順に解決した Node と main.ts 
   };
   const entry = join(destination, 'src/main.ts');
   assert.deepEqual(run(), [pathNode, entry]);
-  assert.deepEqual(run({ NODE_BIN: '/usr/bin/true' }), [pathNode, entry]);
   const nvm = join(home, '.nvm/versions/node');
   addNode(join(nvm, 'v24.9.1/bin/node'));
   const latest = addNode(join(nvm, 'v24.19.0/bin/node'));
@@ -51,6 +50,22 @@ test('dry-run の ProgramArguments は候補順に解決した Node と main.ts 
   assert.deepEqual(run(), [major, entry]);
   const explicit = addNode(join(home, 'custom node'));
   assert.deepEqual(run({ NODE_BIN: './custom node' }), [explicit, entry]);
+});
+
+test('明示した NODE_BIN が無効なら nvm と PATH に候補があっても失敗する', darwin, t => {
+  const { home, env, script, addNode } = fixture(t);
+  addNode(join(home, 'node'));
+  addNode(join(home, '.nvm/versions/node/v25.0.0/bin/node'));
+  const nonExecutable = join(home, 'not-executable');
+  writeFileSync(nonExecutable, '', { mode: 0o600 });
+  const older = join(home, 'old-node');
+  script(older, 'echo 22');
+  for (const value of ['', join(home, 'missing'), nonExecutable, older]) {
+    const result = spawnSync(install, ['--dry-run'], { env: { ...env, NODE_BIN: value }, encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /NODE_BIN.*Node.js 24 以上/);
+    assert.equal(result.stdout, '');
+  }
 });
 
 test('Node 24 未満しかない場合は分かりやすい理由で終了する', darwin, t => {
@@ -78,7 +93,7 @@ test('自動化が見つからないときは stderr に警告し、有効な pl
   assert.equal(parsePlist(result.stdout).EnvironmentVariables.SUMMARY_AUTOMATION_ID, '');
 });
 
-test('更新は稼働用ファイルだけを配置し、旧版のファイルを除く', darwin, t => {
+function installedFixture(t: TestContext) {
   const { home, env, script, destination } = fixture(t);
   const checkout = join(home, 'checkout');
   mkdirSync(checkout);
@@ -99,9 +114,40 @@ test('更新は稼働用ファイルだけを配置し、旧版のファイル�
   const node = join(home, 'node');
   symlinkSync(process.execPath, node);
   script(join(home, 'npm'), 'set -eu\n[ "$1" = ci ] && [ "$2" = --prefix ] || exit 1\nmkdir -p "$3/node_modules/tweetnacl"');
-  execFileSync(isolatedInstall, { env: { ...env, NODE_BIN: node } });
+  const plist = join(home, 'Library/LaunchAgents/dev.okumura.orca-bot-remote.plist');
+  mkdirSync(dirname(plist), { recursive: true });
+  writeFileSync(plist, 'old plist');
+  const run = () => spawnSync(isolatedInstall, { env: { ...env, NODE_BIN: node }, encoding: 'utf8' });
+  const calls = () => readFileSync(join(home, 'launchctl.calls'), 'utf8').trim().split('\n');
+  return { home, script, destination, plist, run, calls };
+}
+
+test('更新は稼働用ファイルだけを配置し、旧版のファイルを除く', darwin, t => {
+  const { destination, run, calls } = installedFixture(t);
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(readdirSync(destination).sort(), ['node_modules', 'package-lock.json', 'package.json', 'src', 'vendor']);
   assert.ok(existsSync(join(destination, 'src/main.ts')));
   assert.ok(existsSync(join(destination, 'node_modules/tweetnacl')));
-  assert.deepEqual(readFileSync(join(home, 'launchctl.calls'), 'utf8').trim().split('\n'), ['print', 'bootout', 'bootstrap']);
+  assert.deepEqual(readdirSync(dirname(destination)), ['server']);
+  assert.deepEqual(calls(), ['print', 'bootout', 'bootstrap']);
 });
+
+for (const failure of ['mv', 'bootstrap']) {
+  test(`更新の ${failure} 失敗時に旧版と plist を復元して再登録する`, darwin, t => {
+    const { home, script, destination, plist, run, calls } = installedFixture(t);
+    if (failure === 'mv') {
+      script(join(home, 'mv'), 'case "$1" in */new) exit 1;; esac\nexec /bin/mv "$@"');
+    } else {
+      script(join(home, 'launchctl'), `echo "$1" >> "$HOME/launchctl.calls"
+        if [ "$1" = bootstrap ]; then [ "$(cat "$3")" = 'old plist' ]; fi`);
+    }
+    const result = run();
+    assert.equal(result.status, 1);
+    assert.deepEqual(readdirSync(destination), ['obsolete.ts']);
+    assert.equal(readFileSync(plist, 'utf8'), 'old plist');
+    assert.deepEqual(readdirSync(dirname(destination)), ['server']);
+    assert.deepEqual(calls(), failure === 'mv'
+      ? ['print', 'bootout', 'bootstrap'] : ['print', 'bootout', 'bootstrap', 'bootstrap']);
+  });
+}
