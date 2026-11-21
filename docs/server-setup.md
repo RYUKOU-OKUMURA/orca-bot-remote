@@ -1,22 +1,21 @@
 # Mac mini に Orca Bot Remote サーバーを設置する
 
-Mac mini と Android を同じ tailnet に接続します。Mac mini では Orca にログインして起動し、同じ macOS ユーザーのターミナルから作業します。スクリプトは `tailscale ip -4` と `~/.nvm/versions/node/v24.19.0/bin/node` を使います。
+Mac mini と Android を同じ tailnet に接続します。Mac mini では Orca にログインして起動し、同じ macOS ユーザーのターミナルから作業します。インストーラーは `tailscale ip -4` で待受アドレスを取得します。Node.js 24 以上を `NODE_BIN`、nvm のバージョンが新しい順、PATH 上の `node` の順に探します。通常の設置には npm も必要です。
 
 ## 設置と更新
 
 リポジトリのルートで実行します。
 
 ```sh
-(cd server && npm ci --omit=dev)
 server/launchd/install.sh --dry-run
 server/launchd/install.sh
 ```
 
 `--dry-run` は生成した plist を標準出力に表示します。`ProgramArguments` は Node と `main.ts` の絶対パスの2要素です。トークンの発行や LaunchAgent の登録は通常実行で行います。初回の通常実行でランダムなトークンを `~/.config/orca-bot-remote/token` に権限 `600` で保存します。インストーラーは保存場所を表示します。Android に設定する際は、そのファイルを信頼できる方法で開き、値を Android のトークン欄へ入力します。
 
-インストーラーは `server/` を `~/Library/Application Support/orca-bot-remote/server/` にコピーします。この配置なら LaunchAgent が macOS の TCC で保護された Desktop にアクセスする必要がありません。plist は `~/Library/LaunchAgents/dev.okumura.orca-bot-remote.plist` に置きます。更新時は通常のインストールコマンドを再実行します。既存のジョブを停止し、コピーを更新してから再登録します。
+インストーラーは一時ディレクトリに実行用のファイルと本番依存を揃え、`~/Library/Application Support/orca-bot-remote/server/` を置き換えます。この配置なら LaunchAgent が macOS の TCC で保護された Desktop にアクセスする必要がありません。plist は `~/Library/LaunchAgents/dev.okumura.orca-bot-remote.plist` に置きます。更新時は通常のインストールコマンドを再実行します。配置の準備が済んだら既存のジョブを停止し、更新して再登録します。
 
-インストール時に Orca から「専門Botの状況まとめ（毎日12:00）」を名前で検索し、見つかった ID を plist に書きます。自動化を後から作成・変更した場合は再実行してください。
+インストール時に Orca から「専門Botの状況まとめ（毎日12:00）」を名前で検索し、見つかった ID を plist に書きます。該当する自動化が無い場合は警告を表示し、まとめを未設定にして設置を続けます。自動化を後から作成・変更した場合は再実行してください。
 
 ## 本人として書き込む端末をペアリングする
 
