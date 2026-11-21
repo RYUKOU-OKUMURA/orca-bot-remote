@@ -47,8 +47,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 
 private val ListPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
@@ -88,8 +86,8 @@ internal fun Page(
 }
 
 @Composable
-private fun <T> screenModel(fetch: suspend () -> T): ScreenModel<T> {
-    val model: ScreenModel<T> = viewModel { ScreenModel(fetch) }
+private fun <T> screenModel(key: String? = null, fetch: suspend () -> T): ScreenModel<T> {
+    val model: ScreenModel<T> = viewModel(key = key) { ScreenModel(fetch) }
     LaunchedEffect(model) {
         if (model.data == null && model.error == null) model.refresh()
     }
@@ -101,26 +99,29 @@ private fun <T> DataContent(
     modifier: Modifier,
     model: ScreenModel<T>,
     settings: () -> Unit,
+    keepDataOnError: Boolean = false,
     content: @Composable (T) -> Unit,
 ) {
-    val retryWithPermission = withLocalNetworkPermission(onDenied = {}, onGranted = model::refresh)
     val error = model.error
     val data = model.data
     Box(modifier) {
         when {
-            error != null -> Column(
-                Modifier.align(Alignment.Center).widthIn(max = 450.dp).padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Text(error.text, color = MaterialTheme.colorScheme.error)
-                when (error) {
-                    ApiError.UNAUTHORIZED -> Button(onClick = settings) { Text("設定を開く") }
-                    else -> Button(
-                        onClick = if (error == ApiError.CONNECTION) retryWithPermission else model::refresh,
-                        enabled = !model.loading,
-                    ) { Text("再試行") }
+            error != null && (!keepDataOnError || data == null) -> {
+                LoadError(model, error, settings, Modifier.align(Alignment.Center))
+            }
+            data != null && keepDataOnError -> Column {
+                if (error != null) {
+                    Text(
+                        error.text,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    if (error == ApiError.UNAUTHORIZED) {
+                        TextButton(onClick = settings) { Text("設定を開く") }
+                    }
                 }
+                Box(Modifier.weight(1f)) { content(data) }
             }
             data != null -> content(data)
             else -> CircularProgressIndicator(Modifier.align(Alignment.Center))
@@ -129,7 +130,24 @@ private fun <T> DataContent(
     }
 }
 
-private data class HomeData(val bots: List<Bot>, val itemCount: Int, val summary: Summary?)
+@Composable
+private fun LoadError(model: ScreenModel<*>, error: ApiError, settings: () -> Unit, modifier: Modifier) {
+    val retryWithPermission = withLocalNetworkPermission(onDenied = {}, onGranted = model::refresh)
+    Column(
+        modifier.widthIn(max = 450.dp).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(error.text, color = MaterialTheme.colorScheme.error)
+        when (error) {
+            ApiError.UNAUTHORIZED -> Button(onClick = settings) { Text("設定を開く") }
+            else -> Button(
+                onClick = if (error == ApiError.CONNECTION) retryWithPermission else model::refresh,
+                enabled = !model.loading,
+            ) { Text("再試行") }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -142,13 +160,13 @@ internal fun HomeScreen(
     openItems: () -> Unit,
     openSummary: () -> Unit,
 ) {
-    val model = screenModel {
-        coroutineScope {
-            val bots = async { api.bots().bots }
-            val items = async { api.items().items.size }
-            val summary = async { api.summary().summary }
-            HomeData(bots.await(), items.await(), summary.await())
-        }
+    val bots = screenModel("bots") { api.bots().bots }
+    val items = screenModel("items") { api.items().items.size }
+    val summary = screenModel("summary") { api.summary() }
+    val refresh = {
+        bots.refresh()
+        items.refresh()
+        summary.refresh()
     }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(showSuccess) {
@@ -162,12 +180,22 @@ internal fun HomeScreen(
         action = { TextButton(onClick = settings) { Text("設定") } },
         snackbar = snackbar,
     ) { modifier ->
-        DataContent(modifier, model, settings) { data ->
-            PullToRefreshBox(isRefreshing = model.loading, onRefresh = model::refresh) {
+        val botError = bots.error
+        if (botError != null) {
+            Box(modifier) {
+                LoadError(bots, botError, settings, Modifier.align(Alignment.Center))
+                if (bots.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        } else {
+            PullToRefreshBox(
+                isRefreshing = bots.loading || items.loading || summary.loading,
+                onRefresh = refresh,
+                modifier = modifier,
+            ) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().semantics {
                         customActions = listOf(CustomAccessibilityAction("更新") {
-                            model.refresh()
+                            refresh()
                             true
                         })
                     },
@@ -177,7 +205,10 @@ internal fun HomeScreen(
                     item {
                         RowCard(
                             title = "12:00のまとめ",
-                            subtitle = data.summary?.content?.let(::summaryPreview) ?: "まだありません",
+                            caption = if (summary.error != null) "まとめを読めませんでした" else null,
+                            subtitle = summary.data?.let { result ->
+                                result.summary?.content?.let(::summaryPreview) ?: "まだありません"
+                            },
                             onClick = openSummary,
                             containerColor = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -185,11 +216,13 @@ internal fun HomeScreen(
                     }
                     item {
                         val color = MaterialTheme.colorScheme
+                        val count = items.data
                         RowCard(
-                            title = "判断待ち ${data.itemCount}件",
+                            title = if (count == null) "判断待ち" else "判断待ち ${count}件",
+                            caption = if (items.error != null) "件数を読めませんでした" else null,
                             onClick = openItems,
-                            containerColor = if (data.itemCount == 0) color.surfaceContainer else color.secondaryContainer,
-                            contentColor = if (data.itemCount == 0) color.onSurfaceVariant else color.onSecondaryContainer,
+                            containerColor = if (count == 0) color.surfaceContainer else color.secondaryContainer,
+                            contentColor = if (count == 0) color.onSurfaceVariant else color.onSecondaryContainer,
                         )
                     }
                     item {
@@ -199,8 +232,9 @@ internal fun HomeScreen(
                             style = MaterialTheme.typography.titleMedium,
                         )
                     }
-                    if (data.bots.isEmpty()) item { Text("Bot が見つかりません") }
-                    items(data.bots, key = { it.id }) { bot ->
+                    val botList = bots.data
+                    if (botList?.isEmpty() == true) item { Text("Bot が見つかりません") }
+                    items(botList.orEmpty(), key = { it.id }) { bot ->
                         RowCard(
                             title = bot.name,
                             subtitle = listOfNotNull(bot.specialty?.takeIf { it.isNotBlank() }, "停止中".takeIf { bot.paused })
@@ -259,18 +293,18 @@ internal fun ConversationScreen(
 ) {
     val model = screenModel { api.messages(bot, chatId) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val polling = model.error == null && shouldPoll(model.data?.state)
+    val polling = shouldPoll(model.data?.state, model.error)
     LaunchedEffect(lifecycle, model, polling) {
         if (polling) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 delay(5_000)
-                if (model.error != null || !shouldPoll(model.data?.state)) break
+                if (!shouldPoll(model.data?.state, model.error)) break
                 model.load()
             }
         }
     }
     Page(title, back, action = { RefreshAction(model) }) { modifier ->
-        DataContent(modifier, model, settings) { result ->
+        DataContent(modifier, model, settings, keepDataOnError = true) { result ->
             if (result.entries.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("メッセージはまだありません")

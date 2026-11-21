@@ -1,6 +1,7 @@
 package dev.okumura.orcaremote
 
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.Proxy
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -86,7 +87,7 @@ data class ItemDetail(
 data class Question(val text: String, val options: List<String>)
 
 @Serializable
-data class LatestSummary(val summary: Summary?)
+data class LatestSummary(val summary: Summary? = null)
 
 @Serializable
 data class Summary(val runAt: Long, val content: String, val bot: String, val chatId: String? = null)
@@ -113,6 +114,7 @@ internal class Connection private constructor(val url: HttpUrl, val token: Strin
 internal enum class ApiError(val text: String) {
     UNAUTHORIZED("トークンが違います。設定を確認してください"),
     CONNECTION("Mac mini につながりません（Tailscale がオンか確認）"),
+    TIMEOUT("Mac mini の応答が遅れています。もう一度お試しください"),
     NOT_FOUND("対象が見つかりません"),
     ORCA("Orca の読み取りに失敗しました"),
     RESPONSE("サーバーの応答を読み取れませんでした"),
@@ -139,6 +141,8 @@ internal class OrcaApi(private val connection: Connection) {
         return try {
             val body = client.newCall(request).readBody()
             withContext(Dispatchers.Default) { apiJson.decodeFromString(body) }
+        } catch (_: InterruptedIOException) {
+            throw ApiFailure(ApiError.TIMEOUT)
         } catch (_: IOException) {
             throw ApiFailure(ApiError.CONNECTION)
         } catch (_: SerializationException) {
@@ -150,7 +154,10 @@ internal class OrcaApi(private val connection: Connection) {
         private val client = OkHttpClient.Builder()
             .proxy(Proxy.NO_PROXY)
             .followRedirects(false)
-            .callTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            // The server may run three 20-second Orca commands per request.
+            .readTimeout(65, TimeUnit.SECONDS)
+            .callTimeout(70, TimeUnit.SECONDS)
             .build()
     }
 }

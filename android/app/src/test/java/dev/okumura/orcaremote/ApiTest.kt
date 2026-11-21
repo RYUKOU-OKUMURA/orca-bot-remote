@@ -89,6 +89,20 @@ class ApiTest {
     }
 
     @Test
+    fun omittedSummaryIsNull() {
+        assertNull(apiJson.decodeFromString<LatestSummary>("{}").summary)
+    }
+
+    @Test
+    fun unknownResponseKeysAreIgnored() {
+        val result = apiJson.decodeFromString<LatestSummary>(
+            """{"newField":true,"summary":{"runAt":1795230000000,"content":"# 午前の状況","bot":"メインBot","newField":42}}"""
+        )
+
+        assertEquals(Summary(1795230000000, "# 午前の状況", "メインBot"), result.summary)
+    }
+
+    @Test
     fun connectionAcceptsBaseUrlAndHeaderSafeToken() {
         assertNotNull(Connection.parse(" http://mac-mini:8787 ", " mock-orca-token "))
         assertNotNull(Connection.parse("http://[fd7a:115c:a1e0::1234]:8787", "mock-orca-token"))
@@ -101,10 +115,21 @@ class ApiTest {
 
     @Test
     fun onlyWorkingStatePolls() {
-        assertTrue(shouldPoll("working"))
+        assertTrue(shouldPoll("working", null))
         for (state in listOf(null, "done", "idle", "blocked", "waiting", "unknown")) {
-            assertFalse("Unexpected polling state: $state", shouldPoll(state))
+            assertFalse("Unexpected polling state: $state", shouldPoll(state, null))
         }
+    }
+
+    @Test
+    fun pollingContinuesOnlyAfterTransientErrorsWhileWorking() {
+        assertFalse(shouldPoll("working", ApiError.UNAUTHORIZED))
+        assertFalse(shouldPoll("working", ApiError.NOT_FOUND))
+        assertFalse(shouldPoll("working", ApiError.RESPONSE))
+        assertTrue(shouldPoll("working", ApiError.ORCA))
+        assertTrue(shouldPoll("working", ApiError.TIMEOUT))
+        assertTrue(shouldPoll("working", ApiError.CONNECTION))
+        assertFalse(shouldPoll("done", ApiError.ORCA))
     }
 
     @Test

@@ -33,7 +33,10 @@ internal class ScreenModel<T>(private val fetch: suspend () -> T) : ViewModel() 
     }
 }
 
-internal fun shouldPoll(state: String?): Boolean = state == "working"
+internal fun shouldPoll(state: String?, error: ApiError?): Boolean = state == "working" && when (error) {
+    null, ApiError.ORCA, ApiError.TIMEOUT, ApiError.CONNECTION -> true
+    else -> false
+}
 
 internal fun relativeTime(timestamp: Long?, now: Long = System.currentTimeMillis()): String? {
     if (timestamp == null) return null
