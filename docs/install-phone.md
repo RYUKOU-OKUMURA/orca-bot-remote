@@ -26,6 +26,12 @@
 
 [MagicDNS の説明](https://tailscale.com/docs/features/magicdns) · [Android のローカルネットワーク権限](https://developer.android.com/privacy-and-security/local-network-permission)
 
+## 通知について
+
+アプリは約15分ごとに Mac mini を確認します。通知が届くのはスマートフォンの Tailscale がオンで、Mac mini に接続できるときです。電池の最適化により、通知が遅れることがあります。
+初回の確認では、すでにある判断待ちやまとめを記録します。その後に見つかった新しい内容を通知します。
+アプリの「設定」で通知をオン・オフできます。Android 13 以降で通知の許可を断った場合は、「通知を許可する」から Android の設定を開けます。
+
 ## 通信設定について
 
 アプリと Mac mini の間では、Tailscale の暗号化された接続の中で HTTP を使います。Android の通信設定 XML では `mac-mini` や `ts.net` のサブドメインを指定できますが、接続先として入力できる Tailscale の IP アドレスの範囲を指定できません。このためアプリ全体で平文 HTTP を許可しています。接続先には自分の Mac mini の Tailscale アドレスを入力してください。開発用のエミュレーター接続先 `10.0.2.2` への HTTP はデバッグ版に限って許可しています。
