@@ -65,10 +65,19 @@ private fun InlineText(node: Node, modifier: Modifier = Modifier, style: TextSty
     SelectionContainer { Text(annotated, modifier, style = style) }
 }
 
+internal inline fun Node.forEachVisibleBlock(render: (Node) -> Unit) {
+    for (block in children()) {
+        when (block) {
+            is LinkReferenceDefinition -> Unit
+            else -> render(block)
+        }
+    }
+}
+
 @Composable
 private fun MarkdownChildren(parent: Node) {
     val colors = MaterialTheme.colorScheme
-    for (block in parent.children()) {
+    parent.forEachVisibleBlock { block ->
         when (block) {
             is Heading -> {
                 val size = listOf(32, 28, 25, 22, 20, 18)[block.level - 1]

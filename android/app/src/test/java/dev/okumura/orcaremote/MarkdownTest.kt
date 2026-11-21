@@ -54,6 +54,29 @@ class MarkdownTest {
     }
 
     @Test
+    fun referenceDefinitionOccupiesNoBlockAndStillResolvesTheLink() {
+        val blocks = buildList {
+            parseMarkdown("[docs]: https://example.org/docs\n\nSee [docs].").forEachVisibleBlock { add(it) }
+        }
+        val paragraph = markdownInline(blocks.single() as Paragraph)
+        assertEquals("See docs.", paragraph.text)
+        val link = paragraph.getLinkAnnotations(0, paragraph.length).single()
+        assertEquals("https://example.org/docs", (link.item as LinkAnnotation.Url).url)
+    }
+
+    @Test
+    fun bareWebUrlsAreLinkedOutsideCodeAndExistingLinks() {
+        val text = markdownInline(parseMarkdown(
+            "See https://example.org/path, http://example.net. `https://code.org` " +
+                "[https://label.org](https://target.org) ftp://files.org file:///tmp",
+        ))
+        val links = text.getLinkAnnotations(0, text.length)
+        assertEquals(listOf("https://example.org/path", "http://example.net", "https://target.org"),
+            links.map { (it.item as LinkAnnotation.Url).url })
+        assertEquals("https://label.org", text.text.substring(links.last().start, links.last().end))
+    }
+
+    @Test
     fun numberedListsKeepStartNumberAndNestedBulletItems() {
         val list = parseMarkdown("4. parent\n   - one\n   - two\n5. next").firstChild as OrderedList
         assertEquals(4, list.markerStartNumber)

@@ -13,6 +13,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import org.commonmark.ext.autolink.AutolinkExtension
+import org.commonmark.ext.autolink.AutolinkType
 import org.commonmark.ext.gfm.strikethrough.Strikethrough
 import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension
 import org.commonmark.ext.gfm.tables.TablesExtension
@@ -22,7 +24,8 @@ import java.net.URI
 import java.net.URISyntaxException
 
 private val markdownParser = Parser.builder()
-    .extensions(listOf(TablesExtension.create(), StrikethroughExtension.create()))
+    .extensions(listOf(TablesExtension.create(), StrikethroughExtension.create(),
+        AutolinkExtension.builder().linkTypes(AutolinkType.URL).build()))
     .build()
 
 internal fun parseMarkdown(text: String): Node = markdownParser.parse(text)
