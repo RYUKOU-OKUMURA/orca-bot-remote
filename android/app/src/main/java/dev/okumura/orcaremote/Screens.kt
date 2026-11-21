@@ -207,7 +207,13 @@ internal fun HomeScreen(
     openSummary: () -> Unit,
     openChat: (String, String, String) -> Unit,
 ) {
-    val bots = screenModel("bots") { api.bots().bots.also(meta::observeBots) }
+    val context = LocalContext.current.applicationContext
+    val bots = screenModel("bots") {
+        api.bots().bots.also { list ->
+            meta.observeBots(list)
+            QuickMemoWidgetProvider.updateCount(context, list.sumOf { it.needsYou })
+        }
+    }
     val summary = screenModel("summary") { api.summary() }
     var expandedBot by rememberSaveable { mutableStateOf<String?>(null) }
     val inlineChats = expandedBot?.let { bot ->
@@ -400,6 +406,7 @@ internal fun NewChatScreen(
             AttachmentPreview(chat, enabled)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AttachmentPicker(chat, enabled)
+                VoiceInput(sender, enabled)
                 DraftField(sender, "Bot に頼みたいこと", Modifier.weight(1f), minLines = 5)
             }
             SendButton(sender, Modifier.fillMaxWidth())
@@ -647,7 +654,8 @@ internal fun ItemsScreen(
     openChat: (String, String, String) -> Unit,
     openItem: (PendingItem) -> Unit,
 ) {
-    val model = screenModel { api.items() }
+    val context = LocalContext.current.applicationContext
+    val model = screenModel { api.items().also { QuickMemoWidgetProvider.updateCount(context, it.items.count { item -> item.status == "needs_you" }) } }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(refreshItems) {
         if (refreshItems) {
@@ -828,7 +836,7 @@ internal fun SummaryScreen(
 }
 
 @Composable
-private fun DetailContent(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+internal fun DetailContent(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(
         modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(OrcaInset),
         verticalArrangement = Arrangement.spacedBy(OrcaInset),
@@ -907,7 +915,7 @@ internal fun ResendDialog(cancel: () -> Unit, confirm: () -> Unit) {
 }
 
 @Composable
-private fun SendStatus(
+internal fun SendStatus(
     sender: SendModel<*>,
     settings: () -> Unit,
     conflict: String = ApiError.CONFLICT.text,

@@ -1,0 +1,6 @@
+<resources>
+    <color name="widget_background">#EEF1F4</color>
+    <color name="widget_ink">#162330</color>
+    <string name="quick_memo">クイックメモ</string>
+    <string name="voice_memo">音声メモ</string>
+</resources>

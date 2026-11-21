@@ -1,0 +1,14 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="horizontal" android:gravity="center_vertical"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/widget_background" android:paddingHorizontal="8dp">
+    <TextView android:id="@+id/memo" android:layout_width="0dp" android:layout_weight="1.6"
+        android:layout_height="match_parent" android:gravity="center"
+        android:text="@string/quick_memo" android:textStyle="bold" android:textColor="@color/widget_ink" />
+    <ImageButton android:id="@+id/voice" android:layout_width="48dp" android:layout_height="match_parent"
+        android:background="@android:color/transparent" android:src="@drawable/ic_mic"
+        android:tint="@color/widget_ink" android:contentDescription="@string/voice_memo" />
+    <TextView android:id="@+id/pending" android:layout_width="0dp" android:layout_weight="1"
+        android:layout_height="match_parent" android:gravity="center"
+        android:text="判断待ち" android:textColor="@color/widget_ink" />
+</LinearLayout>

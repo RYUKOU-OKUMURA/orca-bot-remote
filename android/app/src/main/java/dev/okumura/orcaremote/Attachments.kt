@@ -86,7 +86,9 @@ private suspend fun InputStream.copyLimited(limit: Long, chunk: (ByteArray, Int)
     return size
 }
 
-internal class ChatDraft(private val saved: SavedStateHandle, val limits: AttachmentLimits) {
+internal class ChatDraft(private val saved: SavedStateHandle, limits: AttachmentLimits) {
+    var limits by mutableStateOf(limits)
+        private set
     var attachments by mutableStateOf(saved.get<String>("attachments")?.let {
         apiJson.decodeFromString<List<LocalAttachment>>(it).map(LocalAttachment::sanitized)
     }.orEmpty())
@@ -105,6 +107,21 @@ internal class ChatDraft(private val saved: SavedStateHandle, val limits: Attach
     private fun updateSkills(values: List<SkillRef>) {
         skills = values
         saved["skills"] = apiJson.encodeToString(values)
+    }
+
+    fun changeDestination(newLimits: AttachmentLimits): Boolean {
+        var bytes = 0L
+        for ((index, file) in attachments.withIndex()) {
+            newLimits.error(index, bytes, file.size)?.let {
+                notice = "送信先を変更するには添付を減らしてください。$it"
+                return false
+            }
+            bytes += file.size
+        }
+        limits = newLimits
+        update(attachments.map { it.copy(uploaded = null) })
+        notice = null
+        return true
     }
 
     fun addSkill(skill: SkillRef) {

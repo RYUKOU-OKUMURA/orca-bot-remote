@@ -86,6 +86,8 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
             .putString("url", verified.url.toString())
             .putString("token", verified.token)
         if (verified.url != connection?.url) {
+            editor.remove("lastMemoBot")
+            QuickMemoWidgetProvider.updateCount(getApplication(), -1)
             editor.remove(NotifiedItems).remove(NotifiedSummary).remove(SummaryInitialized)
             getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
         }
@@ -127,6 +129,7 @@ internal fun SharedPreferences.savedConnection(): Connection? =
 @Serializable private data class ConversationRoute(val bot: String, val chatId: String, val title: String)
 @Serializable private object ItemsRoute
 @Serializable private data class ItemRoute(val bot: String, val number: Long)
+@Serializable private data class QuickMemoRoute(val voice: Boolean = false)
 @Serializable private object ShareRoute
 @Serializable private object SummaryRoute
 
@@ -199,6 +202,11 @@ private fun RemoteApp(
                     { nav.navigate(SummaryRoute) },
                     openConversation,
                 )
+            }
+        }
+        composable<QuickMemoRoute> { entry ->
+            if (api != null) QuickMemoScreen(api, meta, entry.savedStateHandle, entry.toRoute<QuickMemoRoute>().voice, back, openSettings) { bot, chatId ->
+                nav.navigate(ConversationRoute(bot, chatId, bot)) { popUpTo<QuickMemoRoute> { inclusive = true } }
             }
         }
         composable<ShareRoute> { entry ->
@@ -306,6 +314,10 @@ private fun RemoteApp(
             return@LaunchedEffect
         }
         val uri = notificationTarget.link?.let(Uri::parse) ?: return@LaunchedEffect
+        memoVoice(uri.toString())?.let { voice ->
+            nav.navigate(QuickMemoRoute(voice))
+            return@LaunchedEffect
+        }
         val screen = uri.authority
         val (bot, number) = uri.pathSegments.let {
             it.getOrNull(0).orEmpty() to it.getOrNull(1)?.toLongOrNull()

@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.BadParcelableException
 import android.os.Build
 import kotlinx.serialization.Serializable
+import java.net.URI
 
 @Serializable
 internal data class SharedDraft(val text: String, val uris: List<String>)
@@ -22,6 +23,12 @@ internal fun sharedDraft(action: String?, subject: String?, text: String?, strea
         else -> "$title\n$body"
     }
     return SharedDraft(combined, (streams + clips).distinct()).takeIf { it.text.isNotBlank() || it.uris.isNotEmpty() }
+}
+
+internal fun memoVoice(link: String): Boolean? {
+    val uri = runCatching { URI(link) }.getOrNull() ?: return null
+    if (uri.scheme != "orcaremote" || uri.rawAuthority != "quick-memo" || !uri.path.isNullOrEmpty()) return null
+    return uri.rawQuery.orEmpty().split('&').contains("voice=1")
 }
 
 @Suppress("DEPRECATION")
@@ -46,5 +53,5 @@ internal fun Intent.externalOpen(coldStart: Boolean): ExternalOpen? {
             null
         }
     }
-    return data?.takeIf { it.scheme == NotificationScheme }?.let { ExternalOpen(link = it.toString(), coldStart = coldStart) }
+    return data?.takeIf { it.scheme == NotificationScheme || (it.scheme == "orcaremote" && (memoVoice(it.toString()) != null || it.authority == "items")) }?.let { ExternalOpen(link = it.toString(), coldStart = coldStart) }
 }
