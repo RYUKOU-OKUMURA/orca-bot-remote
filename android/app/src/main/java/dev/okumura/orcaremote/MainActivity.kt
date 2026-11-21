@@ -37,6 +37,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import kotlinx.serialization.Serializable
@@ -183,6 +184,7 @@ private fun RemoteApp(
     consumeNotification: () -> Unit,
 ) {
     val nav = rememberNavController()
+    val currentEntry by nav.currentBackStackEntryAsState()
     val settingsFirst = rememberSaveable { store.connection == null }
     val connection = store.connection
     val api = remember(connection) { connection?.let { OrcaApi(it) } }
@@ -249,12 +251,7 @@ private fun RemoteApp(
                         chatsEntry.savedStateHandle[RefreshChats] = true
                         nav.popBackStack()
                     },
-                ) { chatId ->
-                    chatsEntry.savedStateHandle[RefreshChats] = true
-                    nav.navigate(ConversationRoute(bot, chatId, bot)) {
-                        popUpTo<NewChatRoute> { inclusive = true }
-                    }
-                }
+                )
             }
         }
         composable<ConversationRoute> { entry ->
@@ -278,13 +275,38 @@ private fun RemoteApp(
                 nav.getBackStackEntry<HomeRoute>().savedStateHandle[RefreshCounts] = true
                 itemsEntry?.savedStateHandle?.set(RefreshItems, true)
             }
-            if (api != null) ItemScreen(api, bot, number, back, openSettings, openConversation, refreshAfterAnswer) {
-                itemsEntry?.savedStateHandle?.set(Answered, true)
-                nav.popBackStack()
+            if (api != null) ItemScreen(
+                api, bot, number, back, openSettings, openConversation, refreshAfterAnswer,
+                isCurrent = currentEntry == entry,
+            ) {
+                if (nav.currentBackStackEntry == entry) {
+                    itemsEntry?.savedStateHandle?.set(Answered, true)
+                    nav.popBackStack()
+                }
             }
         }
         composable<SummaryRoute> {
             if (api != null) SummaryScreen(api, back, openSettings, openConversation)
+        }
+    }
+
+    // Consume chat results even while a notification covers the form.
+    val newChatEntry = remember(currentEntry) { runCatching { nav.getBackStackEntry<NewChatRoute>() }.getOrNull() }
+    if (api != null && newChatEntry != null) {
+        val (bot) = newChatEntry.toRoute<NewChatRoute>()
+        val chatsEntry = remember(newChatEntry) { nav.getBackStackEntry<ChatsRoute>() }
+        val sender = newChatSender(chatsEntry, api, bot)
+        val result = sender.result
+        LaunchedEffect(newChatEntry, result) {
+            if (result != null) {
+                sender.resultShown()
+                chatsEntry.savedStateHandle[RefreshChats] = true
+                if (nav.currentBackStackEntry == newChatEntry) {
+                    nav.navigate(ConversationRoute(bot, result, bot)) {
+                        popUpTo<NewChatRoute> { inclusive = true }
+                    }
+                }
+            }
         }
     }
 
@@ -300,8 +322,13 @@ private fun RemoteApp(
             "summary" -> nav.navigate(SummaryRoute)
             "items" -> nav.navigate(ItemsRoute)
             "item" -> if (bot.isNotBlank() && number != null && number > 0) {
-                if (notificationTarget.coldStart) nav.navigate(ItemsRoute)
-                nav.navigate(ItemRoute(bot, number))
+                val route = ItemRoute(bot, number)
+                if (runCatching { nav.getBackStackEntry(route) }.isSuccess) {
+                    nav.popBackStack(route, inclusive = false)
+                } else {
+                    if (notificationTarget.coldStart) nav.navigate(ItemsRoute)
+                    nav.navigate(route)
+                }
             }
         }
     }

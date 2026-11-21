@@ -69,6 +69,24 @@ class NotificationDecisionTest {
     }
 
     @Test
+    fun remainingCountUsesOnlyNewItemsWhenPollingAgain() {
+        val items = (1L..6L).map { item(it) }
+        val previous = NotificationHistory(emptySet(), 100)
+        val five = decideNotifications(previous, items.take(5), 100)
+        assertEquals(items.take(5), five.newItems)
+        assertEquals(0, five.remainingItems)
+
+        val six = decideNotifications(previous, items, 100)
+        assertEquals(items.take(5), six.newItems)
+        assertEquals(1, six.remainingItems)
+
+        val nextSummary = decideNotifications(six.history, items, 101)
+        assertTrue(nextSummary.newItems.isEmpty())
+        assertEquals(0, nextSummary.remainingItems)
+        assertTrue(nextSummary.notifySummary)
+    }
+
+    @Test
     fun deniedPermissionPrunesResolvedItemsWithoutMarkingNewArrivalsAsNotified() {
         val previous = NotificationHistory(setOf("7:メインBot"), 100)
         val result = decideNotifications(previous, listOf(item(8)), 101, canNotifyItems = false, canNotifySummary = false)
