@@ -224,7 +224,8 @@ test('閉じたチャットのメッセージとツールも元の順序と契�
 test('本体チャットと配下ワーカーを Bot ごとに分類し、3つの API が作業状態を共有する', async t => {
   const { bin, calls } = recordOrcaCalls(t);
   const main = 'メインBot';
-  const title = '📋'.repeat(81);
+  const title = '調査 ' + '📋'.repeat(77);
+  const tool = 'CLI ' + '🛠'.repeat(76);
   const worktrees = [
     { bot: main, botHome: true, agents: [
       { state: 'working', orcaSessionId: 'new' }, { state: 'done', orcaSessionId: 'old' }
@@ -233,9 +234,9 @@ test('本体チャットと配下ワーカーを Bot ごとに分類し、3つ�
     { agents: [{ state: 'running', taskTitle: 'Bot 外' }] },
     { bot: main, displayName: '作業場所', agents: [
       { mainAgent: { state: 'working' }, state: 'idle', orcaSessionId: 'no-time',
-        taskTitle: ' ' + title, conversationName: '会話', toolName: ' Read ' },
-      { state: 'running', taskTitle: title, toolName: '別ツール' },
-      { state: 'working', taskTitle: ' ', conversationName: '会話', toolName: ' ' },
+        taskTitle: '\x00\t', conversationName: ' 調査\r\n　' + '📋'.repeat(90), toolName: ' CLI\x7f\n' + '🛠'.repeat(85) },
+      { state: 'running', taskTitle: title + '続き', toolName: '別ツール' },
+      { state: 'working', taskTitle: ' 会話 ', conversationName: '第2候補', toolName: '\x00\n' },
       { state: 'done', taskTitle: '完了済み' }, { state: 'running', conversationName: 42, toolName: 7 }
     ] },
     { bot: main, botHome: false, agents: [
@@ -246,12 +247,12 @@ test('本体チャットと配下ワーカーを Bot ごとに分類し、3つ�
   writeFileSync(`${bin}.ps-result`, JSON.stringify({ worktrees }));
   const get = await openApi(t, undefined, bin);
   const { bots } = await get('/api/bots');
-  assert.deepEqual(bots.map(b => [b.working, b.activeWork]), [[true, '📋'.repeat(80)], [true, '応答を作成中']]);
+  assert.deepEqual(bots.map(b => [b.working, b.activeWork]), [[true, title], [true, '応答を作成中']]);
   assert.deepEqual((await get(chats)).chats.map(c => [c.id, c.working]), [
     ['new', true], ['old', false], ['no-time', false]
   ]);
   assert.deepEqual((await get(messages)).activeWorkers, [
-    { title, tool: 'Read' }, { title: '会話', tool: null }, { title: '作業場所', tool: null },
+    { title, tool }, { title: '会話', tool: null }, { title: '作業場所', tool: null },
     { title: 'ワーカー作業中', tool: null }, ...Array.from({ length: 6 }, (_, i) => ({ title: String(i), tool: null }))
   ]);
   assert.deepEqual((await get(openMessages)).activeWorkers, []);
@@ -261,7 +262,7 @@ test('本体チャットと配下ワーカーを Bot ごとに分類し、3つ�
   writeFileSync(`${bin}.ps-result`, JSON.stringify({ worktrees: [worktrees[3]] }));
   const workersOnly = await get('/api/bots');
   assert.equal(workersOnly.bots[0].working, true);
-  assert.equal(workersOnly.bots[0].activeWork, '📋'.repeat(80));
+  assert.equal(workersOnly.bots[0].activeWork, title);
 });
 
 test('worktree ps の失敗や不正な形式では、3つの API が 200 で稼働なしを返す', async t => {
@@ -297,6 +298,17 @@ test('作業状態の取得中にリクエストを中断した場合は空応�
   const pending = orca.chats(main);
   controller.abort();
   await assert.rejects(pending, { name: 'AbortError' });
+});
+
+test('worktree ps がハングしてもリクエストの期限前に3つの API が空の作業状態を返す', async t => {
+  const { bin } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.slow-ps`, '');
+  const get = await openApi(t, undefined, bin, 7_000);
+  const [list, rooms, history] = await Promise.all([get('/api/bots'), get(chats), get(messages)]);
+  assert.deepEqual(list.bots.map(b => [b.working, b.activeWork]), [[false, null], [false, null]]);
+  assert.deepEqual(rooms.chats.map(c => c.working), [false, false, false]);
+  assert.deepEqual(history.activeWorkers, []);
+  assert.equal(history.entries.length, 4);
 });
 
 test('limit は 1〜100 に丸め、整数以外は既定値を使う', async t => {

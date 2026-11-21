@@ -5,6 +5,7 @@ fi
 case "$*" in
     'worktree ps --json')
         if [ -f "$0.fail-ps" ]; then exit 1; fi
+        if [ -f "$0.slow-ps" ]; then sleep 10; fi
         result='{"worktrees":[]}'
         if [ -f "$0.ps-result" ]; then result=$(/bin/cat "$0.ps-result"); fi
         ;;

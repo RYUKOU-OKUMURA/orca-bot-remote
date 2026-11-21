@@ -139,7 +139,9 @@ async function readMascots(signal: AbortSignal) {
 
 export function createOrca(orcaBin: string, summaryId: string | undefined, signal: AbortSignal, deadline: number) {
   async function read<T>(...args: string[]): Promise<T> {
-    return withCliSlot(signal, deadline, () => new Promise<T>((resolve, reject) => {
+    // Optional worktree status gets four seconds including the wait for a CLI slot.
+    const statusDeadline = args[0] === 'worktree' && args[1] === 'ps' ? performance.now() + 4_000 : Infinity;
+    return withCliSlot(signal, Math.min(deadline, statusDeadline), () => new Promise<T>((resolve, reject) => {
       const child = spawn(orcaBin, [...args, '--json'], {
         env: { HOME: homedir(), PATH: '/usr/bin:/bin' },
         // Give the CLI and its descendants a process group of their own.
@@ -168,7 +170,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       }
 
       activeStops.add(stop);
-      const timer = setTimeout(stop, 20_000);
+      const timer = setTimeout(stop, Math.min(20_000, Math.ceil(statusDeadline - performance.now())));
       signal.addEventListener('abort', stop, { once: true });
       child.once('exit', () => { exited = true; });
       child.on('error', stop);
@@ -230,7 +232,11 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
   async function activeWorkByBot() {
     const byBot = new Map<string, ActiveWork>();
     const working = (state: unknown) => state === 'working' || state === 'running';
-    const label = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+    function label(value: unknown) {
+      if (typeof value !== 'string') return '';
+      const line = value.replace(/[\s\p{Cc}]+/gu, ' ').trimStart();
+      return line.match(/^.{0,80}/u)![0].trimEnd();
+    }
     const valid = (trees: Worktree[]) => trees.every(tree => Array.isArray(tree?.agents) &&
       tree.agents.every(agent => agent && typeof agent === 'object' && !Array.isArray(agent)));
     const worktrees = await readList<Worktree>('worktrees', 3_000, valid, () => true, 'worktree', 'ps').catch(() => null);
@@ -329,8 +335,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       return bots.map((bot, index) => {
         const [items, chat] = previews[index];
         const work = activity.get(bot.name);
-        const title = work?.workers[0]?.title;
-        const activeWork = title ? [...title].slice(0, 80).join('') : work?.chatIds.size ? '応答を作成中' : null;
+        const activeWork = work?.workers[0]?.title ?? (work?.chatIds.size ? '応答を作成中' : null);
         return {
           id: bot.id, name: bot.name, specialty: bot.specialty ?? null, paused: bot.paused,
           working: activeWork !== null, activeWork,
