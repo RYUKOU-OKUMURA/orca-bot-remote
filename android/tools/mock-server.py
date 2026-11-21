@@ -151,6 +151,32 @@ def chat_state(chat_id):
     return MESSAGES[chat_id][0]
 
 
+def bot_list():
+    result = []
+    for bot in BOTS:
+        chats = CHATS.get(bot["name"], [])
+        latest = max(chats, key=lambda chat: chat["lastActivityAt"], default={})
+        working = any(chat_state(chat["id"]) == "working" for chat in chats)
+        result.append(dict(bot, working=working, activeWork="状況を確認中" if working else None,
+                           lastActivityAt=latest.get("lastActivityAt"), lastSaid=latest.get("lastSaid")))
+    return result
+
+
+def board_snapshot():
+    sessions = []
+    bots = bot_list()
+    for bot in bots:
+        base = {"bot": bot["name"], "avatar": bot["avatar"]}
+        for chat in CHATS.get(bot["name"], []):
+            if chat_state(chat["id"]) == "working":
+                sessions.append(dict(base, kind="worker", title="進捗確認", tool="read", chatId=None))
+                sessions.append(dict(base, kind="chat", title=chat.get("title") or "チャット", chatId=chat["id"]))
+    tasks = [dict(ITEM, avatar="mascot:A1", lastActivityAt=START_MS - 60_000),
+             dict(bot=BOT, avatar="mascot:A1", number=8, title="下書きを作成", status="in_progress", chatId=HOME_ID),
+             dict(bot=BOT, avatar="mascot:A1", number=9, title="来週の予定を確認", status="planned", chatId=None)]
+    return {"updatedAt": int(time.time() * 1000), "bots": bots, "sessions": sessions, "tasks": tasks}
+
+
 def chat_options(chat_id):
     selected = OPTIONS.get(chat_id, {})
     return {key: {"current": selected.get(key, choices[0][0]),
@@ -227,7 +253,8 @@ class MockHandler(BaseHTTPRequestHandler):
             with LOCK:
                 return (ITEM["status"], SUMMARY["runAt"], tuple(
                     (chat["id"], chat.get("lastActivityAt"), chat.get("lastSaid"))
-                    for chats in CHATS.values() for chat in chats))
+                    for chats in CHATS.values() for chat in chats), tuple(
+                        (chat["id"], chat_state(chat["id"])) for chats in CHATS.values() for chat in chats))
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -241,7 +268,8 @@ class MockHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 time.sleep(1)
                 current = state()
-                changes = {k: a != b for k, a, b in zip(("items", "summary", "bots"), previous, current)}
+                changes = {k: a != b for k, a, b in zip(("items", "summary", "bots", "board"), previous, current)}
+                changes["board"] |= changes["items"] or changes["bots"]
                 previous = current
                 line = (f'event: change\ndata: {json.dumps(dict(changes, at=int(time.time() * 1000)))}\n\n'
                         if any(changes.values()) else ": ping\n\n")
@@ -261,16 +289,9 @@ class MockHandler(BaseHTTPRequestHandler):
                 case ["api", "health"]:
                     data = {"ok": True}
                 case ["api", "bots"]:
-                    data = {"bots": []}
-                    for bot in BOTS:
-                        latest = max(CHATS.get(bot["name"], []), key=lambda chat: chat["lastActivityAt"], default={})
-                        working = any(chat_state(chat["id"]) == "working" for chat in CHATS.get(bot["name"], []))
-                        data["bots"].append({
-                            "working": working, "activeWork": "状況を確認中" if working else None,
-                            **bot,
-                            "lastActivityAt": latest.get("lastActivityAt"),
-                            "lastSaid": latest.get("lastSaid"),
-                        })
+                    data = {"bots": bot_list()}
+                case ["api", "board"]:
+                    data = board_snapshot()
                 case ["api", "bots", name, "chats"] if name in BOT_FIXTURES:
                     data = {"chats": sorted(
                         (dict(chat, working=chat_state(chat["id"]) == "working") for chat in CHATS.get(name, [])),
@@ -353,7 +374,7 @@ class MockHandler(BaseHTTPRequestHandler):
             case ["api", "items", name, "7", "answer"] if name == BOT:
                 operation = "answer"
                 chat_id = REVIEW_ID
-            case ["api", "bots" | "items" | "summary"] | ["api", "items", _, _]:
+            case ["api", "bots" | "items" | "summary" | "board"] | ["api", "items", _, _]:
                 self.method_not_allowed("GET")
                 return
             case _:

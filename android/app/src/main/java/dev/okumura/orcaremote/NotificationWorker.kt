@@ -22,6 +22,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -59,16 +60,18 @@ internal object NotificationSync {
     // Serialize SSE and periodic snapshots without blocking settings changes during network I/O.
     private val syncMutex = Mutex()
 
-    suspend fun sync(context: Context) = withContext(Dispatchers.IO) {
-        syncMutex.withLock { checkChanges(context) }
+    suspend fun sync(context: Context, target: SyncTarget = SyncTarget.BOTH) = withContext(Dispatchers.IO) {
+        syncMutex.withLock { checkChanges(context, target) }
     }
 
-    private suspend fun checkChanges(context: Context) = coroutineScope {
+    private suspend fun checkChanges(context: Context, target: SyncTarget) = coroutineScope {
         val prefs = context.connectionPreferences()
         val (connection, connectionId) = notificationSettingsMutex.withLock {
             val saved = prefs.enabledConnection() ?: return@coroutineScope
             saved to prefs.getString(NotificationConnectionId, "")
         }
+        if (target != SyncTarget.NOTIFICATIONS) launch { SecretaryBoardWidgetProvider.refresh(context) }
+        if (target == SyncTarget.BOARD) return@coroutineScope
         createNotificationChannels(context)
         val api = OrcaApi(connection)
         val itemsRequest = async { readOrNull { api.items().items } }
@@ -134,7 +137,8 @@ internal object NotificationSync {
                 manager.post(context, itemChannel!!, notificationTarget("items"), "判断待ち", "ほか ${decision.remainingItems} 件")
             }
             if (decision.notifySummary) {
-                manager.post(context, summaryChannel!!, notificationTarget("summary"), "まとめ", "12:00のまとめが届きました")
+                val title = summaryTitle(summary?.summary?.runAt)
+                manager.post(context, summaryChannel!!, notificationTarget("summary"), title, "${title}が届きました")
             }
             chats.forEach { (bot, chat) ->
                 delivery(RepliesChannel, chat)?.let { channel ->
@@ -171,7 +175,7 @@ internal fun createNotificationChannels(context: Context) {
         listOf(
             NotificationChannel(ItemsChannel, "判断待ち", NotificationManager.IMPORTANCE_HIGH),
             NotificationChannel(RepliesChannel, "ボットの返答", NotificationManager.IMPORTANCE_DEFAULT),
-            NotificationChannel(SummaryChannel, "まとめ", NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(SummaryChannel, summaryTitle(null), NotificationManager.IMPORTANCE_DEFAULT),
             NotificationChannel(QuietChannel, "おやすみ中の通知", NotificationManager.IMPORTANCE_LOW).apply {
                 setSound(null, null)
                 enableVibration(false)

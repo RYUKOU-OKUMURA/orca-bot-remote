@@ -1,10 +1,10 @@
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
-    <shortcut android:shortcutId="memo" android:shortcutShortLabel="@string/quick_memo" android:icon="@drawable/ic_new">
-        <intent android:action="android.intent.action.VIEW" android:data="orcaremote://quick-memo"
+    <shortcut android:shortcutId="memo" android:shortcutShortLabel="@string/secretary_memo" android:icon="@drawable/ic_new">
+        <intent android:action="android.intent.action.VIEW" android:data="orcaremote://quick-memo?inbox=1"
             android:targetPackage="dev.okumura.orcaremote" android:targetClass="dev.okumura.orcaremote.MainActivity" />
     </shortcut>
     <shortcut android:shortcutId="voice" android:shortcutShortLabel="@string/voice_memo" android:icon="@drawable/ic_mic">
-        <intent android:action="android.intent.action.VIEW" android:data="orcaremote://quick-memo?voice=1"
+        <intent android:action="android.intent.action.VIEW" android:data="orcaremote://quick-memo?inbox=1&amp;voice=1"
             android:targetPackage="dev.okumura.orcaremote" android:targetClass="dev.okumura.orcaremote.MainActivity" />
     </shortcut>
 </shortcuts>

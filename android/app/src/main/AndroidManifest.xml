@@ -27,6 +27,14 @@
         </receiver>
         <receiver android:name=".AppInstallReceiver" android:exported="false" />
         <receiver android:name=".NotificationActionReceiver" android:exported="false" />
+        <receiver android:name=".SecretaryBoardWidgetProvider" android:label="@string/secretary_board" android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="dev.okumura.orcaremote.REFRESH_BOARD" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/secretary_board_widget_info" />
+        </receiver>
+        <service android:name=".SecretaryBoardWidgetService" android:permission="android.permission.BIND_REMOTEVIEWS" android:exported="false" />
         <receiver android:name=".QuickMemoWidgetProvider" android:label="@string/quick_memo" android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
