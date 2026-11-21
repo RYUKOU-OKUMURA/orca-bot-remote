@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import childProcess, { fork, ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
+import { syncBuiltinESMExports } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { after, before, test, type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +79,15 @@ function readPids(bin: string) {
   assert.equal(pids.length, 2);
   assert.ok(pids.every(pid => Number.isInteger(pid) && pid > 1));
   return pids;
+}
+
+async function waitForPids(bin: string) {
+  const deadline = performance.now() + 2000;
+  while (!existsSync(`${bin}.pids`)) {
+    assert.ok(performance.now() < deadline, 'CLI の親と子が起動しませんでした');
+    await delay(10);
+  }
+  return readPids(bin);
 }
 
 async function assertProcessesStopped(pids: number[]) {
@@ -250,6 +262,58 @@ test('個別の CLI の期限でも親と子を停止して 502 を返す', { ti
   assert.deepEqual(calls(), slowItemCalls);
 });
 
+test('サーバーは SIGTERM で実行中の CLI とその子を停止して終了する', { timeout: 5000 }, async t => {
+  const { bin } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.slow`, '');
+  // Run the actual entry point on an ephemeral loopback port without requiring Tailscale.
+  const preload = `
+    import { Server } from 'node:http';
+    const listen = Server.prototype.listen;
+    Server.prototype.listen = function () {
+      return listen.call(this, 0, '127.0.0.1', () => process.send(this.address().port));
+    };
+  `;
+  const server = fork(fileURLToPath(new URL('../src/main.ts', import.meta.url)), {
+    env: { HOST: '100.113.115.59', TOKEN_FILE: join(tokenDir, 'token'), ORCA_BIN: bin },
+    execArgv: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
+    silent: true
+  });
+  t.after(() => { server.kill('SIGKILL'); });
+  const exited = once(server, 'exit', { signal: t.signal });
+  const [port] = await Promise.race([once(server, 'message', { signal: t.signal }), exited]);
+  assert.ok(typeof port === 'number' && port > 0, 'サーバーが待ち受けを開始しませんでした');
+  const client = request({
+    host: '127.0.0.1', port, path: `/api/items/${bot}/7`, headers: { Authorization: `Bearer ${token}` }
+  }, response => response.resume());
+  client.on('error', () => {});
+  t.after(() => { client.destroy(); });
+  client.end();
+  const pids = await waitForPids(bin);
+  assert.ok(server.kill('SIGTERM'));
+  assert.deepEqual(await exited, [0, null]);
+  await assertProcessesStopped(pids);
+});
+
+test('CLI のリーダーが終了済みなら中止時にグループへシグナルを送らない', async t => {
+  const child = Object.assign(new ChildProcess(), { pid: 123, stdout: new PassThrough(), stderr: new PassThrough() });
+  const spawn = t.mock.method(childProcess, 'spawn', () => child);
+  syncBuiltinESMExports();
+  t.after(() => {
+    spawn.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const kill = t.mock.method(process, 'kill', () => true);
+  const controller = new AbortController();
+  const orca = createOrca(orcaBin, undefined, controller.signal, Infinity);
+  const result = orca.listBots();
+  child.emit('exit', 0, null);
+  controller.abort();
+  child.emit('close', 0, null);
+  await assert.rejects(result, OrcaError);
+  assert.equal(kill.mock.callCount(), 0);
+  assert.ok(child.stdout.destroyed && child.stderr.destroyed);
+});
+
 test('クライアント切断時は CLI を停止し、後続の CLI 起動と応答書き込みを行わない', { timeout: 5000 }, async t => {
   const { bin, calls } = recordOrcaCalls(t);
   writeFileSync(`${bin}.slow`, '');
@@ -273,12 +337,7 @@ test('クライアント切断時は CLI を停止し、後続の CLI 起動と�
   const [, response] = await received;
   const writeHead = t.mock.method(response, 'writeHead');
   const closed = once(response, 'close');
-  const deadline = performance.now() + 2000;
-  while (!existsSync(`${bin}.pids`)) {
-    assert.ok(performance.now() < deadline, 'CLI の親と子が起動しませんでした');
-    await delay(10);
-  }
-  const pids = readPids(bin);
+  const pids = await waitForPids(bin);
   const requestTimer = timers.mock.calls.find(({ arguments: [, ms] }) => ms > 4900 && ms <= 4990)?.result;
   cliTimer = timers.mock.calls.findLast(({ arguments: [, ms] }) => ms === 20_000)?.result;
   assert.ok(requestTimer && cliTimer);

@@ -2,6 +2,14 @@ import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 
 const maxOutputBytes = 4 * 1024 * 1024;
+const activeStops = new Set<() => Promise<void>>();
+let shuttingDown = false;
+
+export function stopAll() {
+  // In-flight requests must not start another CLI while the server is closing.
+  shuttingDown = true;
+  return Promise.all(Array.from(activeStops, stop => stop()));
+}
 
 export class OrcaError extends Error {
   code: string | undefined;
@@ -49,7 +57,7 @@ const newestFirst = (a: { lastActivityAt?: number }, b: { lastActivityAt?: numbe
 export function createOrca(orcaBin: string, summaryId: string | undefined, signal: AbortSignal, deadline: number) {
   async function read<T>(...args: string[]): Promise<T> {
     signal.throwIfAborted();
-    if (performance.now() >= deadline) throw new OrcaError();
+    if (shuttingDown || performance.now() >= deadline) throw new OrcaError();
     return new Promise((resolve, reject) => {
       const child = spawn(orcaBin, [...args, '--json'], {
         env: { HOME: homedir(), PATH: '/usr/bin:/bin' },
@@ -61,10 +69,12 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       let stdoutBytes = 0;
       let stderrBytes = 0;
       let stopped = false;
+      let exited = false;
+      const closed = Promise.withResolvers<void>();
       function stop() {
-        if (stopped) return;
+        if (stopped) return closed.promise;
         stopped = true;
-        if (child.pid !== undefined) {
+        if (!exited && child.pid !== undefined) {
           try {
             process.kill(-child.pid, 'SIGKILL');
           } catch (error) {
@@ -73,10 +83,13 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
         }
         child.stdout.destroy();
         child.stderr.destroy();
+        return closed.promise;
       }
 
+      activeStops.add(stop);
       const timer = setTimeout(stop, 20_000);
       signal.addEventListener('abort', stop, { once: true });
+      child.once('exit', () => { exited = true; });
       child.on('error', stop);
       child.stdout.on('error', stop);
       child.stderr.on('error', stop);
@@ -90,8 +103,10 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
         if (stderrBytes > maxOutputBytes) stop();
       });
       child.once('close', code => {
+        activeStops.delete(stop);
         clearTimeout(timer);
         signal.removeEventListener('abort', stop);
+        closed.resolve();
         if (stopped) return reject(new OrcaError());
 
         const reply = parseResult(Buffer.concat(output).toString('utf8'));
