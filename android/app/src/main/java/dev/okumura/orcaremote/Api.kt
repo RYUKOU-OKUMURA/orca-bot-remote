@@ -115,7 +115,7 @@ data class Question(val text: String, val options: List<String>)
 data class LatestSummary(val summary: Summary? = null)
 
 @Serializable
-data class Summary(val runAt: Long, val content: String, val bot: String, val chatId: String? = null)
+data class Summary(val runAt: Long? = null, val content: String, val bot: String, val chatId: String? = null)
 
 internal val apiJson = Json {
     classDiscriminator = "kind"

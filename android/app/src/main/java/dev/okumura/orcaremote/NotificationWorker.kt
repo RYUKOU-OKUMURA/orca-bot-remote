@@ -134,7 +134,8 @@ internal object NotificationSync {
                 manager.post(context, itemChannel!!, notificationTarget("items"), "判断待ち", "ほか ${decision.remainingItems} 件")
             }
             if (decision.notifySummary) {
-                manager.post(context, summaryChannel!!, notificationTarget("summary"), "まとめ", "12:00のまとめが届きました")
+                val title = summaryTitle(summary?.summary?.runAt)
+                manager.post(context, summaryChannel!!, notificationTarget("summary"), title, "${title}が届きました")
             }
             chats.forEach { (bot, chat) ->
                 delivery(RepliesChannel, chat)?.let { channel ->
@@ -171,7 +172,7 @@ internal fun createNotificationChannels(context: Context) {
         listOf(
             NotificationChannel(ItemsChannel, "判断待ち", NotificationManager.IMPORTANCE_HIGH),
             NotificationChannel(RepliesChannel, "ボットの返答", NotificationManager.IMPORTANCE_DEFAULT),
-            NotificationChannel(SummaryChannel, "まとめ", NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(SummaryChannel, summaryTitle(null), NotificationManager.IMPORTANCE_DEFAULT),
             NotificationChannel(QuietChannel, "おやすみ中の通知", NotificationManager.IMPORTANCE_LOW).apply {
                 setSound(null, null)
                 enableVibration(false)

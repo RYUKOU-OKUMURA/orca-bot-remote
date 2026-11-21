@@ -320,7 +320,7 @@ internal fun HomeScreen(
                             color = MaterialTheme.colorScheme.outlineVariant,
                         )
                         ListRow(
-                            title = "12:00のまとめ",
+                            title = summaryTitle(summary.data?.summary?.runAt),
                             onClick = openSummary,
                             leading = { OrcaIcon(R.drawable.ic_summary) },
                             subtitle = if (summary.error != null) "まとめを読めませんでした" else summary.data?.let { result ->
@@ -827,7 +827,7 @@ internal fun SummaryScreen(
     openChat: (String, String, String) -> Unit,
 ) {
     val model = screenModel { api.summary() }
-    Page("12:00のまとめ", back, action = { RefreshAction(model) }) { modifier ->
+    Page(summaryTitle(model.data?.summary?.runAt), back, action = { RefreshAction(model) }) { modifier ->
         DataContent(modifier, model, settings) { result ->
             DetailContent {
                 val summary = result.summary
