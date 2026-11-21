@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Local fixtures for the Orca Remote Android emulator."""
 import argparse
+import base64
 import hmac
 import json
+import mimetypes
 import time
 from threading import Lock
 from uuid import uuid4
@@ -127,6 +129,71 @@ LOCK = Lock()
 WORKING_UNTIL = {}
 
 
+MIB = 1024 * 1024
+COMMANDS = [
+    {"name": "clear", "kind": "conversation", "description": "会話をリセット"},
+    {"name": "compact", "kind": "conversation", "description": "会話を圧縮", "argumentHint": "[指示]"},
+    {"name": "model", "kind": "option", "description": "モデルを変更"},
+    {"name": "effort", "kind": "option", "description": "推論強度を変更"},
+    {"name": "help", "kind": "text", "description": "ヘルプを表示"},
+]
+SKILLS = [{"name": "review", "description": "変更をレビュー", "path": "/skills/review/SKILL.md"},
+          {"name": "notes", "description": "ノートを書く", "path": None}]
+CHOICES = {"model": [("standard", "Standard"), ("fast", "Fast")],
+           "effort": [("low", "低"), ("high", "高")]}
+OPTIONS = {}
+UPLOADS = {}
+
+
+def chat_options(chat_id):
+    selected = OPTIONS.get(chat_id, {})
+    return {key: {"current": selected.get(key, choices[0][0]),
+                  "choices": [{"value": v, "label": label} for v, label in choices]}
+            for key, choices in CHOICES.items()}
+
+
+def attachment_names(body, operation, chat_id, json_bytes):
+    if operation == "start":
+        files = body.get("inlineAttachments", [])
+        if not isinstance(files, list) or len(files) > 5:
+            raise ValueError()
+        total = 0
+        names = []
+        for file in files:
+            if not isinstance(file, dict) or not isinstance(file.get("name"), str) or not file["name"]:
+                raise ValueError()
+            encoded = file.get("contentBase64")
+            if not isinstance(encoded, str):
+                raise ValueError()
+            size = len(base64.b64decode(encoded, validate=True))
+            total += size
+            if not 0 < size <= 15 * MIB or total > 20 * MIB:
+                raise ValueError()
+            json_bytes -= len(encoded)
+            names.append(file["name"])
+        if json_bytes > 64 * 1024:
+            raise ValueError()
+        return names
+    files = body.get("attachments", [])
+    skills = body.get("skills", [])
+    if not isinstance(files, list) or len(files) > 10 or not isinstance(skills, list) or len(skills) > 16:
+        raise ValueError()
+    for skill in skills:
+        if not isinstance(skill, dict) or not any(
+            ref["path"] and ref["path"] == skill.get("path") and ref["name"] == skill.get("name") for ref in SKILLS
+        ):
+            raise ValueError()
+    names = []
+    for file in files:
+        if not isinstance(file, dict) or not isinstance(file.get("path"), str):
+            raise ValueError()
+        ref = UPLOADS.get((chat_id, file["path"]))
+        if not ref or file.get("kind") != ref["kind"]:
+            raise ValueError()
+        names.append(ref["name"])
+    return names
+
+
 class MockHandler(BaseHTTPRequestHandler):
     def reply(self, status, data, allow=None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8", "backslashreplace")
@@ -183,6 +250,16 @@ class MockHandler(BaseHTTPRequestHandler):
                     except ValueError:
                         limit = 100
                     data = {"state": state, "entries": entries[-limit:]}
+                case ["api", "bots", name, "chats", chat_id, "commands"] if any(
+                    chat["id"] == chat_id for chat in CHATS.get(name, [])
+                ):
+                    if self.server.write_failure == "503":
+                        self.reply(503, {"error": "write_unavailable"})
+                        return
+                    data = {"commands": COMMANDS, "skills": SKILLS, "options": chat_options(chat_id)}
+                case ["api", "bots", _, "chats", _, "command" | "attachments"]:
+                    self.method_not_allowed("POST")
+                    return
                 case ["api", "items"]:
                     data = {"items": (
                         [{**ITEM, "lastActivityAt": START_MS - 60_000}]
@@ -206,6 +283,24 @@ class MockHandler(BaseHTTPRequestHandler):
                     return
             self.reply(200, data)
 
+    def upload_size(self, length):
+        if self.headers.get("Transfer-Encoding", "").lower() != "chunked":
+            if not 0 < length <= 20 * MIB or len(self.rfile.read(length)) != length:
+                raise ValueError()
+            return length
+        size = 0
+        while True:
+            count = int(self.rfile.readline(128).split(b";", 1)[0].strip(), 16)
+            if count < 0 or count > 20 * MIB - size:
+                raise ValueError()
+            if len(self.rfile.read(count)) != count or self.rfile.read(2) != b"\r\n":
+                raise ValueError()
+            if not count:
+                if not size:
+                    raise ValueError()
+                return size
+            size += count
+
     def do_POST(self):
         if not self.authorized():
             return
@@ -213,8 +308,11 @@ class MockHandler(BaseHTTPRequestHandler):
         match path:
             case ["api", "bots", name, "chats"]:
                 operation = "start"
-            case ["api", "bots", name, "chats", chat_id, "messages"]:
-                operation = "message"
+            case ["api", "bots", name, "chats", chat_id, "messages" | "command" | "attachments" as operation]:
+                pass
+            case ["api", "bots", _, "chats", _, "commands"]:
+                self.method_not_allowed("GET")
+                return
             case ["api", "items", name, "7", "answer"] if name == BOT:
                 operation = "answer"
                 chat_id = REVIEW_ID
@@ -231,17 +329,41 @@ class MockHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-            if content_type != "application/json" or not 0 < length <= 64 * 1024:
-                raise ValueError()
-            body = json.loads(self.rfile.read(length).decode("utf-8-sig"))
-            message = body.get("text") if isinstance(body, dict) else None
-            if not isinstance(message, str):
-                raise ValueError()
-            trimmed = message.strip(JS_WHITESPACE)
-            if not 1 <= len(trimmed) <= 10000:
-                raise ValueError()
-            if operation == "answer" and len(message.encode("utf-16-le", "surrogatepass")) // 2 > 8000:
-                raise ValueError()
+            if operation == "attachments":
+                file_name = unquote(self.headers.get("X-File-Name", ""), errors="strict")
+                if not file_name.strip() or len(file_name.encode("utf-16-le")) > 512 or content_type.startswith("multipart/"):
+                    raise ValueError()
+                length = self.upload_size(length)
+            else:
+                limit = 28 * MIB if operation == "start" else 64 * 1024
+                if content_type != "application/json" or not 0 < length <= limit:
+                    raise ValueError()
+                body = json.loads(self.rfile.read(length).decode("utf-8-sig"))
+                if not isinstance(body, dict):
+                    raise ValueError()
+                if operation == "command":
+                    command = body.get("name")
+                    arg = body.get("argument", "")
+                    if (not isinstance(arg, str) or
+                        not (command == "clear" and not arg or command == "compact" and len(arg) <= 10000 or
+                             isinstance(command, str) and arg in dict(CHOICES.get(command, [])))):
+                        raise ValueError()
+                else:
+                    names = []
+                    if operation in ("start", "messages"):
+                        with LOCK:
+                            names = attachment_names(body, operation, chat_id if operation == "messages" else None, length)
+                    message = body.get("text", "")
+                    if not isinstance(message, str):
+                        raise ValueError()
+                    trimmed = message.strip(JS_WHITESPACE)
+                    if (not trimmed and not names) or len(trimmed) > 10000:
+                        raise ValueError()
+                    if operation == "answer" and len(message.encode("utf-16-le", "surrogatepass")) // 2 > 8000:
+                        raise ValueError()
+                    if names:
+                        message = (message + "\n" + " ".join("@" + n for n in names)).strip()
+                        trimmed = message.strip(JS_WHITESPACE)
         except ValueError:
             self.reply(400, {"error": "bad_request", "message": "入力内容を確認してください。"})
             return
@@ -249,6 +371,9 @@ class MockHandler(BaseHTTPRequestHandler):
         time.sleep(self.server.write_delay)
         failure = self.server.write_failure
         with LOCK:
+            if failure == "503":
+                self.reply(503, {"error": "write_unavailable"})
+                return
             if failure == "409":
                 if operation == "answer":
                     finish_item()
@@ -273,10 +398,28 @@ class MockHandler(BaseHTTPRequestHandler):
                 self.reply(409, {"error": "conflict", "message": "状態が変わりました。"})
                 return
 
+            if operation == "attachments":
+                path = f"/mock-store/{chat_id}/{uuid4()}/{file_name}"
+                mime = mimetypes.guess_type(file_name)[0] or ""
+                kind = "image" if content_type.startswith("image/") or mime.startswith("image/") else "file"
+                ref = {"path": path, "name": file_name, "kind": kind, "byteLength": length}
+                UPLOADS[chat_id, path] = ref
+                if failure != "unknown_result":
+                    self.reply(201, ref)
+                    return
+            elif operation == "command":
+                if command == "clear":
+                    MESSAGES[chat_id][1].clear()
+                elif command == "compact":
+                    MESSAGES[chat_id][1].append({"kind": "tool", "name": "会話を圧縮", "state": "done"})
+                else:
+                    OPTIONS.setdefault(chat_id, {})[command] = arg
+            else:
+                chat["lastAsked"] = message
+                MESSAGES[chat_id][1].append({"kind": "message", "role": "user", "text": message})
+                WORKING_UNTIL[chat_id] = time.monotonic() + 8
+
             chat["lastActivityAt"] = int(time.time() * 1000)
-            chat["lastAsked"] = message
-            MESSAGES[chat_id][1].append({"kind": "message", "role": "user", "text": message})
-            WORKING_UNTIL[chat_id] = time.monotonic() + 8
             if operation == "answer":
                 finish_item()
 
@@ -288,7 +431,7 @@ class MockHandler(BaseHTTPRequestHandler):
         elif operation == "start":
             self.reply(201, {"chatId": chat_id})
         else:
-            self.reply(200 if operation == "answer" else 202, {"ok": True})
+            self.reply(200 if operation in ("command", "answer") else 202, {"ok": True})
 
 
 def finish_item():
@@ -299,8 +442,8 @@ def finish_item():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8787)
-    parser.add_argument("--write-failure", choices=("409", "502", "unknown_result"),
-                        help="Inject this failure for POST requests")
+    parser.add_argument("--write-failure", choices=("409", "502", "503", "unknown_result"),
+                        help="Inject this failure for POST requests (503 also applies to the commands list)")
     parser.add_argument("--write-delay", type=float, default=0, metavar="SECONDS",
                         help="Delay POST replies, including injected failures")
     options = parser.parse_args()
