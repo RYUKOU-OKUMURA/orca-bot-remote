@@ -1,6 +1,7 @@
 package dev.okumura.orcaremote
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,22 +24,22 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -67,7 +68,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 
-private val ListPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
+private val ListPadding = PaddingValues(horizontal = OrcaInset, vertical = OrcaGap)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,24 +77,34 @@ internal fun Page(
     back: (() -> Unit)? = null,
     action: @Composable () -> Unit = {},
     snackbar: SnackbarHostState? = null,
+    container: Color = MaterialTheme.colorScheme.background,
     content: @Composable (Modifier) -> Unit,
 ) {
     Scaffold(
+        containerColor = container,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        title,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.semantics { heading() },
-                    )
-                },
-                navigationIcon = {
-                    if (back != null) TextButton(onClick = back) { Text("‹ 戻る") }
-                },
-                actions = { action() },
-            )
+            Column {
+                TopAppBar(
+                    expandedHeight = 56.dp,
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = container),
+                    title = {
+                        Text(
+                            title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.semantics { heading() },
+                        )
+                    },
+                    navigationIcon = {
+                        if (back != null) {
+                            IconButton(onClick = back) { OrcaIcon(R.drawable.ic_back, "戻る") }
+                        }
+                    },
+                    actions = { action() },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
         },
         snackbarHost = { if (snackbar != null) SnackbarHost(snackbar) },
     ) { padding ->
@@ -136,7 +147,7 @@ private fun <T> DataContent(
                         color = MaterialTheme.colorScheme.error,
                     )
                     if (error == ApiError.UNAUTHORIZED) {
-                        TextButton(onClick = settings) { Text("設定を開く") }
+                        OrcaTextButton(onClick = settings) { Text("設定を開く") }
                     }
                 }
                 Box(Modifier.weight(1f)) { content(data) }
@@ -166,6 +177,7 @@ private fun LoadError(
         when (error) {
             ApiError.UNAUTHORIZED -> Button(onClick = settings) { Text("設定を開く") }
             else -> Button(
+                shape = MaterialTheme.shapes.medium,
                 onClick = if (error == ApiError.CONNECTION) retryWithPermission else retry,
                 enabled = !model.loading,
             ) { Text("再試行") }
@@ -185,14 +197,24 @@ internal fun HomeScreen(
     openBot: (String) -> Unit,
     openItems: () -> Unit,
     openSummary: () -> Unit,
+    openChat: (String, String, String) -> Unit,
 ) {
     val bots = screenModel("bots") { api.bots().bots }
     val items = screenModel("items") { api.items().items.size }
     val summary = screenModel("summary") { api.summary() }
+    var expandedBot by rememberSaveable { mutableStateOf<String?>(null) }
+    val inlineChats = expandedBot?.let { bot ->
+        viewModel<ScreenModel<Chats>>(key = "inline chats: $bot") { ScreenModel { api.chats(bot) } }
+    }
+    LaunchedEffect(inlineChats) {
+        inlineChats?.load()
+    }
     val refresh = {
         bots.refresh()
         items.refresh()
         summary.refresh()
+        inlineChats?.refresh()
+        Unit
     }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(refreshCounts) {
@@ -209,9 +231,10 @@ internal fun HomeScreen(
         }
     }
     Page(
-        "Orca Bot Remote",
-        action = { TextButton(onClick = settings) { Text("設定") } },
+        "Bots",
+        action = { IconButton(onClick = settings) { OrcaIcon(R.drawable.ic_settings, "設定") } },
         snackbar = snackbar,
+        container = MaterialTheme.colorScheme.surfaceContainer,
     ) { modifier ->
         val botError = bots.error
         if (botError != null) {
@@ -221,7 +244,7 @@ internal fun HomeScreen(
             }
         } else {
             PullToRefreshBox(
-                isRefreshing = bots.loading || items.loading || summary.loading,
+                isRefreshing = bots.loading || items.loading || summary.loading || inlineChats?.loading == true,
                 onRefresh = refresh,
                 modifier = modifier,
             ) {
@@ -232,48 +255,78 @@ internal fun HomeScreen(
                             true
                         })
                     },
-                    contentPadding = ListPadding,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                 ) {
+                    val botList = bots.data
+                    if (botList?.isEmpty() == true) item { Text("Bot が見つかりません", Modifier.padding(OrcaInset)) }
+                    botList.orEmpty().forEach { bot ->
+                        val expanded = expandedBot == bot.name
+                        item(key = "bot/${bot.id}") {
+                            BotRow(
+                                bot,
+                                expanded = expanded,
+                                open = { openBot(bot.name) },
+                                toggle = { expandedBot = if (expanded) null else bot.name },
+                            )
+                            if (expanded && inlineChats != null) {
+                                when {
+                                    inlineChats.error == ApiError.UNAUTHORIZED -> OrcaTextButton(
+                                        onClick = settings,
+                                        modifier = Modifier.padding(start = 48.dp),
+                                    ) { Text("設定を開く") }
+                                    inlineChats.error != null -> OrcaTextButton(
+                                        onClick = { openBot(bot.name) },
+                                        modifier = Modifier.padding(start = 48.dp),
+                                    ) { Text("チャット一覧を開く") }
+                                    inlineChats.data == null -> LinearProgressIndicator(
+                                        Modifier.fillMaxWidth().padding(horizontal = 48.dp, vertical = 8.dp),
+                                    )
+                                    inlineChats.data?.chats?.isEmpty() == true -> Text(
+                                        "チャットはまだありません",
+                                        Modifier.padding(start = 56.dp, top = 8.dp, bottom = 8.dp),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
+                            }
+                        }
+                        if (expanded && inlineChats?.error == null) {
+                            items(
+                                inlineChats?.data?.chats.orEmpty().sortedByDescending { it.home },
+                                key = { "chat/${bot.id}/${it.id}" },
+                            ) { chat ->
+                                ChatRow(chat, Modifier.padding(start = 40.dp), showPreview = false) {
+                                    openChat(bot.name, chat.id, chat.displayTitle)
+                                }
+                            }
+                        }
+                    }
                     item {
-                        RowCard(
+                        HorizontalDivider(
+                            Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                        ListRow(
                             title = "12:00のまとめ",
-                            caption = if (summary.error != null) "まとめを読めませんでした" else null,
-                            subtitle = summary.data?.let { result ->
+                            onClick = openSummary,
+                            leading = { OrcaIcon(R.drawable.ic_summary) },
+                            subtitle = if (summary.error != null) "まとめを読めませんでした" else summary.data?.let { result ->
                                 result.summary?.content?.let(::summaryPreview) ?: "まだありません"
                             },
-                            onClick = openSummary,
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                     }
                     item {
-                        val color = MaterialTheme.colorScheme
                         val count = items.data
-                        RowCard(
+                        ListRow(
                             title = if (count == null) "判断待ち" else "判断待ち ${count}件",
-                            caption = if (items.error != null) "件数を読めませんでした" else null,
                             onClick = openItems,
-                            containerColor = if (count == 0) color.surfaceContainer else color.secondaryContainer,
-                            contentColor = if (count == 0) color.onSurfaceVariant else color.onSecondaryContainer,
-                        )
-                    }
-                    item {
-                        Text(
-                            "Bot一覧",
-                            modifier = Modifier.padding(top = 6.dp).semantics { heading() },
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                    }
-                    val botList = bots.data
-                    if (botList?.isEmpty() == true) item { Text("Bot が見つかりません") }
-                    items(botList.orEmpty(), key = { it.id }) { bot ->
-                        RowCard(
-                            title = bot.name,
-                            subtitle = listOfNotNull(bot.specialty?.takeIf { it.isNotBlank() }, "停止中".takeIf { bot.paused })
-                                .joinToString(" · ").ifEmpty { null },
-                            badge = "判断待ち ${bot.needsYou}件".takeIf { bot.needsYou > 0 },
-                            onClick = { openBot(bot.name) },
+                            leading = {
+                                OrcaIcon(
+                                    R.drawable.ic_pending,
+                                    tint = if ((count ?: 0) > 0) MaterialTheme.colorScheme.tertiary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            },
+                            subtitle = if (items.error != null) "件数を読めませんでした" else null,
                         )
                     }
                 }
@@ -287,7 +340,7 @@ private fun summaryPreview(content: String): String =
         .firstOrNull { it.isNotEmpty() }.orEmpty()
 
 internal val Chat.displayTitle: String
-    get() = title?.takeIf { it.isNotBlank() } ?: if (home) "ホームチャット" else "タイトルなし"
+    get() = if (home) "Home Chat" else title?.takeIf { it.isNotBlank() } ?: "タイトルなし"
 
 @Composable
 internal fun ChatsScreen(
@@ -307,21 +360,18 @@ internal fun ChatsScreen(
             chatsRefreshFinished()
         }
     }
-    Page(bot, back, action = { RefreshAction(model) }) { modifier ->
+    Page(bot, back, action = { RefreshAction(model) }, container = MaterialTheme.colorScheme.surfaceContainer) { modifier ->
         Column(modifier) {
-            Button(onClick = openNewChat, modifier = Modifier.fillMaxWidth().padding(ListPadding)) {
-                Text("新しく頼む")
-            }
+            ListRow(
+                title = "新しく頼む",
+                onClick = openNewChat,
+                modifier = Modifier.padding(ListPadding),
+                leading = { OrcaIcon(R.drawable.ic_new, tint = MaterialTheme.colorScheme.primary) },
+            )
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings) { result ->
                 EntryList(empty = result.chats.isEmpty(), emptyText = "チャットはまだありません") {
                     items(result.chats.sortedByDescending { it.home }, key = { it.id }) { chat ->
-                        RowCard(
-                            title = chat.displayTitle,
-                            subtitle = chat.lastSaid?.takeIf { it.isNotBlank() } ?: chat.lastAsked,
-                            caption = relativeTime(chat.lastActivityAt),
-                            badge = "ホーム".takeIf { chat.home },
-                            onClick = { openChat(chat) },
-                        )
+                        ChatRow(chat) { openChat(chat) }
                     }
                 }
             }
@@ -348,7 +398,11 @@ internal fun NewChatScreen(
                 unknown = "送れたか確認できませんでした。チャット一覧を更新して、新しいチャットができていないか確かめてください",
             )
             if (sender.deliveryUncertain) {
-                OutlinedButton(onClick = checkChats, enabled = !sender.sending, modifier = Modifier.fillMaxWidth()) {
+                OrcaOutlinedButton(
+                    onClick = checkChats,
+                    enabled = !sender.sending,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text("チャット一覧で確かめる")
                 }
             }
@@ -408,20 +462,30 @@ internal fun ConversationScreen(
                         items(result.entries.asReversed()) { entry ->
                             when (entry) {
                                 is Entry.Message -> MessageBubble(entry)
-                                is Entry.Tool -> Text(
-                                    "🔧 ${entry.name}",
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                is Entry.Tool -> Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = OrcaGap),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    OrcaIcon(R.drawable.ic_tool, modifier = Modifier.size(16.dp))
+                                    Text(
+                                        entry.name,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-            Column(Modifier.fillMaxWidth().padding(ListPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Column(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(ListPadding),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 if (model.data != null) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -445,21 +509,28 @@ private fun MessageBubble(message: Entry.Message) {
     Box(Modifier.fillMaxWidth()) {
         Surface(
             modifier = Modifier.align(if (owner) Alignment.CenterEnd else Alignment.CenterStart)
-                .fillMaxWidth(0.88f),
+                .fillMaxWidth(if (owner) 0.88f else 1f),
             shape = MaterialTheme.shapes.large,
             color = when (presentation.kind) {
-                MessageKind.OWNER -> colors.primaryContainer
+                MessageKind.OWNER -> colors.surfaceContainer
                 MessageKind.MAIL -> colors.surface
-                MessageKind.OTHER -> colors.surfaceContainer
+                MessageKind.OTHER -> Color.Transparent
             },
-            contentColor = if (owner) colors.onPrimaryContainer else colors.onSurface,
-            border = if (presentation.kind == MessageKind.MAIL) BorderStroke(1.dp, colors.outlineVariant) else null,
+            contentColor = colors.onSurface,
+            border = if (presentation.kind != MessageKind.OTHER) BorderStroke(1.dp, colors.outlineVariant) else null,
         ) {
             Column(
-                Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                Modifier.padding(
+                    horizontal = if (presentation.kind == MessageKind.OTHER) 0.dp else OrcaGap,
+                    vertical = 8.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text(presentation.heading, style = MaterialTheme.typography.labelLarge)
+                Text(
+                    presentation.heading,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.onSurfaceVariant,
+                )
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         presentation.subject?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
@@ -502,14 +573,16 @@ internal fun ItemsScreen(
             EntryList(empty = result.items.isEmpty(), emptyText = "判断待ちはありません") {
                 items(result.items, key = { "${it.bot}/${it.number}" }) { item ->
                     Column {
-                        RowCard(
+                        ListRow(
                             title = item.title,
+                            titleMaxLines = 2,
                             subtitle = item.bot,
                             caption = relativeTime(item.lastActivityAt),
+                            leading = { OrcaIcon(R.drawable.ic_pending, tint = MaterialTheme.colorScheme.tertiary) },
                             onClick = { openItem(item) },
                         )
                         item.chatId?.let { chatId ->
-                            TextButton(onClick = { openChat(item.bot, chatId, item.title) }) {
+                            OrcaTextButton(onClick = { openChat(item.bot, chatId, item.title) }) {
                                 Text("このチャットを開く")
                             }
                         }
@@ -560,14 +633,15 @@ internal fun ItemScreen(
         } else {
             AlertDialog(
                 onDismissRequest = { choice = null },
+                textContentColor = MaterialTheme.colorScheme.onSurface,
                 text = { Text("『${label}』と答えますか？", style = MaterialTheme.typography.bodyLarge) },
                 confirmButton = {
-                    TextButton(onClick = {
+                    OrcaTextButton(onClick = {
                         choice = null
                         sender.submit(label)
                     }) { Text("はい") }
                 },
-                dismissButton = { TextButton(onClick = { choice = null }) { Text("キャンセル") } },
+                dismissButton = { OrcaTextButton(onClick = { choice = null }) { Text("キャンセル") } },
             )
         }
     }
@@ -583,16 +657,23 @@ internal fun ItemScreen(
                 LinearProgressIndicator(Modifier.fillMaxWidth())
             }
             if (item != null) {
-                Text(bot, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                Text(bot, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.labelLarge)
                 Text(item.title, style = MaterialTheme.typography.headlineSmall)
                 val question = item.question
                 if (question == null) {
                     Text("質問はありません")
                 } else {
-                    SelectionContainer { Text(question.text) }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = MaterialTheme.shapes.large,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    ) {
+                        SelectionContainer { Text(question.text, Modifier.padding(OrcaInset)) }
+                    }
                     if (canAnswer) {
                         question.options.forEach { label ->
-                            OutlinedButton(
+                            OrcaOutlinedButton(
                                 onClick = {
                                     focus.clearFocus()
                                     choice = label
@@ -615,7 +696,7 @@ internal fun ItemScreen(
             )
             if (item != null) {
                 item.chatId?.let { chatId ->
-                    TextButton(
+                    OrcaTextButton(
                         onClick = { openChat(item.bot, chatId, item.title) },
                         enabled = !sender.sending,
                     ) { Text("このチャットを開く") }
@@ -640,10 +721,10 @@ internal fun SummaryScreen(
                 if (summary == null) {
                     Text("まだありません")
                 } else {
-                    Text(summary.bot, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                    Text(summary.bot, color = orcaAccentText, style = MaterialTheme.typography.labelLarge)
                     SelectionContainer { Text(summary.content) }
                     summary.chatId?.let { chatId ->
-                        Button(onClick = { openChat(summary.bot, chatId, summary.bot) }) {
+                        Button(onClick = { openChat(summary.bot, chatId, summary.bot) }, shape = MaterialTheme.shapes.medium) {
                             Text("このチャットを開く")
                         }
                     }
@@ -656,8 +737,8 @@ internal fun SummaryScreen(
 @Composable
 private fun DetailContent(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(
-        modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(OrcaInset),
+        verticalArrangement = Arrangement.spacedBy(OrcaInset),
         content = content,
     )
 }
@@ -679,6 +760,11 @@ private fun DraftField(
         readOnly = !enabled || sender.sending || sender.result != null,
         modifier = modifier,
         textStyle = MaterialTheme.typography.bodyLarge,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedLabelColor = orcaAccentText,
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
     )
 }
 
@@ -693,6 +779,7 @@ private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier, enab
         }
     }
     Button(
+        shape = MaterialTheme.shapes.medium,
         onClick = {
             focus.clearFocus()
             if (sender.deliveryUncertain) resendText = sender.draft else sender.submit(sender.draft)
@@ -715,9 +802,10 @@ private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier, enab
 private fun ResendDialog(cancel: () -> Unit, confirm: () -> Unit) {
     AlertDialog(
         onDismissRequest = cancel,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
         text = { Text("前の送信が届いているかもしれません。もう一度送りますか？", style = MaterialTheme.typography.bodyLarge) },
-        confirmButton = { TextButton(onClick = confirm) { Text("もう一度送る") } },
-        dismissButton = { TextButton(onClick = cancel) { Text("やめる") } },
+        confirmButton = { OrcaTextButton(onClick = confirm) { Text("もう一度送る") } },
+        dismissButton = { OrcaTextButton(onClick = cancel) { Text("やめる") } },
     )
 }
 
@@ -740,7 +828,7 @@ private fun SendStatus(
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.error,
         )
-        if (error == ApiError.UNAUTHORIZED) TextButton(onClick = settings) { Text("設定を開く") }
+        if (error == ApiError.UNAUTHORIZED) OrcaTextButton(onClick = settings) { Text("設定を開く") }
     }
     if (sender.deliveryUncertain) {
         Text(
@@ -748,7 +836,7 @@ private fun SendStatus(
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.error,
         )
-        TextButton(onClick = sender::markAsSent, enabled = !sender.sending) {
+        OrcaTextButton(onClick = sender::markAsSent, enabled = !sender.sending) {
             Text("送信済みとして閉じる")
         }
     }
@@ -774,37 +862,5 @@ private fun EntryList(
 
 @Composable
 private fun RefreshAction(model: ScreenModel<*>) {
-    TextButton(onClick = { model.refresh() }, enabled = !model.loading) { Text("更新") }
-}
-
-@Composable
-private fun RowCard(
-    title: String,
-    onClick: () -> Unit,
-    subtitle: String? = null,
-    caption: String? = null,
-    badge: String? = null,
-    containerColor: Color = MaterialTheme.colorScheme.surfaceContainer,
-    contentColor: Color = MaterialTheme.colorScheme.onSurface,
-) {
-    Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = containerColor, contentColor = contentColor),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            badge?.let {
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ) {
-                    Text(it, Modifier.padding(horizontal = 9.dp, vertical = 3.dp), style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            caption?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            subtitle?.let { Text(it, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-        }
-    }
+    OrcaTextButton(onClick = { model.refresh() }, enabled = !model.loading) { Text("更新") }
 }

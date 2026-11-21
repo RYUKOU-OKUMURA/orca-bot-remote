@@ -29,23 +29,24 @@ SUMMARY = {
     "bot": BOT,
     "chatId": HOME_ID,
 }
-SPECIALTIES = {
-    BOT: "全体の進行と相談",
-    "ショート担当": "短い動画の企画",
-    "GBP投稿": "Google マップのお知らせ",
-    "整体院発信": "整体院のお知らせ",
-    "メール秘書": "メールの整理",
-    "文字起こし担当": "音声を文章に",
+BOT_FIXTURES = {
+    BOT: ("全体の進行と相談", "A1"),
+    "文字起こし担当": ("音声を文章に", "T1"),
+    "GBP投稿": ("Google マップのお知らせ", "O1"),
+    "整体院発信": ("整体院のお知らせ", "L2"),
+    "メール秘書": ("メールの整理", "P3"),
+    "ショート担当": ("短い動画の企画", "N1"),
 }
 BOTS = [
     {
         "id": f"mock-bot-{index}",
         "name": name,
         "specialty": specialty,
+        "avatar": f"mascot:{mascot}",
         "paused": False,
         "needsYou": int(name == BOT),
     }
-    for index, (name, specialty) in enumerate(SPECIALTIES.items(), 1)
+    for index, (name, (specialty, mascot)) in enumerate(BOT_FIXTURES.items(), 1)
 ]
 CHATS = {BOT: [
     {
@@ -54,7 +55,7 @@ CHATS = {BOT: [
         "home": False,
         "lastActivityAt": START_MS - 60_000,
         "lastAsked": "公開する時間を相談したいです。",
-        "lastSaid": None,
+        "lastSaid": "今日の夕方と明日の朝のどちらに公開しますか？",
     },
     {
         "id": HOME_ID,
@@ -100,6 +101,28 @@ MESSAGES = {
     ),
 }
 
+for number, (name, hours, preview) in enumerate((
+    ("文字起こし担当", 6, "前編と後編をまとめた要約を作りました。確認をお願いします。"),
+    ("GBP投稿", 19, "週末のお知らせを用意しました。公開時間の確認をお願いします。"),
+    ("整体院発信", 22, "前の担当から引き継ぎ、来週のお知らせを下書きにしました。"),
+    ("メール秘書", 23, "宣伝メールを整理しました。急ぎの返信が必要なメールはありません。"),
+    ("ショート担当", 7, "「会話が長くなると噛み合わなくなる理由」の構成案を作りました。"),
+), 3):
+    chat_id = f"00000000-0000-4000-8000-{number:012d}"
+    CHATS[name] = [{
+        "id": chat_id, "title": None, "home": True,
+        "lastActivityAt": START_MS - hours * 3_600_000, "lastSaid": preview,
+    }]
+    MESSAGES[chat_id] = ("done", [{"kind": "message", "role": "assistant", "text": preview}])
+
+TRANSCRIPT_ID = "00000000-0000-4000-8000-000000000008"
+TRANSCRIPT_REPLY = "前編と後編をまとめた要約を作りました。確認をお願いします。"
+CHATS["文字起こし担当"].append({
+    "id": TRANSCRIPT_ID, "title": "YouTube 立ち上げ秘話の文字起こし", "home": False,
+    "lastActivityAt": CHATS["文字起こし担当"][0]["lastActivityAt"], "lastSaid": TRANSCRIPT_REPLY,
+})
+MESSAGES[TRANSCRIPT_ID] = ("done", [{"kind": "message", "role": "assistant", "text": TRANSCRIPT_REPLY}])
+
 LOCK = Lock()
 WORKING_UNTIL = {}
 
@@ -134,8 +157,15 @@ class MockHandler(BaseHTTPRequestHandler):
         with LOCK:
             match path:
                 case ["api", "bots"]:
-                    data = {"bots": BOTS}
-                case ["api", "bots", name, "chats"] if name in SPECIALTIES:
+                    data = {"bots": []}
+                    for bot in BOTS:
+                        latest = max(CHATS.get(bot["name"], []), key=lambda chat: chat["lastActivityAt"], default={})
+                        data["bots"].append({
+                            **bot,
+                            "lastActivityAt": latest.get("lastActivityAt"),
+                            "lastSaid": latest.get("lastSaid"),
+                        })
+                case ["api", "bots", name, "chats"] if name in BOT_FIXTURES:
                     data = {"chats": sorted(
                         CHATS.get(name, []), key=lambda chat: chat.get("lastActivityAt", 0), reverse=True
                     )}
@@ -192,7 +222,7 @@ class MockHandler(BaseHTTPRequestHandler):
             case _:
                 self.reply(404, {"error": "not_found", "message": "対象が見つかりません。"})
                 return
-        if name not in SPECIALTIES:
+        if name not in BOT_FIXTURES:
             self.reply(404, {"error": "not_found", "message": "対象が見つかりません。"})
             return
 

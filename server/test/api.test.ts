@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import childProcess, { fork, ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import type { AddressInfo } from 'node:net';
@@ -112,12 +112,83 @@ async function assertProcessesStopped(pids: number[]) {
   }
 }
 
-test('Bot 一覧は判断待ちの全ページを集計する', async t => {
+test('Bot 一覧は判断待ちの全ページ、ID が一致するマスコット、最新の開いたチャットを返す', async t => {
+  const testHome = mkdtempSync(join(tokenDir, 'home-'));
+  const home = process.env.HOME;
+  process.env.HOME = testHome;
+  t.after(() => {
+    if (home === undefined) delete process.env.HOME;
+    else process.env.HOME = home;
+  });
   const get = await openApi(t);
-  assert.deepEqual(await get('/api/bots'), { bots: [
-    { id: 'main', name: 'メインBot', specialty: '総合', paused: false, needsYou: 2 },
-    { id: 'other', name: '専門Bot', specialty: null, paused: true, needsYou: 1 }
-  ] });
+  const expected = { bots: [
+    { id: 'main', name: 'メインBot', specialty: '総合', paused: false, needsYou: 2,
+      avatar: null as string | null, lastActivityAt: 300, lastSaid: '回答' },
+    { id: 'other', name: '専門Bot', specialty: null, paused: true, needsYou: 1,
+      avatar: null, lastActivityAt: null, lastSaid: null }
+  ] };
+  assert.deepEqual(await get('/api/bots'), expected);
+  for (const [dir, metadata] of [
+    ['unrelated-folder', '{"id":"main","avatar":"mascot:A1"}'],
+    ['main', '{"id":"other","avatar":"upload:private-path"}'],
+    ['broken', '{']
+  ]) {
+    const path = join(testHome, '.orca', 'bots', dir);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'bot.json'), metadata);
+  }
+  expected.bots[0].avatar = 'mascot:A1';
+  assert.deepEqual(await get('/api/bots'), expected);
+});
+
+test('最新のチャットを取得できなくても Bot と判断待ちの件数は返す', async t => {
+  const { bin } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.fail-chats`, '');
+  const get = await openApi(t, undefined, bin);
+  const { bots: [main] } = await get('/api/bots');
+  assert.equal(main.id, 'main');
+  assert.equal(main.needsYou, 2);
+  assert.equal(main.lastActivityAt, null);
+  assert.equal(main.lastSaid, null);
+  await get(chats, 502);
+});
+
+test('最新チャットの応答形式が不正なら Bot 一覧のプレビューを空にする', async t => {
+  const { bin } = recordOrcaCalls(t);
+  const get = await openApi(t, undefined, bin);
+  for (const result of [
+    {},
+    { chats: {} },
+    { chats: [null] },
+    { chats: [{ id: 'new', home: true, lastActivityAt: '300', lastSaid: '回答' }] },
+    { chats: [{ id: 'new', home: true, lastActivityAt: 300, lastSaid: 42 }] }
+  ]) {
+    writeFileSync(`${bin}.chats-result`, JSON.stringify(result));
+    const { bots: [main] } = await get('/api/bots');
+    assert.equal(main.id, 'main');
+    assert.equal(main.needsYou, 2);
+    assert.equal(main.lastActivityAt, null);
+    assert.equal(main.lastSaid, null);
+  }
+  assert.equal((await get(chats)).chats[0].lastSaid, 42);
+  writeFileSync(`${bin}.chats-result`, '{}');
+  await get(chats, 502);
+});
+
+test('安全な整数でない時刻は Bot 一覧のプレビューだけを空にする', async t => {
+  const { bin } = recordOrcaCalls(t);
+  const get = await openApi(t, undefined, bin);
+  for (const lastActivityAt of [1700000000123.5, 1e20]) {
+    const latest = { id: 'new', home: true, lastActivityAt, lastSaid: '回答' };
+    writeFileSync(`${bin}.chats-result`, JSON.stringify({ chats: [latest] }));
+    const { bots: [main] } = await get('/api/bots');
+    assert.equal(main.id, 'main');
+    assert.equal(main.lastActivityAt, null);
+    assert.equal(main.lastSaid, null);
+    const { chats: [chat] } = await get(chats);
+    assert.equal(chat.lastActivityAt, lastActivityAt);
+    assert.equal(chat.lastSaid, latest.lastSaid);
+  }
 });
 
 test('チャット一覧は閉じたチャットを除き新しい順で返す', async t => {

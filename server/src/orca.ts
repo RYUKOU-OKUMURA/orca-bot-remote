@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
+import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const maxOutputBytes = 4 * 1024 * 1024;
 const activeStops = new Set<() => Promise<void>>();
@@ -53,6 +55,26 @@ type Run = {
 
 const newestFirst = (a: { lastActivityAt?: number }, b: { lastActivityAt?: number }) =>
   (b.lastActivityAt ?? -Infinity) - (a.lastActivityAt ?? -Infinity);
+
+async function readMascots(signal: AbortSignal) {
+  const root = join(homedir(), '.orca', 'bots');
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  const avatars = new Map<string, string>();
+  for (const entry of entries) {
+    signal.throwIfAborted();
+    if (!entry.isDirectory()) continue;
+    try {
+      const { id, avatar } = JSON.parse(await readFile(join(root, entry.name, 'bot.json'), { encoding: 'utf8', signal }));
+      if (typeof id === 'string' && typeof avatar === 'string' && /^mascot:[A-Z][0-9]$/.test(avatar)) {
+        avatars.set(id, avatar);
+      }
+    } catch {
+      signal.throwIfAborted();
+      // Missing or unreadable metadata should not hide a bot from the list.
+    }
+  }
+  return avatars;
+}
 
 export function createOrca(orcaBin: string, summaryId: string | undefined, signal: AbortSignal, deadline: number) {
   async function read<T>(...args: string[]): Promise<T> {
@@ -127,6 +149,25 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     return (await read<{ chats: Chat[] }>('bot', 'chats', `--bot=${bot.name}`, ...filters)).chats;
   }
 
+  function openChats(chats: Chat[]) {
+    return chats.filter(chat => !chat.closed).sort(newestFirst);
+  }
+
+  async function latestChat(bot: Bot) {
+    const chats = await listChats(bot).catch(error => {
+      signal.throwIfAborted();
+      if (!(error instanceof OrcaError)) throw error;
+      return null;
+    });
+    if (!Array.isArray(chats) || !chats.every(chat =>
+      chat && typeof chat === 'object' && !Array.isArray(chat) &&
+      (chat.closed == null || typeof chat.closed === 'boolean') &&
+      (chat.lastActivityAt == null || Number.isSafeInteger(chat.lastActivityAt)) &&
+      (chat.lastSaid == null || typeof chat.lastSaid === 'string')
+    )) return null;
+    return openChats(chats)[0];
+  }
+
   async function findChat(bot: Bot, chatId: string) {
     return (await listChats(bot, '--all')).find(chat => chat.id === chatId);
   }
@@ -172,14 +213,23 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     findItemUid,
     showItem,
     async bots() {
-      return Promise.all((await listBots()).map(async bot => ({
-        id: bot.id, name: bot.name, specialty: bot.specialty ?? null, paused: bot.paused,
-        needsYou: (await needsYou(bot)).length
-      })));
+      const bots = await listBots();
+      const [previews, avatars] = await Promise.all([
+        Promise.all(bots.map(bot => Promise.all([needsYou(bot), latestChat(bot)]))),
+        readMascots(signal)
+      ]);
+      signal.throwIfAborted();
+      return bots.map((bot, index) => {
+        const [items, chat] = previews[index];
+        return {
+          id: bot.id, name: bot.name, specialty: bot.specialty ?? null, paused: bot.paused,
+          needsYou: items.length, avatar: avatars.get(bot.id) ?? null,
+          lastActivityAt: chat?.lastActivityAt ?? null, lastSaid: chat?.lastSaid ?? null
+        };
+      });
     },
     async chats(bot: Bot) {
-      const chats = await listChats(bot);
-      return chats.filter(chat => !chat.closed).sort(newestFirst).map(chat => ({
+      return openChats(await listChats(bot)).map(chat => ({
         id: chat.id, title: chat.title ?? null, home: chat.home, lastActivityAt: chat.lastActivityAt ?? null,
         lastAsked: chat.lastAsked ?? null, lastSaid: chat.lastSaid ?? null
       }));

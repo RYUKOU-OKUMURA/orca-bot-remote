@@ -125,7 +125,7 @@ private fun NotificationManager.post(context: Context, channel: String, target: 
         target.toString(),
         0,
         Notification.Builder(context, channel)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.drawable.orca_notification)
             .setContentText(title)
             .setStyle(Notification.BigTextStyle().bigText(title))
             .setVisibility(Notification.VISIBILITY_PRIVATE)

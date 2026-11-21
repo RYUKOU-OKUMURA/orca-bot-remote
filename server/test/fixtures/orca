@@ -7,13 +7,18 @@ case "$*" in
         result='{"bots":[{"id":"main","name":"メインBot","specialty":"総合","paused":false,"agent":"codex"},{"id":"other","name":"専門Bot","paused":true}]}'
         ;;
     'bot chats --bot=メインBot --json')
+        if [ -f "$0.fail-chats" ]; then exit 1; fi
         result='{"chats":[{"id":"old","home":false,"lastActivityAt":100},{"id":"closed","closed":true,"lastActivityAt":400},{"id":"new","title":"会話","home":true,"lastActivityAt":300,"lastAsked":"質問","lastSaid":"回答","self":true},{"id":"no-time","home":false}]}'
+        if [ -f "$0.chats-result" ]; then result=$(/bin/cat "$0.chats-result"); fi
         ;;
     'bot chats --bot=メインBot --all --json')
         result='{"chats":[{"id":"12345678-abcd-1234-abcd-123456789abc","home":true,"closed":true}]}'
         ;;
     'bot chats --bot=専門Bot --all --json')
         result='{"chats":[{"id":"abcdef00-abcd-1234-abcd-123456789abc","home":true}]}'
+        ;;
+    'bot chats --bot=専門Bot --json')
+        result='{"chats":[]}'
         ;;
     'agent read orca_session_id:12345678-abcd-1234-abcd-123456789abc --limit 100 --json'|\
     'agent read orca_session_id:00000000-0000-0000-0000-000000000000 --limit 100 --json')
