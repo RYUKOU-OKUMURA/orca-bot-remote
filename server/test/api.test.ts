@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import childProcess, { fork, ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { request } from 'node:http';
+import { Agent, request } from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -79,6 +79,16 @@ const slowItemCalls = [
   'bot item list --bot=メインBot --all --limit 100 --json',
   'bot item list --bot=メインBot --all --limit 100 --cursor 400:1 --json'
 ];
+
+test('health は CLI を起動せず認証済み GET にだけ応答する', async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  const get = await openApi(t, undefined, bin);
+  assert.deepEqual(await get('/api/health'), { ok: true });
+  assert.deepEqual(await get('/api/health', 401, null), { error: 'unauthorized' });
+  assert.deepEqual(await get('/api/health', 401, 'Bearer wrong', 'POST'), { error: 'unauthorized' });
+  assert.equal((await get('/api/health', 405, `Bearer ${token}`, 'POST')).error, 'bad_request');
+  assert.deepEqual(calls(), ['']);
+});
 
 function readPids(bin: string) {
   const pids = readFileSync(`${bin}.pids`, 'utf8').trim().split(' ').map(Number);
@@ -339,6 +349,44 @@ test('個別の CLI の期限でも親と子を停止して 502 を返す', { ti
   assert.deepEqual(calls(), slowItemCalls);
 });
 
+test('全リクエストで CLI 枠を共有し、待機中の中止・期限切れ・終了を直ちに処理する', { timeout: 5000 }, async t => {
+  // Isolate the irreversible stopAll state from the rest of the API tests.
+  const { createOrca, OrcaError, stopAll } = await import('../src/orca.ts?queue-test');
+  const children: ChildProcess[] = [];
+  const spawn = t.mock.method(childProcess, 'spawn', () => {
+    const child = Object.assign(new ChildProcess(), { stdout: new PassThrough(), stderr: new PassThrough() });
+    children.push(child);
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    spawn.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const read = (controller = new AbortController(), deadline = Infinity) =>
+    createOrca(orcaBin, undefined, controller.signal, deadline).listBots();
+  const active = Array.from({ length: 4 }, () => read());
+  const controller = new AbortController();
+  const aborted = assert.rejects(read(controller), OrcaError);
+  const expired = assert.rejects(read(undefined, performance.now() + 50), OrcaError);
+  const next = read();
+  const queuedAtShutdown = assert.rejects(read(), OrcaError);
+  controller.abort();
+  await Promise.all([aborted, expired]);
+  assert.equal(children.length, 4);
+  children[0].stdout!.emit('data', Buffer.from('{"ok":true,"result":{"bots":[]}}'));
+  children[0].emit('close', 0);
+  assert.deepEqual(await active.shift(), []);
+  assert.equal(children.length, 5);
+  const stopped = stopAll();
+  await queuedAtShutdown;
+  await assert.rejects(read(), OrcaError);
+  for (const child of children.slice(1)) child.emit('close', null);
+  await Promise.all([...active, next].map(promise => assert.rejects(promise, OrcaError)));
+  await stopped;
+  assert.equal(children.length, 5);
+});
+
 async function forkServer(t: TestContext, bin: string, extraPreload = '', home?: string) {
   // Run the actual entry point on an ephemeral loopback port without requiring Tailscale.
   const preload = `
@@ -360,6 +408,25 @@ async function forkServer(t: TestContext, bin: string, extraPreload = '', home?:
   assert.ok(typeof port === 'number' && port > 0, 'サーバーが待ち受けを開始しませんでした');
   return { server, exited, port };
 }
+
+test('SIGTERM でアイドルの Keep-Alive を閉じ、強制終了タイマーを待たず終了する', { timeout: 5000 }, async t => {
+  const { server, exited, port } = await forkServer(t, orcaBin);
+  const agent = new Agent({ keepAlive: true });
+  t.after(() => agent.destroy());
+  const idle = once(agent, 'free', { signal: t.signal });
+  const client = request({
+    host: '127.0.0.1', port, path: '/api/health', agent, headers: { Authorization: `Bearer ${token}` }
+  }, response => response.resume());
+  client.end();
+  const [socket] = await idle;
+  assert.equal(socket.destroyed, false);
+  const closed = once(socket, 'close', { signal: t.signal });
+  const started = performance.now();
+  assert.ok(server.kill('SIGTERM'));
+  await closed;
+  assert.deepEqual(await exited, [0, null]);
+  assert.ok(performance.now() - started < 1800);
+});
 
 test('サーバーは SIGTERM で実行中の CLI とその子を停止して終了する', { timeout: 5000 }, async t => {
   const { bin } = recordOrcaCalls(t);

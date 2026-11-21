@@ -126,7 +126,9 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     const bots = BOTS.test(path);
     const items = ITEMS.test(path);
     const summary = SUMMARY.test(path);
-    if (bots) logPath = '/api/bots';
+    const health = path === '/api/health';
+    if (health) logPath = '/api/health';
+    else if (bots) logPath = '/api/bots';
     else if (chats) logPath = '/api/bots/:bot/chats';
     else if (messages) logPath = '/api/bots/:bot/chats/:chat/messages';
     else if (items) logPath = '/api/items';
@@ -142,6 +144,8 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       response.setHeader('Allow', allowed);
       return send(405, { error: 'bad_request', message: `${allowed} のみ使用できます。` });
     }
+
+    if (health) return send(200, { ok: true });
 
     const controller = new AbortController();
     const signal = shutdownSignal ? AbortSignal.any([controller.signal, shutdownSignal]) : controller.signal;

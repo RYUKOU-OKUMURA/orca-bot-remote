@@ -1,22 +1,21 @@
 # Mac mini に Orca Bot Remote サーバーを設置する
 
-Mac mini と Android を同じ tailnet に接続します。Mac mini では Orca にログインして起動し、同じ macOS ユーザーのターミナルから作業します。スクリプトは `tailscale ip -4` と `~/.nvm/versions/node/v24.19.0/bin/node` を使います。
+Mac mini と Android を同じ tailnet に接続します。Mac mini では Orca にログインして起動し、同じ macOS ユーザーのターミナルから作業します。インストーラーは `tailscale ip -4` で待受アドレスを取得します。`NODE_BIN` を指定する場合は、実行可能な Node.js 24 以上のパスが必要です。指定が無効な場合はエラーで終了します。未指定の場合は nvm の新しいバージョンから順に探し、続いて PATH 上の `node` を確認します。通常の設置には npm も必要です。
 
 ## 設置と更新
 
 リポジトリのルートで実行します。
 
 ```sh
-(cd server && npm ci --omit=dev)
 server/launchd/install.sh --dry-run
 server/launchd/install.sh
 ```
 
 `--dry-run` は生成した plist を標準出力に表示します。`ProgramArguments` は Node と `main.ts` の絶対パスの2要素です。トークンの発行や LaunchAgent の登録は通常実行で行います。初回の通常実行でランダムなトークンを `~/.config/orca-bot-remote/token` に権限 `600` で保存します。インストーラーは保存場所を表示します。Android に設定する際は、そのファイルを信頼できる方法で開き、値を Android のトークン欄へ入力します。
 
-インストーラーは `server/` を `~/Library/Application Support/orca-bot-remote/server/` にコピーします。この配置なら LaunchAgent が macOS の TCC で保護された Desktop にアクセスする必要がありません。plist は `~/Library/LaunchAgents/dev.okumura.orca-bot-remote.plist` に置きます。更新時は通常のインストールコマンドを再実行します。既存のジョブを停止し、コピーを更新してから再登録します。
+インストーラーは一時ディレクトリに実行用のファイルと本番依存を揃え、`~/Library/Application Support/orca-bot-remote/server/` を置き換えます。この配置なら LaunchAgent が macOS の TCC で保護された Desktop にアクセスする必要がありません。plist は `~/Library/LaunchAgents/dev.okumura.orca-bot-remote.plist` に置きます。更新時は通常のインストールコマンドを再実行します。配置の準備が済んだら既存のジョブを停止し、旧版を一時退避して更新します。新しいジョブの登録に成功すると退避先を削除します。配置や登録に失敗した場合は旧版を戻し、更新前に稼働していたジョブを再登録します。
 
-インストール時に Orca から「専門Botの状況まとめ（毎日12:00）」を名前で検索し、見つかった ID を plist に書きます。自動化を後から作成・変更した場合は再実行してください。
+インストール時に Orca から「専門Botの状況まとめ（毎日12:00）」を名前で検索し、見つかった ID を plist に書きます。該当する自動化が無い場合は警告を表示し、まとめを未設定にして設置を続けます。自動化を後から作成・変更した場合は再実行してください。
 
 ## 本人として書き込む端末をペアリングする
 
@@ -31,9 +30,11 @@ node server/src/pair.ts
 
 Mac mini では `127.0.0.1:6768` への TCP 接続とペアリング後の E2EE 認証を確認したため、Orca への接続に loopback を使います。スクリプトは loopback へ届かない場合に Tailscale IPv4 の到達性を確認します。Orca のネットワークペアリングは初回に Orca 自身の待ち受けを広げることがあります。検証した Mac mini では、ペアリング前から Orca が全 IPv4 インターフェースの TCP 6768 で待ち受けていました。Android が接続する中継サーバーは Tailscale IP にバインドします。
 
-登録後に Settings → Mobile を開き、登録前の端末一覧との差分でサーバー用の端末を確認して控えます。取り消すときは、この差分で確認した端末を一覧から削除します。再設定する場合は、取り消し後に `~/.config/orca-bot-remote/orca-device.json` を削除してペアリング手順を実行します。資格情報ファイルが無い、または失効した場合は書き込みが `503 write_unavailable` になり、読み取りは利用できます。
+登録後に Settings → Mobile を開き、登録前の端末一覧との差分でサーバー用の端末を特定して控えます。取り消すときは、この端末を一覧から削除します。資格情報ファイルが無い、または失効した場合は書き込みが `503 write_unavailable` になり、読み取りは利用できます。
 
-ペアリングを中断して `~/.config/orca-bot-remote/.orca-device-pairing` が残った場合は、まず別のターミナルも含めてペアリングが実行中でないことを確認します。端末一覧の差分でサーバー用端末が見つかり、資格情報ファイルも残っている場合は、既存の登録と資格情報を使います。端末だけ登録された場合は、差分で特定した端末を取り消します。端末の登録が無いと確認でき、資格情報ファイルだけが残っている場合は、そのファイルを削除します。登録状況が不明な場合は再登録を保留してください。確認後に残ったロックディレクトリを `rm -r ~/.config/orca-bot-remote/.orca-device-pairing` で削除します。端末登録と資格情報の両方が無い状態でペアリング手順をやり直せます。
+再ペアリングするときは端末一覧を控えてから、`node server/src/pair.ts --force` を実行します。新しいトークンで認証が成功すると、権限 `600` の資格情報ファイルが原子的に切り替わります。書き込みを確認したら、Settings → Mobile から旧端末を取り消します。交換や検証に失敗した場合、既存ファイルは維持されます。新しい端末だけが登録された場合は、差分で特定して取り消してください。
+
+中断後に `~/.config/orca-bot-remote/.orca-device-pairing` が残った場合は、別のペアリングが実行中でないことを確認します。端末一覧の差分と現在の資格情報による書き込みを確認し、不要と特定できた登録だけを取り消します。登録状況が不明な場合は再登録を保留してください。確認後に残ったロックディレクトリを `rm -r ~/.config/orca-bot-remote/.orca-device-pairing` で削除します。
 
 ## 動作確認
 

@@ -1,30 +1,153 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-test('dry-run の ProgramArguments は Node と main.ts の2要素', {
-  skip: process.platform !== 'darwin'
-}, t => {
-  const home = mkdtempSync(join(tmpdir(), 'orca-bot-remote-launchd-test-'));
+const darwin = { skip: process.platform !== 'darwin' };
+const source = fileURLToPath(new URL('../', import.meta.url));
+const install = join(source, 'launchd/install.sh');
+
+function fixture(t: TestContext) {
+  const home = mkdtempSync(join(realpathSync(tmpdir()), 'orca-bot-remote-launchd-test-'));
   t.after(() => rmSync(home, { recursive: true }));
-  const node = join(home, '.nvm/versions/node/v24.19.0/bin/node');
-  mkdirSync(dirname(node), { recursive: true });
-  symlinkSync(process.execPath, node);
-  writeFileSync(join(home, 'tailscale'), '#!/bin/sh\nprintf "100.113.115.59\\n"\n', { mode: 0o700 });
-  const plist = execFileSync(fileURLToPath(new URL('../launchd/install.sh', import.meta.url)), ['--dry-run'], {
-    env: {
-      HOME: home, PATH: `${home}:/usr/bin:/bin`,
-      ORCA_BIN: fileURLToPath(new URL('./fixtures/orca', import.meta.url))
-    }
-  });
-  const args = execFileSync('/usr/bin/plutil', ['-extract', 'ProgramArguments', 'json', '-o', '-', '-'], {
+  const env = {
+    HOME: home, PATH: `${home}:/usr/bin:/bin`,
+    ORCA_BIN: join(source, 'test/fixtures/orca')
+  };
+  const script = (path: string, body: string) => writeFileSync(path, '#!/bin/sh\n' + body + '\n', { mode: 0o700 });
+  script(join(home, 'tailscale'), 'echo 100.113.115.59');
+  const addNode = (path: string) => {
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(process.execPath, path);
+    return path;
+  };
+  return { home, env, script, addNode, destination: join(home, 'Library/Application Support/orca-bot-remote/server') };
+}
+
+function parsePlist(plist: string) {
+  return JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], {
     input: plist, encoding: 'utf8'
-  });
-  assert.deepEqual(JSON.parse(args), [
-    node, join(home, 'Library/Application Support/orca-bot-remote/server/src/main.ts')
-  ]);
+  }));
+}
+
+test('dry-run の ProgramArguments は候補順に解決した Node と main.ts の絶対パス', darwin, t => {
+  const { home, env, addNode, destination } = fixture(t);
+  const pathNode = addNode(join(home, 'node'));
+  const run = (extra = {}) => {
+    const plist = execFileSync(install, ['--dry-run'], { env: { ...env, ...extra }, cwd: home, encoding: 'utf8' });
+    return parsePlist(plist).ProgramArguments;
+  };
+  const entry = join(destination, 'src/main.ts');
+  assert.deepEqual(run(), [pathNode, entry]);
+  const nvm = join(home, '.nvm/versions/node');
+  addNode(join(nvm, 'v24.9.1/bin/node'));
+  const latest = addNode(join(nvm, 'v24.19.0/bin/node'));
+  assert.deepEqual(run(), [latest, entry]);
+  const major = addNode(join(nvm, 'v25.0.0/bin/node'));
+  assert.deepEqual(run(), [major, entry]);
+  const explicit = addNode(join(home, 'custom node'));
+  assert.deepEqual(run({ NODE_BIN: './custom node' }), [explicit, entry]);
 });
+
+test('明示した NODE_BIN が無効なら nvm と PATH に候補があっても失敗する', darwin, t => {
+  const { home, env, script, addNode } = fixture(t);
+  addNode(join(home, 'node'));
+  addNode(join(home, '.nvm/versions/node/v25.0.0/bin/node'));
+  const nonExecutable = join(home, 'not-executable');
+  writeFileSync(nonExecutable, '', { mode: 0o600 });
+  const older = join(home, 'old-node');
+  script(older, 'echo 22');
+  for (const value of ['', join(home, 'missing'), nonExecutable, older]) {
+    const result = spawnSync(install, ['--dry-run'], { env: { ...env, NODE_BIN: value }, encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /NODE_BIN.*Node.js 24 以上/);
+    assert.equal(result.stdout, '');
+  }
+});
+
+test('Node 24 未満しかない場合は分かりやすい理由で終了する', darwin, t => {
+  const { home, env, script } = fixture(t);
+  // Exercise the version probe with the actual Node runtime reporting an older version.
+  writeFileSync(join(home, 'old.cjs'), 'Object.defineProperty(process.versions, "node", { value: "22.0.0" });');
+  script(join(home, 'node'), 'exec "$TEST_NODE" --require "$HOME/old.cjs" "$@"');
+  const result = spawnSync(install, ['--dry-run'], {
+    env: { ...env, TEST_NODE: process.execPath }, encoding: 'utf8'
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Node.js 24 以上/);
+  assert.equal(result.stdout, '');
+});
+
+test('自動化が見つからないときは stderr に警告し、有効な plist を出力する', darwin, t => {
+  const { home, env, script } = fixture(t);
+  const bin = join(home, 'orca');
+  script(bin, `echo '{"ok":true,"result":{"automations":[]}}'`);
+  const result = spawnSync(install, ['--dry-run'], {
+    env: { ...env, NODE_BIN: process.execPath, ORCA_BIN: bin }, encoding: 'utf8'
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /警告.*専門Botの状況まとめ/);
+  assert.equal(parsePlist(result.stdout).EnvironmentVariables.SUMMARY_AUTOMATION_ID, '');
+});
+
+function installedFixture(t: TestContext) {
+  const { home, env, script, destination } = fixture(t);
+  const checkout = join(home, 'checkout');
+  mkdirSync(checkout);
+  for (const file of ['package.json', 'package-lock.json', 'src', 'vendor', 'launchd']) {
+    cpSync(join(source, file), join(checkout, file), { recursive: true });
+  }
+  mkdirSync(join(checkout, 'test'));
+  writeFileSync(join(checkout, 'debug.log'), 'test');
+  mkdirSync(destination, { recursive: true });
+  writeFileSync(join(destination, 'obsolete.ts'), 'test');
+
+  // Redirect the two fixed external programs in the sandbox copy.
+  script(join(home, 'launchctl'), 'echo "$1" >> "$HOME/launchctl.calls"');
+  const isolatedInstall = join(checkout, 'launchd/install.sh');
+  writeFileSync(isolatedInstall, readFileSync(install, 'utf8')
+    .replaceAll('/bin/launchctl', '"$HOME/launchctl"')
+    .replace('orca_bin=/Applications/Orca.app/Contents/Resources/bin/orca', 'orca_bin="$ORCA_BIN"'));
+  const node = join(home, 'node');
+  symlinkSync(process.execPath, node);
+  script(join(home, 'npm'), 'set -eu\n[ "$1" = ci ] && [ "$2" = --prefix ] || exit 1\nmkdir -p "$3/node_modules/tweetnacl"');
+  const plist = join(home, 'Library/LaunchAgents/dev.okumura.orca-bot-remote.plist');
+  mkdirSync(dirname(plist), { recursive: true });
+  writeFileSync(plist, 'old plist');
+  const run = () => spawnSync(isolatedInstall, { env: { ...env, NODE_BIN: node }, encoding: 'utf8' });
+  const calls = () => readFileSync(join(home, 'launchctl.calls'), 'utf8').trim().split('\n');
+  return { home, script, destination, plist, run, calls };
+}
+
+test('更新は稼働用ファイルだけを配置し、旧版のファイルを除く', darwin, t => {
+  const { destination, run, calls } = installedFixture(t);
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readdirSync(destination).sort(), ['node_modules', 'package-lock.json', 'package.json', 'src', 'vendor']);
+  assert.ok(existsSync(join(destination, 'src/main.ts')));
+  assert.ok(existsSync(join(destination, 'node_modules/tweetnacl')));
+  assert.deepEqual(readdirSync(dirname(destination)), ['server']);
+  assert.deepEqual(calls(), ['print', 'bootout', 'bootstrap']);
+});
+
+for (const failure of ['mv', 'bootstrap']) {
+  test(`更新の ${failure} 失敗時に旧版と plist を復元して再登録する`, darwin, t => {
+    const { home, script, destination, plist, run, calls } = installedFixture(t);
+    if (failure === 'mv') {
+      script(join(home, 'mv'), 'case "$1" in */new) exit 1;; esac\nexec /bin/mv "$@"');
+    } else {
+      script(join(home, 'launchctl'), `echo "$1" >> "$HOME/launchctl.calls"
+        if [ "$1" = bootstrap ]; then [ "$(cat "$3")" = 'old plist' ]; fi`);
+    }
+    const result = run();
+    assert.equal(result.status, 1);
+    assert.deepEqual(readdirSync(destination), ['obsolete.ts']);
+    assert.equal(readFileSync(plist, 'utf8'), 'old plist');
+    assert.deepEqual(readdirSync(dirname(destination)), ['server']);
+    assert.deepEqual(calls(), failure === 'mv'
+      ? ['print', 'bootout', 'bootstrap'] : ['print', 'bootout', 'bootstrap', 'bootstrap']);
+  });
+}

@@ -18,6 +18,7 @@ try {
     shuttingDown = true;
     setTimeout(() => process.exit(0), 2000);
     const drained = new Promise<void>(resolve => server.close(() => resolve()));
+    server.closeIdleConnections();
     shutdownController.abort();
     void Promise.all([drained, stopAll()]).then(() => process.exit(0));
   }

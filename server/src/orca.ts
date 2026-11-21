@@ -5,12 +5,50 @@ import { join } from 'node:path';
 
 const maxOutputBytes = 4 * 1024 * 1024;
 const activeStops = new Set<() => Promise<void>>();
+const maxConcurrentCli = 4;
+let occupiedSlots = 0;
+const waiting = new Set<(granted: boolean) => void>();
 let shuttingDown = false;
 
 export function stopAll() {
   // In-flight requests must not start another CLI while the server is closing.
   shuttingDown = true;
+  for (const finish of waiting) finish(false);
   return Promise.all(Array.from(activeStops, stop => stop()));
+}
+
+async function withCliSlot<T>(signal: AbortSignal, deadline: number, run: () => Promise<T>): Promise<T> {
+  function checkRequest() {
+    if (shuttingDown || signal.aborted || performance.now() >= deadline) throw new OrcaError();
+  }
+  checkRequest();
+  if (occupiedSlots < maxConcurrentCli) {
+    occupiedSlots++;
+  } else {
+    await new Promise<void>((resolve, reject) => {
+      function finish(granted: boolean) {
+        waiting.delete(finish);
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancel);
+        if (granted) resolve();
+        else reject(new OrcaError());
+      }
+      const cancel = () => finish(false);
+      const timer = Number.isFinite(deadline)
+        ? setTimeout(cancel, Math.ceil(deadline - performance.now())) : undefined;
+      waiting.add(finish);
+      signal.addEventListener('abort', cancel, { once: true });
+    });
+  }
+  try {
+    // Cancellation may race the handoff from the preceding CLI.
+    checkRequest();
+    return await run();
+  } finally {
+    const next = waiting.values().next().value;
+    if (next) next(true);
+    else occupiedSlots--;
+  }
 }
 
 export class OrcaError extends Error {
@@ -78,9 +116,7 @@ async function readMascots(signal: AbortSignal) {
 
 export function createOrca(orcaBin: string, summaryId: string | undefined, signal: AbortSignal, deadline: number) {
   async function read<T>(...args: string[]): Promise<T> {
-    signal.throwIfAborted();
-    if (shuttingDown || performance.now() >= deadline) throw new OrcaError();
-    return new Promise((resolve, reject) => {
+    return withCliSlot(signal, deadline, () => new Promise<T>((resolve, reject) => {
       const child = spawn(orcaBin, [...args, '--json'], {
         env: { HOME: homedir(), PATH: '/usr/bin:/bin' },
         // Give the CLI and its descendants a process group of their own.
@@ -138,7 +174,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
           resolve(reply.result as T);
         }
       });
-    });
+    }));
   }
 
   async function listBots() {

@@ -14,7 +14,35 @@ install_dir="$app_dir/server"
 log_dir="$HOME/Library/Logs/orca-bot-remote"
 agent_dir="$HOME/Library/LaunchAgents"
 token_file="$HOME/.config/orca-bot-remote/token"
-node_bin="$HOME/.nvm/versions/node/v24.19.0/bin/node"
+find_node() {
+    [ -f "$1" ] && [ -x "$1" ] || return 1
+    node_dir=$(CDPATH= cd -- "$(dirname -- "$1")" && pwd) || return 1
+    candidate="$node_dir/$(basename -- "$1")"
+    major=$("$candidate" -p 'process.versions.node.split(".")[0]' 2>/dev/null) || return 1
+    [ "$major" -ge 24 ] 2>/dev/null || return 1
+    printf '%s\n' "$candidate"
+}
+
+if [ "${NODE_BIN+x}" = x ]; then
+    if ! node_bin=$(find_node "$NODE_BIN"); then
+        printf 'NODE_BIN には実行可能な Node.js 24 以上のパスを指定してください。\n' >&2
+        exit 1
+    fi
+else
+    node_bin=
+    nvm_root="${NVM_DIR:-$HOME/.nvm}/versions/node"
+    # Sort version names only, so spaces in the installation path are preserved.
+    versions=$(for dir in "$nvm_root"/v[0-9]*; do
+        if [ -x "$dir/bin/node" ]; then basename -- "$dir"; fi
+    done | sort -Vr)
+    for version in $versions; do
+        if node_bin=$(find_node "$nvm_root/$version/bin/node"); then break; fi
+    done
+    if [ -z "$node_bin" ] && ! node_bin=$(find_node "$(command -v node || true)"); then
+        printf 'Node.js 24 以上が必要です。NODE_BIN に実行ファイルのパスを指定してください。\n' >&2
+        exit 1
+    fi
+fi
 orca_bin=/Applications/Orca.app/Contents/Resources/bin/orca
 if [ "${1:-}" = '--dry-run' ]; then
     orca_bin=${ORCA_BIN:-$orca_bin}
@@ -41,12 +69,38 @@ summary_id=$(printf '%s' "$automations" | "$node_bin" --input-type=module -e '
   const match = reply.result.automations.find(item => item.name === "専門Botの状況まとめ（毎日12:00）");
   process.stdout.write(match?.id ?? "");
 ')
+if [ -z "$summary_id" ]; then
+    printf '警告: 専門Botの状況まとめ（毎日12:00）が見つかりません。まとめは未設定になります。\n' >&2
+fi
 
 plist=$(mktemp "${TMPDIR:-/tmp}/orca-bot-remote.XXXXXXXX")
 token_tmp=
+stage=
+agent_plist="$agent_dir/$label.plist"
+rollback=false
+restart_old=false
+restore_previous() {
+    if [ ! -d "$stage/new" ]; then
+        mv "$install_dir" "$stage/new" || return 1
+    fi
+    if [ -e "$stage/previous" ] || [ -L "$stage/previous" ]; then
+        mv "$stage/previous" "$install_dir" || return 1
+    fi
+    if [ -f "$stage/previous.plist" ]; then
+        cp -p "$stage/previous.plist" "$agent_plist" || return 1
+        if "$restart_old"; then /bin/launchctl bootstrap "$domain" "$agent_plist" || return 1; fi
+    else
+        rm -f "$agent_plist" || return 1
+    fi
+}
 cleanup() {
     rm -f "$plist"
     if [ -n "$token_tmp" ]; then rm -f "$token_tmp"; fi
+    if "$rollback" && ! restore_previous; then
+        printf '旧版の復元が完了しませんでした。退避先を確認してください  %s\n' "$stage" >&2
+        exit 1
+    fi
+    if [ -n "$stage" ]; then rm -rf "$stage"; fi
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -79,13 +133,21 @@ fi
     '
 )
 
+stage=$(mktemp -d "$app_dir/.server.XXXXXXXX")
+mkdir "$stage/new"
+cp -R "$server_dir/package.json" "$server_dir/package-lock.json" "$server_dir/src" "$server_dir/vendor" "$stage/new/"
 node_dir=$(dirname -- "$node_bin")
-PATH="$node_dir:$PATH" "$node_dir/npm" ci --prefix "$server_dir" --omit=dev --ignore-scripts --no-audit --no-fund
+PATH="$node_dir:$PATH" npm ci --prefix "$stage/new" --omit=dev --ignore-scripts --no-audit --no-fund
 
+if [ -f "$agent_plist" ]; then cp -p "$agent_plist" "$stage/previous.plist"; fi
 if /bin/launchctl print "$domain/$label" >/dev/null 2>&1; then
     /bin/launchctl bootout "$domain/$label"
+    restart_old=true
 fi
-/usr/bin/ditto "$server_dir" "$install_dir"
-cp "$plist" "$agent_dir/$label.plist"
-/bin/launchctl bootstrap "$domain" "$agent_dir/$label.plist"
+rollback=true
+if [ -e "$install_dir" ] || [ -L "$install_dir" ]; then mv "$install_dir" "$stage/previous"; fi
+mv "$stage/new" "$install_dir"
+cp "$plist" "$agent_plist"
+/bin/launchctl bootstrap "$domain" "$agent_plist"
+rollback=false
 printf 'トークンファイル %s\n' "$token_file"
