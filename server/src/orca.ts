@@ -5,10 +5,16 @@ import { join } from 'node:path';
 
 const maxOutputBytes = 4 * 1024 * 1024;
 const activeStops = new Set<() => Promise<void>>();
-const maxConcurrentCli = 4;
+const maxConcurrentCli = 8;
 let occupiedSlots = 0;
 const waiting = new Set<(granted: boolean) => void>();
 let shuttingDown = false;
+
+let readCache = new Map<string, { value: unknown[]; expires: number }>();
+
+export function clearReadCache() {
+  readCache = new Map();
+}
 
 export function stopAll() {
   // In-flight requests must not start another CLI while the server is closing.
@@ -90,6 +96,15 @@ type Run = {
   trigger: string; status: string; scheduledFor: number; chatSessionId?: string;
   outputSnapshot?: { content?: string };
 };
+
+function validChats(chats: Chat[] | null): chats is Chat[] {
+  return Array.isArray(chats) && chats.every(chat =>
+    chat && typeof chat === 'object' && !Array.isArray(chat) &&
+    (chat.closed == null || typeof chat.closed === 'boolean') &&
+    (chat.lastActivityAt == null || Number.isSafeInteger(chat.lastActivityAt)) &&
+    (chat.lastSaid == null || typeof chat.lastSaid === 'string')
+  );
+}
 
 const newestFirst = (a: { lastActivityAt?: number }, b: { lastActivityAt?: number }) =>
   (b.lastActivityAt ?? -Infinity) - (a.lastActivityAt ?? -Infinity);
@@ -177,12 +192,31 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     }));
   }
 
-  async function listBots() {
-    return (await read<{ bots: Bot[] }>('bot', 'list')).bots;
+  async function readList<T>(field: string, ttl: number, valid: (value: T[]) => boolean, matches: (value: T[]) => boolean, ...args: string[]): Promise<T[]> {
+    if (shuttingDown || signal.aborted || performance.now() >= deadline) throw new OrcaError();
+    const cache = readCache;
+    const key = JSON.stringify([orcaBin, ...args]);
+    const cached = ttl ? cache.get(key) : undefined;
+    if (cached && cached.expires > performance.now() && matches(cached.value as T[])) {
+      return cached.value as T[];
+    }
+
+    const value = (await read<Record<string, T[]>>(...args))[field];
+    if (ttl && Array.isArray(value) && valid(value) && cache === readCache) {
+      // Bound the key count and prevent reads started before a POST from refilling the cleared cache.
+      if (cache.size >= 256 && !cache.has(key)) cache.delete(cache.keys().next().value!);
+      cache.set(key, { value, expires: performance.now() + ttl });
+    }
+    return value;
   }
 
-  async function listChats(bot: Bot, ...filters: string[]) {
-    return (await read<{ chats: Chat[] }>('bot', 'chats', `--bot=${bot.name}`, ...filters)).chats;
+  function listBots() {
+    return readList<Bot>('bots', 10_000, bots => bots.every(bot => typeof bot?.id === 'string' && typeof bot.name === 'string'),
+      () => true, 'bot', 'list');
+  }
+
+  function listChats(bot: Bot) {
+    return readList<Chat>('chats', 3_000, validChats, () => true, 'bot', 'chats', `--bot=${bot.name}`);
   }
 
   function openChats(chats: Chat[]) {
@@ -195,17 +229,15 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       if (!(error instanceof OrcaError)) throw error;
       return null;
     });
-    if (!Array.isArray(chats) || !chats.every(chat =>
-      chat && typeof chat === 'object' && !Array.isArray(chat) &&
-      (chat.closed == null || typeof chat.closed === 'boolean') &&
-      (chat.lastActivityAt == null || Number.isSafeInteger(chat.lastActivityAt)) &&
-      (chat.lastSaid == null || typeof chat.lastSaid === 'string')
-    )) return null;
+    if (!validChats(chats)) return null;
     return openChats(chats)[0];
   }
 
-  async function findChat(bot: Bot, chatId: string) {
-    return (await listChats(bot, '--all')).find(chat => chat.id === chatId);
+  async function findChat(bot: Bot, chatId: string, cached: boolean) {
+    const matches = (chat: Chat) => chat.id === chatId;
+    const chats = await readList<Chat>('chats', cached ? 10_000 : 0, validChats, chats => chats.some(matches),
+      'bot', 'chats', `--bot=${bot.name}`, '--all');
+    return chats.find(matches);
   }
 
   async function* itemPages(bot: Bot, ...filters: string[]) {
@@ -271,7 +303,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       }));
     },
     async messages(bot: Bot, chatId: string, limit: number) {
-      if (!await findChat(bot, chatId)) return null;
+      if (!await findChat(bot, chatId, true)) return null;
 
       const { state, entries } = await read<{ state?: string; entries: Entry[] }>(
         'agent', 'read', `orca_session_id:${chatId}`, '--limit', String(limit)

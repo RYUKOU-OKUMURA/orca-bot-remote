@@ -8,12 +8,12 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { after, before, test, type TestContext } from 'node:test';
+import { after, before, beforeEach, test, type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.ts';
 import { createApi } from '../src/http.ts';
-import { createOrca, OrcaError } from '../src/orca.ts';
+import { clearReadCache, createOrca, OrcaError } from '../src/orca.ts';
 import { createOrcaWrite, OrcaWriteError, type OrcaWrite } from '../src/orca-write.ts';
 
 const orcaBin = fileURLToPath(new URL('./fixtures/orca', import.meta.url));
@@ -34,6 +34,7 @@ before(() => {
   writeFileSync(join(tokenDir, 'token'), token, { mode: 0o600 });
 });
 after(() => rmSync(tokenDir, { recursive: true }));
+beforeEach(clearReadCache);
 
 function recordOrcaCalls(t: TestContext) {
   const dir = mkdtempSync(join(tokenDir, 'orca-'));
@@ -304,8 +305,8 @@ test('履歴の旧パス、未知の Bot、別の Bot のチャット、Bot 外�
     assert.equal((await get(path, 404)).error, 'not_found');
   }
   assert.deepEqual(calls(), [
-    'bot list --json', 'bot list --json', 'bot chats --bot=専門Bot --all --json',
-    'bot list --json', 'bot chats --bot=メインBot --all --json'
+    'bot list --json', 'bot chats --bot=専門Bot --all --json',
+    'bot chats --bot=メインBot --all --json'
   ]);
 });
 
@@ -365,7 +366,7 @@ test('全リクエストで CLI 枠を共有し、待機中の中止・期限切
   });
   const read = (controller = new AbortController(), deadline = Infinity) =>
     createOrca(orcaBin, undefined, controller.signal, deadline).listBots();
-  const active = Array.from({ length: 4 }, () => read());
+  const active = Array.from({ length: 8 }, () => read());
   const controller = new AbortController();
   const aborted = assert.rejects(read(controller), OrcaError);
   const expired = assert.rejects(read(undefined, performance.now() + 50), OrcaError);
@@ -373,18 +374,18 @@ test('全リクエストで CLI 枠を共有し、待機中の中止・期限切
   const queuedAtShutdown = assert.rejects(read(), OrcaError);
   controller.abort();
   await Promise.all([aborted, expired]);
-  assert.equal(children.length, 4);
+  assert.equal(children.length, 8);
   children[0].stdout!.emit('data', Buffer.from('{"ok":true,"result":{"bots":[]}}'));
   children[0].emit('close', 0);
   assert.deepEqual(await active.shift(), []);
-  assert.equal(children.length, 5);
+  assert.equal(children.length, 9);
   const stopped = stopAll();
   await queuedAtShutdown;
   await assert.rejects(read(), OrcaError);
   for (const child of children.slice(1)) child.emit('close', null);
   await Promise.all([...active, next].map(promise => assert.rejects(promise, OrcaError)));
   await stopped;
-  assert.equal(children.length, 5);
+  assert.equal(children.length, 9);
 });
 
 async function forkServer(t: TestContext, bin: string, extraPreload = '', home?: string) {
@@ -872,4 +873,60 @@ test('HTTP の期限で送信後の結果不明を読み取りタイムアウト
   assert.equal(response.status, 502);
   assert.equal((await response.json()).error, 'unknown_result');
   assert.deepEqual(calls, [['start', 'main', '進める']]);
+});
+
+test('Keep-Alive は 65 秒を通知する', async t => {
+  const server = await listenApi(t);
+  const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/health`,
+    { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.headers.get('keep-alive'), 'timeout=65');
+  await response.json();
+});
+
+test('Bot とチャット一覧はそれぞれの期限内だけ CLI 結果を再利用する', async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const get = await openApi(t, undefined, bin);
+  await get(chats);
+  await get(chats);
+  now = 3_000;
+  await get(chats);
+  now = 10_000;
+  await get(chats);
+  const list = 'bot list --json';
+  const chatList = 'bot chats --bot=メインBot --json';
+  assert.deepEqual(calls(), [list, chatList, chatList, list, chatList]);
+});
+
+test('所属キャッシュの外れは直ちに読み直し、履歴自体は毎回取得する', async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  const get = await openApi(t, undefined, bin);
+  await get(messages);
+  await get(messages);
+  await get(`/api/bots/${bot}/chats/${unrelatedChat}/messages`, 404);
+  assert.equal(calls().filter(call => call.includes('--all')).length, 2);
+  assert.equal(calls().filter(call => call.startsWith('agent read ')).length, 2);
+});
+
+test('POST は所属を毎回確認し、成功・失敗の両方で読み取りキャッシュを消す', async t => {
+  for (const failure of [undefined, 'orca_failed'] as const) {
+    const { bin, calls } = recordOrcaCalls(t);
+    const call = await writeApi(t, fakeWrite([], failure), bin);
+    assert.equal((await call(openMessages, null, 'GET')).status, 200);
+    assert.equal((await call(openMessages)).status, failure ? 502 : 202);
+    assert.equal((await call(openMessages, null, 'GET')).status, 200);
+    assert.equal(calls().filter(call => call === 'bot list --json').length, 2);
+    assert.equal(calls().filter(call => call.startsWith('bot chats ') && call.includes('--all')).length, 3);
+  }
+});
+
+test('失敗したチャット一覧をキャッシュしない', async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.fail-chats`, '');
+  const get = await openApi(t, undefined, bin);
+  await get(chats, 502);
+  rmSync(`${bin}.fail-chats`);
+  await get(chats);
+  assert.equal(calls().filter(call => call === 'bot chats --bot=メインBot --json').length, 2);
 });

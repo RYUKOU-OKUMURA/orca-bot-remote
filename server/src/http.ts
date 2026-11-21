@@ -1,10 +1,11 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { tokenDigest } from './config.ts';
-import { createOrca, OrcaError } from './orca.ts';
+import { clearReadCache, createOrca, OrcaError } from './orca.ts';
 import { createOrcaWrite, OrcaWriteError, type OrcaWrite } from './orca-write.ts';
 import { BadInput, inlineJsonLimit, inlineUploads, jsonLimit, messageExtras, uuid, withRawUpload } from './attachments.ts';
 import { parseCommand } from './commands.ts';
+import { createAppRelease } from './app-release.ts';
 
 const BOTS = /^\/api\/bots$/;
 const CHATS = /^\/api\/bots\/([^/]+)\/chats$/;
@@ -108,11 +109,12 @@ function readJson(request: IncomingMessage, signal: AbortSignal, maxBodyBytes: n
   });
 }
 
-export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(), shutdownSignal }: {
-  orcaBin: string; digest: Buffer; summaryId?: string; write?: OrcaWrite; shutdownSignal?: AbortSignal;
+export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(), shutdownSignal, appDir }: {
+  orcaBin: string; digest: Buffer; summaryId?: string; write?: OrcaWrite; shutdownSignal?: AbortSignal; appDir?: string;
 }, requestTimeoutMs = 55_000) {
+  const appRelease = createAppRelease(appDir);
   const pendingAnswers = new Map<string, Promise<'unknown_result' | undefined>>();
-  return createServer(async (request, response) => {
+  return createServer({ keepAliveTimeout: 65_000, headersTimeout: 66_000 }, async (request, response) => {
     const started = performance.now();
     const deadline = started + requestTimeoutMs;
     const url = request.url ?? '';
@@ -120,6 +122,8 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     const path = queryAt === -1 ? url : url.slice(0, queryAt);
     const query = queryAt === -1 ? '' : url.slice(queryAt + 1);
     const posting = request.method === 'POST';
+    const app = path === '/api/app';
+    const apk = path === '/api/app/apk';
     let logPath = 'unauthenticated';
     response.once('finish', () => {
       console.log(`${JSON.stringify(logPath)} ${response.statusCode} ${Math.round(performance.now() - started)}ms`);
@@ -127,7 +131,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     function send(status: number, body: object) {
       if (response.destroyed || response.writableEnded) return;
       if (shutdownSignal?.aborted) response.setHeader('Connection', 'close');
-      if (!posting && performance.now() >= deadline) {
+      if (!posting && !app && !apk && performance.now() >= deadline) {
         status = 502;
         body = timedOut;
       }
@@ -154,6 +158,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     const summary = SUMMARY.test(path);
     const health = path === '/api/health';
     if (health) logPath = '/api/health';
+    else if (app || apk) logPath = path;
     else if (bots) logPath = '/api/bots';
     else if (chats) logPath = '/api/bots/:bot/chats';
     else if (action) logPath = '/api/bots/:bot/chats/:chat/' + route;
@@ -172,6 +177,11 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     }
 
     if (health) return send(200, { ok: true });
+    if (app) return send(200, { app: await appRelease.metadata() });
+    if (apk) {
+      if (!await appRelease.download(response)) send(404, notFound);
+      return;
+    }
 
     const controller = new AbortController();
     const signal = shutdownSignal ? AbortSignal.any([controller.signal, shutdownSignal]) : controller.signal;
@@ -220,7 +230,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       const bot = name && (await orca.listBots()).find(bot => bot.name === name);
       if (!bot) return send(404, notFound);
       if (action && (posting || menu)) {
-        const chat = await orca.findChat(bot, chatId);
+        const chat = await orca.findChat(bot, chatId, !posting);
         if (!chat) return send(404, notFound);
         if (posting && chat.closed) return send(409, { error: 'conflict', message: 'このチャットは閉じています。' });
         signal.throwIfAborted();
@@ -295,6 +305,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       }
       return send(502, { error: 'orca_failed', message: 'Orca の読み取りに失敗しました。' });
     } finally {
+      if (posting) clearReadCache();
       stop();
     }
   });

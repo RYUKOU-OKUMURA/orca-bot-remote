@@ -2,7 +2,7 @@
 
 ベース URL は Mac mini の Tailscale IP または完全な MagicDNS 名を使います（例 `http://mac-mini.example.ts.net:8787`）。IPv6 のアドレスを URL に直接書く場合は角括弧で囲みます。
 
-全エンドポイントで `Authorization: Bearer <token>` を送ります。応答の Content-Type は `application/json; charset=utf-8` です。以下の `?` は JSON の `null` を許す値を表します。時刻は Unix epoch ミリ秒の数値です。
+全エンドポイントで `Authorization: Bearer <token>` を送ります。APK のダウンロードを除き、応答の Content-Type は `application/json; charset=utf-8` です。以下の `?` は JSON の `null` を許す値を表します。時刻は Unix epoch ミリ秒の数値です。
 
 ## v1 読み取り
 
@@ -21,6 +21,15 @@
 - `chatId` は UUID 形式です。履歴を取得できるのは指定した Bot のチャットだけで、閉じたチャットも含みます。別の Bot や Bot 外のセッション、および旧パス `/api/chats/{chatId}/messages` は 404 です。履歴は古い行から順に返します。メッセージの `role` は通常 `user` または `assistant` です。`limit` は 1〜100 に丸めます。省略時や整数として読めない場合は 100 です。
 - 判断待ち一覧には全 Bot の `needs_you` 項目を新しい順に返します。`number` は正の整数です。質問があれば現在の質問イベントの本文と選択肢ラベルを返します。選択肢はイベント内の出現順です。質問が無ければ `question` は `null` です。
 - まとめは `automations runs --limit 20` で取得した、設定された自動化の直近20回の実行のうち、最新の完了済み定期実行を選びます。`bot` は自動化定義の Bot 名です。Bot 一覧から名前を特定できない場合は定義にある Bot ID を返します。`runAt` は予定時刻（Orca の `scheduledFor`）です。未設定、該当する実行が無い場合、または該当回の本文がまだ無い場合は `{"summary":null}` を返します。
+
+## アプリの更新
+
+| メソッドとパス | 応答 |
+| --- | --- |
+| `GET /api/app` | `200 {"app":{"versionCode":number,"versionName":string,"sha256":string,"size":number}}`。配信ファイルがない場合やメタデータが無効な場合は `200 {"app":null}` |
+| `GET /api/app/apk` | APK の生バイト列。`Content-Type: application/vnd.android.package-archive` とバイト数を示す `Content-Length` を返します。APK を開けない場合は404 |
+
+両方とも Bearer 認証が必須で、405 の `Allow` は `GET` です。`versionCode` は正の安全な整数、`versionName` は印字可能な ASCII 1〜64文字です。`sha256` は公開 APK からサーバーが計算した小文字16進数64桁で、`size` は APK のバイト数です。APK のダウンロードには55秒の読み取り期限を適用しません。
 
 ## エラー応答
 
