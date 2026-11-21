@@ -314,7 +314,7 @@ internal fun HomeScreen(
                             onClick = openSummary,
                             leading = { OrcaIcon(R.drawable.ic_summary) },
                             subtitle = if (summary.error != null) "まとめを読めませんでした" else summary.data?.let { result ->
-                                result.summary?.content?.let(::summaryPreview) ?: "まだありません"
+                                markdownPreview(result.summary?.content) ?: "まだありません"
                             },
                         )
                     }
@@ -337,10 +337,6 @@ internal fun HomeScreen(
         }
     }
 }
-
-private fun summaryPreview(content: String): String =
-    content.lineSequence().map { it.trim().trimStart('#', '-', ' ').trim() }
-        .firstOrNull { it.isNotEmpty() }.orEmpty()
 
 internal val Chat.displayTitle: String
     get() = if (home) "Home Chat" else title?.takeIf { it.isNotBlank() } ?: "タイトルなし"
@@ -534,12 +530,8 @@ private fun MessageBubble(message: Entry.Message) {
                     style = MaterialTheme.typography.labelLarge,
                     color = colors.onSurfaceVariant,
                 )
-                SelectionContainer {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        presentation.subject?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
-                        Text(presentation.body)
-                    }
-                }
+                presentation.subject?.let { SelectionContainer { Text(it, style = MaterialTheme.typography.titleSmall) } }
+                if (owner) SelectionContainer { Text(presentation.body) } else MarkdownText(presentation.body)
             }
         }
     }
@@ -672,7 +664,7 @@ internal fun ItemScreen(
                         shape = MaterialTheme.shapes.large,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     ) {
-                        SelectionContainer { Text(question.text, Modifier.padding(OrcaInset)) }
+                        MarkdownText(question.text, Modifier.padding(OrcaInset))
                     }
                     if (canAnswer) {
                         question.options.forEach { label ->
@@ -725,7 +717,7 @@ internal fun SummaryScreen(
                     Text("まだありません")
                 } else {
                     Text(summary.bot, color = orcaAccentText, style = MaterialTheme.typography.labelLarge)
-                    SelectionContainer { Text(summary.content) }
+                    MarkdownText(summary.content)
                     summary.chatId?.let { chatId ->
                         Button(onClick = { openChat(summary.bot, chatId, summary.bot) }, shape = MaterialTheme.shapes.medium) {
                             Text("このチャットを開く")

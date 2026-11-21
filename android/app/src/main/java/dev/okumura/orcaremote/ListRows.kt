@@ -57,7 +57,7 @@ internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () ->
                 pausedWithPendingItems -> "$preview · 停止中"
                 bot.needsYou > 0 -> preview
                 bot.paused -> "停止中"
-                else -> listPreview(bot.lastSaid) ?: bot.specialty
+                else -> markdownPreview(bot.lastSaid) ?: bot.specialty
             },
             subtitleIcon = if (bot.needsYou > 0) R.drawable.ic_pending else R.drawable.ic_activity,
             subtitleColor = if (bot.needsYou > 0) colors.tertiary else colors.onSurfaceVariant,
@@ -82,14 +82,11 @@ internal fun ChatRow(chat: Chat, modifier: Modifier = Modifier, showPreview: Boo
         modifier = modifier,
         leading = { OrcaIcon(if (chat.home) R.drawable.ic_home else R.drawable.ic_chat) },
         titleMaxLines = if (showPreview) 2 else 1,
-        subtitle = if (showPreview) listPreview(chat.lastSaid) ?: listPreview(chat.lastAsked) else null,
+        subtitle = if (showPreview) markdownPreview(chat.lastSaid) ?: markdownPreview(chat.lastAsked) else null,
         caption = relativeTime(chat.lastActivityAt, compact = true),
         showChevron = showPreview,
     )
 }
-
-private fun listPreview(text: String?): String? =
-    text?.lineSequence()?.map(String::trim)?.firstOrNull(String::isNotEmpty)
 
 @Composable
 internal fun ListRow(

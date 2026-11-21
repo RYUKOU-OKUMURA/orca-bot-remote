@@ -36,5 +36,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.serialization.json)
     implementation(libs.work.runtime.ktx)
+    implementation(libs.commonmark.core)
+    implementation(libs.commonmark.tables)
+    implementation(libs.commonmark.strikethrough)
     testImplementation(libs.junit)
 }
