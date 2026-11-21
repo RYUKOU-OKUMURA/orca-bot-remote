@@ -80,9 +80,10 @@ class SendModelTest {
 
     @Test
     fun commandSuccessKeepsUnsentAttachmentsAndSkills() {
-        val sender = SendModel<String>(state, chat) { error("unexpected message") }
+        val sender = SendModel<String>(state, chat, showPendingMessage = true) { error("unexpected message") }
         sender.draft = "/compact"
         sender.submit(sender.draft) { "ok" }
+        assertNull(sender.pendingMessage)
         main.scheduler.runCurrent()
         assertEquals("ok", sender.result)
         assertFalse(sender.deliveryUncertain)
@@ -116,6 +117,60 @@ class SendModelTest {
         sender.edit(TextFieldValue("/co", TextRange(3)))
         sender.draft = "/compact "
         assertEquals(TextRange(9), sender.draftField.selection)
+    }
+
+    @Test
+    fun pendingStatesDistinguishSendingFailedUncertainAndReloading() {
+        assertEquals(PendingState.SENDING, pendingState(true, false, true, false))
+        assertEquals(PendingState.FAILED, pendingState(false, true, false, false))
+        assertEquals(PendingState.UNCERTAIN, pendingState(false, true, true, false))
+        assertEquals(PendingState.SENDING, pendingState(false, false, false, true))
+        assertNull(pendingState(false, false, false, false))
+    }
+
+    @Test
+    fun conversationKeepsSnapshotUntilTheSuccessfulReloadFinishes() {
+        val sender = SendModel(state, chat, showPendingMessage = true) { "ok" }
+        val snapshot = PendingMessage("確認", listOf(file.name))
+        sender.submit(sender.draft)
+        assertTrue(sender.sending)
+        assertEquals(snapshot, sender.pendingMessage)
+        main.scheduler.runCurrent()
+        assertEquals("ok", sender.result)
+        assertEquals("", sender.draft)
+        assertEquals(snapshot, sender.pendingMessage)
+        sender.resultShown()
+        assertNull(sender.pendingMessage)
+    }
+
+    @Test
+    fun interruptedConversationRestoresTheSentSnapshotEvenIfDraftChanges() {
+        val sender = SendModel<Unit>(state, chat, showPendingMessage = true) { throw ApiFailure(ApiError.UNKNOWN_RESULT) }
+        sender.submit(sender.draft)
+        main.scheduler.runCurrent()
+        sender.draft = "修正"
+        val restored = SendModel<Unit>(state, chat, showPendingMessage = true) { throw ApiFailure(ApiError.CONNECTION) }
+        assertTrue(restored.deliveryUncertain)
+        assertEquals(PendingMessage("確認", listOf(file.name)), restored.pendingMessage)
+        restored.submit(restored.draft, resendConfirmed = true)
+        main.scheduler.runCurrent()
+        assertEquals("修正", restored.draft)
+        assertEquals(PendingMessage("確認", listOf(file.name)), restored.pendingMessage)
+        restored.markAsSent()
+        assertNull(restored.pendingMessage)
+    }
+
+    @Test
+    fun ordinaryFailureKeepsDraftAndTextCommandSkipsPendingBubble() {
+        val sender = SendModel<Unit>(state, chat, showPendingMessage = true) { throw ApiFailure(ApiError.WRITE_FAILED) }
+        sender.submit(sender.draft)
+        main.scheduler.runCurrent()
+        assertEquals(ApiError.WRITE_FAILED, sender.error)
+        assertEquals("確認", sender.draft)
+        assertEquals(PendingMessage("確認", listOf(file.name)), sender.pendingMessage)
+        sender.submit("/help", showPending = false)
+        assertNull(sender.pendingMessage)
+        main.scheduler.runCurrent()
     }
 
     @Test

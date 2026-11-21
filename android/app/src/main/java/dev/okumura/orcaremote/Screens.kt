@@ -433,7 +433,7 @@ internal fun ConversationScreen(
     val sender: SendModel<String> = viewModel {
         val state = createSavedStateHandle()
         val chat = ChatDraft(state, AttachmentLimits.Conversation)
-        SendModel(state, chat) { text ->
+        SendModel(state, chat, showPendingMessage = true) { text ->
             chat.sendMessage(api, bot, chatId, text) { it.open(resolver) }
             ""
         }
@@ -445,6 +445,14 @@ internal fun ConversationScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val pending = sender.pendingMessage
+    val pendingStatus = pendingState(
+        sender.sending, sender.error != null || sender.pendingAttachmentError != null,
+        sender.deliveryUncertain, sender.result != null,
+    )
+    LaunchedEffect(pending, sender.sending) {
+        if (pending != null && sender.sending) listState.requestScrollToItem(0)
+    }
     val result = sender.result
     LaunchedEffect(result) {
         if (result != null) {
@@ -477,7 +485,7 @@ internal fun ConversationScreen(
     }) { modifier ->
         Column(modifier.imePadding()) {
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { result ->
-                if (result.entries.isEmpty()) {
+                if (result.entries.isEmpty() && (pending == null || pendingStatus == null)) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("メッセージはまだありません")
                     }
@@ -489,6 +497,21 @@ internal fun ConversationScreen(
                         contentPadding = ListPadding,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        if (pending != null && pendingStatus != null) item(key = "pending-message") {
+                            val status = when (pendingStatus) {
+                                PendingState.SENDING -> "送信中…"
+                                PendingState.UNCERTAIN -> "送れたか確認できません"
+                                PendingState.FAILED -> "送れませんでした"
+                            }
+                            val reason = if (pendingStatus == PendingState.FAILED) {
+                                sender.pendingAttachmentError ?: sender.error?.let(::conversationSendError)
+                            } else null
+                            MessageBubble(
+                                MessagePresentation(MessageKind.OWNER, "あなた",
+                                    (listOf(pending.text).filter { it.isNotEmpty() } + pending.attachments).joinToString("\n")),
+                                status = listOfNotNull(status, reason).joinToString("\n"),
+                            )
+                        }
                         items(result.entries.asReversed()) { entry ->
                             when (entry) {
                                 is Entry.Message -> MessageBubble(entry)
@@ -529,8 +552,9 @@ internal fun ConversationScreen(
                         }
                     }
                 }
-                SendStatus(sender, settings, conflict = "このチャットは閉じているため送れません",
-                    badRequest = "本文・コマンドの引数・スキル・添付を確認してください")
+                SendStatus(sender, settings, conflict = conversationSendError(ApiError.CONFLICT),
+                    badRequest = conversationSendError(ApiError.BAD_REQUEST),
+                    showError = pending == null || pendingStatus != PendingState.FAILED)
             }
         }
     }
@@ -538,7 +562,17 @@ internal fun ConversationScreen(
 
 @Composable
 private fun MessageBubble(message: Entry.Message) {
-    val presentation = remember(message) { presentMessage(message.role, message.text) }
+    MessageBubble(remember(message) { presentMessage(message.role, message.text) })
+}
+
+private fun conversationSendError(error: ApiError) = when (error) {
+    ApiError.CONFLICT -> "このチャットは閉じているため送れません"
+    ApiError.BAD_REQUEST -> "本文・コマンドの引数・スキル・添付を確認してください"
+    else -> error.text
+}
+
+@Composable
+private fun MessageBubble(presentation: MessagePresentation, status: String? = null) {
     val owner = presentation.kind == MessageKind.OWNER
     val colors = MaterialTheme.colorScheme
     Box(Modifier.fillMaxWidth()) {
@@ -568,6 +602,10 @@ private fun MessageBubble(message: Entry.Message) {
                 )
                 presentation.subject?.let { SelectionContainer { Text(it, style = MaterialTheme.typography.titleSmall) } }
                 if (owner) SelectionContainer { Text(presentation.body) } else MarkdownText(presentation.body)
+                status?.let {
+                    Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                        style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                }
             }
         }
     }
@@ -851,10 +889,11 @@ private fun SendStatus(
     conflict: String = ApiError.CONFLICT.text,
     badRequest: String = ApiError.BAD_REQUEST.text,
     unknown: String = ApiError.UNKNOWN_RESULT.text,
+    showError: Boolean = true,
 ) {
     val error = sender.error
     if (error != null) {
-        Text(
+        if (showError) Text(
             when (error) {
                 ApiError.CONFLICT -> conflict
                 ApiError.BAD_REQUEST -> badRequest

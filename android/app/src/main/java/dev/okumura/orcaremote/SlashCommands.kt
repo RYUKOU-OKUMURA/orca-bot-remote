@@ -164,7 +164,12 @@ internal fun ColumnScope.ConversationInput(
             val text = sender.draft
             val standalone = chat.skills.isEmpty() && chat.attachments.isEmpty()
             val command = if (standalone || text == sender.lastCommand) typedCommand(text) else null
-            if (command == null) guarded { sender.submit(text, it) } else select(command)
+            if (command == null) {
+                val isTextCommand = standalone && catalog?.commands.orEmpty().any {
+                    it.kind == "text" && "/" + it.name == text.trimEnd()
+                }
+                guarded { sender.submit(text, it, showPending = !isTextCommand) }
+            } else select(command)
         })
     }
 }
