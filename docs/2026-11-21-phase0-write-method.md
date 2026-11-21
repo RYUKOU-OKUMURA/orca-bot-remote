@@ -135,7 +135,7 @@ error: no_active_sender_terminal: Could not determine the calling terminal for t
 | 候補 | オーナーが発行する操作と資格の範囲 | Orca の待ち受けへの影響 | 判断待ち回答の見込み |
 | --- | --- | --- | --- |
 | (A) モバイル資格 | ホストで `orca pair --mobile --address <Tailscaleアドレス>`。オーナー画面では Settings → Mobile → LAN → Generate QR code → Copy pairing code。 `mobile` スコープの許可リスト内の RPC を使える。 | LAN でも初回のネットワークペアリングは、loopback だった Orca の待ち受けを全 IPv4 インターフェースに広げる。 `--address` はクライアントに案内する接続先を指定する。 | `bots.items.owner.comment` はモバイルの許可リストにあり、非エージェント端末として認証されれば `ownerOnly` を通る見込み。実機のカード回答は未検証。 |
-| (B) アクセスリンク＋loopback | `orca pair`（`--mobile` なし）は、モバイルの許可リストより広い `runtime` スコープのアクセスリンクを発行する。同じ Mac 内に限るリンクは、オーナー画面で Share this computer → This computer → Create link を選び、loopback に接続する。 | 画面の This computer で発行して接続先が loopback の場合、待ち受けを広げない。CLI の `orca pair` には This computer の指定がなく、通常のネットワーク用アクセスリンクの発行では初回に全 IPv4 インターフェースに広がる。 | 判定の鍵は非エージェント端末として認証されること。アクセスリンク＋loopback で `ownerOnly` を通るかは未検証。 |
+| (B) アクセスリンク＋loopback | `orca pair`（`--mobile` なし）は、モバイルの許可リストより広い `runtime` スコープのアクセスリンクを発行する。loopback を案内するリンクは、オーナー画面で Share this computer → This computer → Create link で発行する（資格そのものに接続元の制限はない。この発行では待ち受けを広げないが、既に広い待ち受けはそのまま）。 | 画面の This computer で発行して接続先が loopback の場合、待ち受けを広げない。CLI の `orca pair` には This computer の指定がなく、通常のネットワーク用アクセスリンクの発行では初回に全 IPv4 インターフェースに広がる。 | 判定の鍵は非エージェント端末として認証されること。アクセスリンク＋loopback で `ownerOnly` を通るかは未検証。 |
 
 `ownerOnly` はエージェント呼び出しを拒否する。許可されたペア済み端末からのカード回答は owner と端末IDを記録する（`bots-caller-gates.ts:5–10`、`bots-items-owner-methods.ts:33–38`、`runtime-rpc-mobile-bot-methods.ts:61–64`）。
 
@@ -144,5 +144,9 @@ error: no_active_sender_terminal: Could not determine the calling terminal for t
 ### 採用前に実測する項目
 
 - (A) を第一候補とし、オーナーの承認後に CLI で発行する。承認後の試験では通常入力1通についてジャーナルの `source` と `typedBy` を照合し、Botがオーナーの依頼として扱い、同じチャットに返答することを確認する。判断待ち1件について、回答イベントの発行とカードの状態更新を確認する。現時点の送信成功はワーカー名義の質問1通のみ。
+- 再レビュー（11/21）で残った論点。文書上の詰めではなく Phase 2 の試験で確定させる（コーディネーター判断）。
+  - CLI の `orca pair --mobile` で発行した資格は発行元アカウントの紐付けがなく、送信の `typedBy` は `by=device`＋端末IDで `own` は付かない見込み（`src/cli/server/pair.ts:14–25, 66–72`、`paired-terminal-creators.ts:12–21, 36–42`）。Bot のオーナー依頼の分類は `own` を見ないので、採用条件は「Bot がオーナーの依頼として扱い、同じチャットに返答する」こととし、`own: true` は必須にしない。試験で `typedBy` を記録する。
+  - 資格の照合には接続元の判定がない（`mobile-e2ee-auth-validation.ts:100–116`、`runtime-rpc-websocket-dispatch.ts:174–184`）。中継サーバーは loopback（`127.0.0.1:6768`）へつなぐ。
+  - (B) を試す場合、runtime スコープでは `runtime.clientCapabilities.update` が使えない（`client_capabilities_update_unsupported`）。E2EE 認証時に `clientCapabilities` を渡す（`paired-e2ee-client-handshake.ts:191–215`）。
 - 実際の launchd 実行ユーザーと HOME で、起動後に読み取りが通るかは未検証。今回の結果は、同じユーザーの環境変数を消したプロセスでのもの。
 - 11月22日12:00の初回予定以降に、定期実行の `chatSessionId` と `outputSnapshot.content` を照合する。長い履歴の全件ページングも、実データを使った確認は残っている。
