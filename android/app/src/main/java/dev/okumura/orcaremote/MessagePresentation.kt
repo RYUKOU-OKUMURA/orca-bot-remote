@@ -9,33 +9,38 @@ internal data class MessagePresentation(
     val subject: String? = null,
 )
 
-private val mailKind = Regex("\\(([\\w-]+)\\)\\s*─*\\s*$")
+private val mailHeader = Regex("──── From: .+ \\(([\\w-]+)\\) ────")
 private val mailRule = Regex("─+")
-private val ownerMetadata = Regex("^orcaTabId:[^\\r\\n]*(?:\\r?\\n(?:[ \\t]*\\r?\\n)?)?")
+private const val replyPrefix = "[Reply: orca orchestration reply"
+// Treat CRLF as a single line break when checking for the blank line.
+private val ownerMetadata = Regex("^orcaTabId: structured-agent-session-[^\\r\\n]+(?>\\r\\n|\\r|\\n){2}")
 
 internal fun presentMessage(role: String, text: String): MessagePresentation {
     if (role != "user") {
         return MessagePresentation(MessageKind.OTHER, if (role == "assistant") "Bot" else role, text)
     }
-    if (!text.startsWith("──── From:")) {
+    val lines = text.lines()
+    val type = mailHeader.matchEntire(lines.first())?.groupValues?.get(1)
+    if (type == null) {
         return MessagePresentation(MessageKind.OWNER, "あなた", ownerMetadata.replaceFirst(text, ""))
     }
 
-    val lines = text.lines()
-    val type = mailKind.find(lines.first())?.groupValues?.get(1)
     val subjectLine = lines.getOrNull(1)?.takeIf { it.startsWith("Subject:") }
     val bodyLines = lines.drop(if (subjectLine == null) 1 else 2)
-        .filterNot { it.trim().matches(mailRule) }
-        .dropLastWhile { it.isBlank() }
-    val lastLine = bodyLines.lastOrNull()?.trim().orEmpty()
-    val body = if (lastLine.startsWith("[Reply:") && lastLine.endsWith(']')) {
-        bodyLines.dropLast(1).dropLastWhile { it.isBlank() }
+    val lastLineIndex = bodyLines.indexOfLast { it.isNotBlank() }
+    val replyIndex = if (bodyLines.getOrNull(lastLineIndex)?.matches(mailRule) == true) {
+        lastLineIndex - 1
+    } else {
+        lastLineIndex
+    }
+    val body = if (bodyLines.getOrNull(replyIndex)?.startsWith(replyPrefix) == true) {
+        bodyLines.take(replyIndex)
     } else {
         bodyLines
     }
     return MessagePresentation(
         kind = MessageKind.MAIL,
-        heading = type?.let { "メール（$it）" } ?: "メール",
+        heading = "メール（$type）",
         body = body.joinToString("\n"),
         subject = subjectLine?.removePrefix("Subject:")?.trim()?.takeIf { it.isNotEmpty() },
     )
