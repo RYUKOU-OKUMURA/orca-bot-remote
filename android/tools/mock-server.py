@@ -156,6 +156,8 @@ class MockHandler(BaseHTTPRequestHandler):
         path = [unquote(part) for part in url.path.split("/")[1:]]
         with LOCK:
             match path:
+                case ["api", "health"]:
+                    data = {"ok": True}
                 case ["api", "bots"]:
                     data = {"bots": []}
                     for bot in BOTS:

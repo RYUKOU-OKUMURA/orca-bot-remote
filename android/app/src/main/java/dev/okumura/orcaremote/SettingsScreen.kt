@@ -56,14 +56,14 @@ internal class SettingsModel(connection: Connection?) : ViewModel() {
     fun check() {
         val candidate = Connection.parse(url, token.text.toString())
         if (candidate == null) {
-            errorText = "サーバー URL とトークンを確認してください"
+            errorText = "URL とトークンを確認してください。HTTP の場合は Tailscale の IP アドレスか、末尾が .ts.net のホスト名を入力してください。"
             return
         }
         viewModelScope.launch {
             checking = true
             errorText = null
             try {
-                OrcaApi(candidate).bots()
+                OrcaApi(candidate).health()
                 verified = candidate
             } catch (failure: ApiFailure) {
                 errorText = failure.error.text
@@ -105,7 +105,7 @@ internal fun SettingsScreen(
                 onValueChange = { model.url = it },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("サーバー URL") },
-                placeholder = { Text("http://mac-mini:8787") },
+                placeholder = { Text("http://100.64.0.1:8787") },
                 singleLine = true,
                 enabled = !model.checking,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),

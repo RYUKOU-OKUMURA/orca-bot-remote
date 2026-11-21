@@ -2,7 +2,10 @@ package dev.okumura.orcaremote
 
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
 import java.net.Proxy
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -107,7 +110,7 @@ internal val apiJson = Json {
 internal data class NewChat(val chatId: String)
 
 @Serializable
-internal data class WriteReceipt(val ok: Boolean)
+internal data class OkReceipt(val ok: Boolean)
 
 @Serializable
 private data class WriteInput(val text: String)
@@ -117,8 +120,21 @@ private data class WriteError(val error: String)
 
 internal class Connection private constructor(val url: HttpUrl, val token: String) {
     companion object {
-        fun parse(url: String, token: String): Connection? {
+        private val tailscaleName = Regex("""(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net""")
+
+        private fun allowsHttp(host: String, allowLocalhost: Boolean): Boolean {
+            if (allowLocalhost && host in setOf("localhost", "127.0.0.1", "10.0.2.2")) return true
+            // HttpUrl validates IPv6 literals and returns their canonical, unbracketed form.
+            if (host.startsWith("fd7a:115c:a1e0:")) return '%' !in host
+            if (host.length <= 253 && tailscaleName.matches(host)) return true
+            val octets = host.split('.')
+            return octets.size == 4 && octets[0] == "100" && octets[1].toIntOrNull() in 64..127 &&
+                octets.all { it.toIntOrNull() in 0..255 && it == it.toInt().toString() }
+        }
+
+        fun parse(url: String, token: String, allowLocalhost: Boolean = BuildConfig.DEBUG): Connection? {
             val server = url.trim().toHttpUrlOrNull() ?: return null
+            if (!server.isHttps && !allowsHttp(server.host, allowLocalhost)) return null
             if (server.username.isNotEmpty() || server.password.isNotEmpty() ||
                 server.encodedPath != "/" || server.query != null || server.fragment != null
             ) return null
@@ -149,6 +165,10 @@ internal class OrcaApi(
     private val connection: Connection,
     private val postClient: OkHttpClient = writeClient,
 ) {
+    suspend fun health() {
+        if (!get<OkReceipt>("health").ok) throw ApiFailure(ApiError.RESPONSE)
+    }
+
     suspend fun bots(): Bots = get("bots")
     suspend fun chats(bot: String): Chats = get("bots", bot, "chats")
     suspend fun messages(bot: String, chatId: String): Messages =
@@ -164,12 +184,12 @@ internal class OrcaApi(
     }
 
     suspend fun sendMessage(bot: String, chatId: String, text: String) {
-        val result = post<WriteReceipt>(202, text, "bots", bot, "chats", chatId, "messages")
+        val result = post<OkReceipt>(202, text, "bots", bot, "chats", chatId, "messages")
         if (!result.ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
     }
 
     suspend fun answer(bot: String, number: Long, text: String) {
-        val result = post<WriteReceipt>(200, text, "items", bot, number.toString(), "answer")
+        val result = post<OkReceipt>(200, text, "items", bot, number.toString(), "answer")
         if (!result.ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
     }
 
@@ -200,8 +220,11 @@ internal class OrcaApi(
         return try {
             val body = postClient.newCall(request).readBody(status)
             withContext(Dispatchers.Default) { apiJson.decodeFromString(body) }
-        } catch (_: IOException) {
-            throw ApiFailure(ApiError.UNKNOWN_RESULT)
+        } catch (e: IOException) {
+            throw ApiFailure(when (e) {
+                is ConnectException, is UnknownHostException, is NoRouteToHostException -> ApiError.CONNECTION
+                else -> ApiError.UNKNOWN_RESULT
+            })
         } catch (_: SerializationException) {
             throw ApiFailure(ApiError.UNKNOWN_RESULT)
         }

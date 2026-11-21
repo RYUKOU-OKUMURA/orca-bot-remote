@@ -114,13 +114,37 @@ class ApiTest {
 
     @Test
     fun connectionAcceptsBaseUrlAndHeaderSafeToken() {
-        assertNotNull(Connection.parse(" http://mac-mini:8787 ", " mock-orca-token "))
-        assertNotNull(Connection.parse("http://[fd7a:115c:a1e0::1234]:8787", "mock-orca-token"))
+        assertNotNull(Connection.parse(" http://100.64.0.1:8787 ", " mock-orca-token "))
         assertNull(Connection.parse("mac-mini:8787", "mock-orca-token"))
-        assertNull(Connection.parse("http://mac-mini:8787/api", "mock-orca-token"))
-        assertNull(Connection.parse("http://name:pass@mac-mini:8787", "mock-orca-token"))
-        assertNull(Connection.parse("http://mac-mini:8787", "mock\nor ca"))
-        assertNull(Connection.parse("http://mac-mini:8787", " "))
+        assertNull(Connection.parse("https://example.com/api", "mock-orca-token"))
+        assertNull(Connection.parse("https://name:pass@example.com", "mock-orca-token"))
+        assertNull(Connection.parse("https://example.com", "mock\nor ca"))
+        assertNull(Connection.parse("https://example.com", " "))
+    }
+
+    @Test
+    fun cleartextIsLimitedToTailscaleHosts() {
+        for (host in listOf("100.64.0.0", "100.127.255.255", "[FD7A:115C:A1E0::1]", "bot.ts.net", "Mac-Mini.team.ts.net")) {
+            assertNotNull(host, Connection.parse("http://$host:8787", "token", allowLocalhost = false))
+        }
+        for (host in listOf(
+            "100.63.255.255", "100.128.0.0", "100.64.00.1", "100.64.256.1", "100.64.1",
+            "[fd7a:115c:a1e1::1]", "[fd7a:115c:a1e0::1%25eth0]", "example.com", "mac-mini",
+            "ts.net", "bot.ts.net.", "bot.ts.net.example.com", "bot..ts.net", "-bot.ts.net",
+        )) {
+            assertNull(host, Connection.parse("http://$host:8787", "token", allowLocalhost = true))
+        }
+        assertNotNull(Connection.parse("https://example.com:8787", "token", allowLocalhost = false))
+    }
+
+    @Test
+    fun localHttpRequiresDebugBuildOrExplicitOverride() {
+        for (host in listOf("localhost", "10.0.2.2", "127.0.0.1")) {
+            val url = "http://$host:8787"
+            assertNotNull(host, Connection.parse(url, "token", allowLocalhost = true))
+            assertNull(host, Connection.parse(url, "token", allowLocalhost = false))
+            assertEquals(host, BuildConfig.DEBUG, Connection.parse(url, "token") != null)
+        }
     }
 
     @Test
