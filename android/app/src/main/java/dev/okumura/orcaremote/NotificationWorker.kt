@@ -15,9 +15,11 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import java.time.LocalTime
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -31,8 +33,6 @@ internal const val SummaryInitialized = "summaryInitialized"
 internal val notificationSettingsMutex = Mutex()
 internal const val NotificationScheme = "orca-notification"
 private const val NotificationWork = "orca-notifications"
-private const val ItemsChannel = "pending-items"
-private const val SummaryChannel = "summaries"
 
 internal fun scheduleNotifications(context: Context, enabled: Boolean) {
     val work = WorkManager.getInstance(context)
@@ -47,60 +47,101 @@ internal fun scheduleNotifications(context: Context, enabled: Boolean) {
 }
 
 class NotificationWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val preferences = applicationContext.connectionPreferences()
-        val connection = notificationSettingsMutex.withLock {
-            if (preferences.getBoolean(NotificationsEnabled, true)) preferences.savedConnection() else null
-        } ?: return@withContext Result.success()
-        val api = OrcaApi(connection)
-        val (items, summary) = coroutineScope {
-            val itemsRequest = async { try { api.items().items } catch (_: ApiFailure) { null } }
-            val summaryRequest = async { try { api.summary() } catch (_: ApiFailure) { null } }
-            itemsRequest.await() to summaryRequest.await()
-        }
-        if (items != null || summary != null) notificationSettingsMutex.withLock {
-            ensureActive()
-            val current = preferences.savedConnection()
-            if (preferences.getBoolean(NotificationsEnabled, true) &&
-                current?.url == connection.url && current.token == connection.token
-            ) publishChanges(preferences, items, summary)
-        }
-        Result.success()
+    override suspend fun doWork(): Result {
+        NotificationSync.sync(applicationContext)
+        return Result.success()
+    }
+}
+
+private suspend fun <T> readOrNull(read: suspend () -> T): T? = try { read() } catch (_: ApiFailure) { null }
+
+internal object NotificationSync {
+    // Serialize SSE and periodic snapshots without blocking settings changes during network I/O.
+    private val syncMutex = Mutex()
+
+    suspend fun sync(context: Context) = withContext(Dispatchers.IO) {
+        syncMutex.withLock { checkChanges(context) }
     }
 
-    private fun publishChanges(preferences: SharedPreferences, items: List<PendingItem>?, summary: LatestSummary?) {
-        val context = applicationContext
-        if (items != null) QuickMemoWidgetProvider.updateCount(context, items.count { it.status == "needs_you" })
-        val notifiedItems = preferences.getStringSet(NotifiedItems, null)
-        val runAt = preferences.getLong(NotifiedSummary, 0).takeIf { preferences.contains(NotifiedSummary) }
-        // Older installations initialized both endpoints together and always stored the item set.
-        val previous = NotificationHistory(notifiedItems, runAt, preferences.getBoolean(SummaryInitialized, notifiedItems != null))
+    private suspend fun checkChanges(context: Context) = coroutineScope {
+        val prefs = context.connectionPreferences()
+        val connection = prefs.enabledConnection() ?: return@coroutineScope
+        createNotificationChannels(context)
+        val api = OrcaApi(connection)
+        val itemsRequest = async { readOrNull { api.items().items } }
+        val summaryRequest = async { readOrNull { api.summary() } }
+        val botsRequest = async { readOrNull { api.bots().bots } }
+        val items = itemsRequest.await()
+        val summary = summaryRequest.await()
+        val bots = botsRequest.await()
+        val previous = prefs.notificationHistory()
+        val oldReplies = prefs.getString(ReplyHistory, null)?.let {
+            apiJson.decodeFromString<Map<String, ReplyStamp>>(it)
+        }.orEmpty()
+        val replies = bots?.let { decideReplies(oldReplies, it) }
         val manager = context.getSystemService(NotificationManager::class.java)
-        val canNotify = manager.areNotificationsEnabled()
-        val decision = decideNotifications(
-            previous, items, summary?.summary?.runAt, summaryUpdated = summary != null,
-            canNotifyItems = canNotify && manager.isChannelEnabled(ItemsChannel),
-            canNotifySummary = canNotify && manager.isChannelEnabled(SummaryChannel),
-        )
-        if (decision.history == previous) return
-        // If the process stops after saving and before posting, those notifications can be lost.
-        if (!preferences.editHistory(decision.history).commit()) {
-            // A failed commit still updates the in-memory preferences seen by the next run.
-            preferences.editHistory(previous).apply()
-            return
+        fun delivery(channel: String, target: ChatTarget? = null): String? {
+            val details = prefs.notificationPrefs()
+            val now = LocalTime.now()
+            return notificationChannel(channel, details.quietAt(now.hour, now.minute), details.replies, target,
+                ActiveChatTracker.current)?.takeIf {
+                manager.areNotificationsEnabled() && manager.getNotificationChannel(it)?.importance != NotificationManager.IMPORTANCE_NONE
+            }
         }
-        decision.newItems.forEach {
-            val target = notificationTarget("item").buildUpon()
-                .appendPath(it.bot).appendPath(it.number.toString()).build()
-            manager.post(context, ItemsChannel, target, "判断待ち：${it.bot}『${it.title}』")
-        }
-        if (decision.remainingItems > 0) {
-            manager.post(context, ItemsChannel, notificationTarget("items"), "判断待ち：ほか ${decision.remainingItems} 件")
-        }
-        if (decision.notifySummary) {
-            manager.post(context, SummaryChannel, notificationTarget("summary"), "12:00のまとめが届きました")
+        val chats = replies?.newReplies.orEmpty().filter { delivery(RepliesChannel) != null }.map { bot ->
+            async {
+                val chat = readOrNull { api.chats(bot.name).chats }?.singleOrNull {
+                    it.lastActivityAt == bot.lastActivityAt && it.lastSaid == bot.lastSaid
+                }
+                bot to ChatTarget(bot.name, chat?.id)
+            }
+        }.awaitAll()
+        notificationSettingsMutex.withLock {
+            ensureActive()
+            if (!connection.matches(prefs.enabledConnection())) return@withLock
+            if (items != null) QuickMemoWidgetProvider.updateCount(context, items.count { it.status == "needs_you" })
+            val itemChannel = delivery(ItemsChannel)
+            val summaryChannel = delivery(SummaryChannel)
+            val decision = decideNotifications(previous, items, summary?.summary?.runAt, summaryUpdated = summary != null,
+                canNotifyItems = itemChannel != null, canNotifySummary = summaryChannel != null)
+            if (decision.history != previous || (replies != null && oldReplies != replies.history)) {
+                val editor = prefs.editHistory(decision.history)
+                if (replies != null) editor.putString(ReplyHistory, apiJson.encodeToString(replies.history))
+                if (!editor.commit()) {
+                    prefs.editHistory(previous).putString(ReplyHistory, apiJson.encodeToString(oldReplies)).apply()
+                    return@withLock
+                }
+            }
+            decision.newItems.forEach { item ->
+                manager.post(context, itemChannel!!, notificationTarget("item", item.bot, item.number.toString()),
+                    "判断待ち：${item.bot}", item.title)
+            }
+            if (decision.remainingItems > 0) {
+                manager.post(context, itemChannel!!, notificationTarget("items"), "判断待ち", "ほか ${decision.remainingItems} 件")
+            }
+            if (decision.notifySummary) {
+                manager.post(context, summaryChannel!!, notificationTarget("summary"), "まとめ", "12:00のまとめが届きました")
+            }
+            chats.forEach { (bot, chat) ->
+                delivery(RepliesChannel, chat)?.let { channel ->
+                    val target = chat.chatId?.let { notificationTarget("chat", bot.name, it) }
+                        ?: notificationTarget("chats", bot.name)
+                    manager.post(context, channel, target, "ボットの返答：${bot.name}", bot.lastSaid.orEmpty())
+                }
+            }
         }
     }
+}
+
+internal fun Connection.matches(other: Connection?) = url == other?.url && token == other.token
+
+internal fun SharedPreferences.enabledConnection() =
+    if (getBoolean(NotificationsEnabled, true)) savedConnection() else null
+
+private fun SharedPreferences.notificationHistory(): NotificationHistory {
+    val items = getStringSet(NotifiedItems, null)
+    val runAt = getLong(NotifiedSummary, 0).takeIf { contains(NotifiedSummary) }
+    return NotificationHistory(items, runAt, getBoolean(SummaryInitialized, items != null))
 }
 
 private fun SharedPreferences.editHistory(history: NotificationHistory): SharedPreferences.Editor =
@@ -109,37 +150,42 @@ private fun SharedPreferences.editHistory(history: NotificationHistory): SharedP
         if (runAt == null) remove(NotifiedSummary) else putLong(NotifiedSummary, runAt)
     }
 
-private fun NotificationManager.isChannelEnabled(channel: String): Boolean =
-    getNotificationChannel(channel)?.let { it.importance != NotificationManager.IMPORTANCE_NONE } == true
-
 internal fun createNotificationChannels(context: Context) {
     context.getSystemService(NotificationManager::class.java).createNotificationChannels(
         listOf(
-            NotificationChannel(ItemsChannel, "判断待ち", NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(ItemsChannel, "判断待ち", NotificationManager.IMPORTANCE_HIGH),
+            NotificationChannel(RepliesChannel, "ボットの返答", NotificationManager.IMPORTANCE_DEFAULT),
             NotificationChannel(SummaryChannel, "まとめ", NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(QuietChannel, "おやすみ中の通知", NotificationManager.IMPORTANCE_LOW).apply {
+                setSound(null, null)
+                enableVibration(false)
+            },
+            NotificationChannel(RealtimeChannel, "リアルタイム接続", NotificationManager.IMPORTANCE_MIN).apply {
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+            },
         )
     )
 }
 
-private fun notificationTarget(screen: String): Uri =
-    Uri.Builder().scheme(NotificationScheme).authority(screen).build()
+internal fun notificationTarget(screen: String, vararg path: String): Uri =
+    Uri.Builder().scheme(NotificationScheme).authority(screen).apply { path.forEach(::appendPath) }.build()
 
-private fun NotificationManager.post(context: Context, channel: String, target: Uri, text: String) {
+internal fun NotificationManager.post(context: Context, channel: String, target: Uri, title: String, text: String,
+                                      configure: Notification.Builder.() -> Unit = {}) {
     val intent = Intent(context, MainActivity::class.java)
         .setData(target)
         .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
     val pending = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-    notify(
-        target.toString(),
-        0,
-        Notification.Builder(context, channel)
-            .setSmallIcon(R.drawable.orca_notification)
-            .setContentTitle(if (channel == ItemsChannel) "判断待ち" else "12:00のまとめ")
-            .setContentText(text)
-            .setStyle(Notification.BigTextStyle().bigText(text))
-            .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .setContentIntent(pending)
-            .setAutoCancel(true)
-            .build(),
-    )
+    notify(target.toString(), 0, Notification.Builder(context, channel)
+        .setSmallIcon(R.drawable.orca_notification)
+        .setContentTitle(title)
+        .setContentText(text)
+        .setStyle(Notification.BigTextStyle().bigText(text))
+        .setVisibility(Notification.VISIBILITY_PRIVATE)
+        .setContentIntent(pending)
+        .setAutoCancel(true)
+        .apply(configure)
+        .build())
 }
