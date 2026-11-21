@@ -35,8 +35,10 @@ internal fun typedCommand(text: String): CommandInput? {
 
 private fun ChatCommands?.option(name: String) = if (name == "model") this?.options?.model else this?.options?.effort
 
-internal fun OptionDescriptor.resolve(argument: String) =
-    choices.find { it.value == argument } ?: choices.find { it.label.equals(argument, ignoreCase = true) }
+internal fun OptionDescriptor?.resolveValue(argument: String): String? {
+    if (this == null || choices.isEmpty()) return argument
+    return (choices.find { it.value == argument } ?: choices.find { it.label.equals(argument, ignoreCase = true) })?.value
+}
 
 @Composable
 private fun Suggestion(name: String, hint: String?, description: String, skill: Boolean, click: () -> Unit) {
@@ -79,12 +81,12 @@ internal fun ConversationInput(
                 val option = catalog.option(command.name)
                 val argument = command.argument
                 when {
-                    option == null || option.choices.isEmpty() -> chat.notice = "選択肢を取得できません。会話を更新してください"
+                    argument == null && option?.choices.isNullOrEmpty() -> chat.notice = "選択肢を取得できません。会話を更新してください"
                     argument == null -> dialog = command.name
                     else -> {
-                        val choice = option.resolve(argument)
-                        if (choice == null) chat.notice = "一覧にある値または表示名を入力してください"
-                        else execute(CommandInput(command.name, choice.value))
+                        val value = option.resolveValue(argument)
+                        if (value == null) chat.notice = "一覧にある値または表示名を入力してください"
+                        else execute(CommandInput(command.name, value))
                     }
                 }
             }

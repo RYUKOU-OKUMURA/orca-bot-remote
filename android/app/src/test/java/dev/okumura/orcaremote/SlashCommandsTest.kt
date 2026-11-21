@@ -29,8 +29,9 @@ class SlashCommandsTest {
 
     @Test fun optionMatchesValueOrLabel() {
         val option = OptionDescriptor("gpt", listOf(OptionChoice("gpt", "GPT Example")))
-        assertEquals("gpt", option.resolve("gpt")?.value)
-        assertEquals("gpt", option.resolve("GPT example")?.value)
-        assertNull(option.resolve("unknown"))
+        assertEquals("gpt", option.resolveValue("gpt"))
+        assertEquals("gpt", option.resolveValue("GPT example"))
+        assertNull(option.resolveValue("unknown"))
+        assertEquals("gpt", null.resolveValue("gpt"))
     }
 }
