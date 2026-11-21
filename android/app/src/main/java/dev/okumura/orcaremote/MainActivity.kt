@@ -141,8 +141,14 @@ private const val RefreshItems = "refreshItems"
 private const val Answered = "answered"
 
 @Composable
-private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String): SendModel<String> =
-    viewModel(viewModelStoreOwner = entry) { SendModel(createSavedStateHandle()) { api.startChat(bot, it) } }
+private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String): SendModel<String> {
+    val resolver = LocalContext.current.applicationContext.contentResolver
+    return viewModel(viewModelStoreOwner = entry) {
+        val state = createSavedStateHandle()
+        val chat = ChatDraft(state, AttachmentLimits.NewChat)
+        SendModel(state, chat) { api.startChat(bot, it, chat.inline { file -> file.open(resolver) }) }
+    }
+}
 
 @Composable
 private fun RemoteApp(

@@ -3,6 +3,8 @@ package dev.okumura.orcaremote
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -39,16 +41,21 @@ internal class ScreenModel<T>(private val fetch: suspend () -> T) : ViewModel() 
 
 internal class SendModel<T>(
     private val savedState: SavedStateHandle,
+    val chat: ChatDraft? = null,
     private val onFailure: suspend (ApiError) -> Unit = {},
     private val send: suspend (String) -> T,
 ) : ViewModel() {
-    private var draftText by mutableStateOf(savedState.get<String>("draft").orEmpty())
+    var draftField by mutableStateOf(savedState.get<String>("draft").orEmpty().let { TextFieldValue(it, TextRange(it.length)) })
+        private set
     var draft: String
-        get() = draftText
-        set(value) {
-            draftText = value
-            savedState["draft"] = value
-        }
+        get() = draftField.text
+        set(value) { edit(TextFieldValue(value, TextRange(value.length))) }
+
+    fun edit(value: TextFieldValue) {
+        if (draftField.text != value.text) savedState["draft"] = value.text
+        draftField = value
+    }
+
     var sending by mutableStateOf(false)
         private set
     var error by mutableStateOf<ApiError?>(null)
@@ -58,17 +65,24 @@ internal class SendModel<T>(
     var deliveryUncertain by mutableStateOf(savedState.get<Boolean>("deliveryUncertain") == true)
         private set
 
-    fun submit(text: String, resendConfirmed: Boolean = false) {
-        if (sending || result != null || text.isBlank()) return
+    val lastCommand: String? get() = savedState["lastCommand"]
+
+    fun submit(text: String, resendConfirmed: Boolean = false, command: (suspend (String) -> T)? = null) {
+        if (sending || result != null || chat?.reading == true || (text.isBlank() && chat?.attachments.isNullOrEmpty())) return
         if (!canSubmit(deliveryUncertain, resendConfirmed)) return
+        savedState["lastCommand"] = text.takeIf { command != null }
         sending = true
+        chat?.notice = null
         error = null
         // A restored screen cannot know whether an interrupted POST reached the server.
         savedState["deliveryUncertain"] = true
         viewModelScope.launch {
             try {
-                result = send(text)
+                result = (command ?: send)(text)
                 clearDraft()
+            } catch (failure: AttachmentProblem) {
+                chat?.notice = failure.message
+                savedState["deliveryUncertain"] = deliveryUncertain
             } catch (failure: ApiFailure) {
                 if (failure.error == ApiError.UNKNOWN_RESULT) {
                     deliveryUncertain = true
@@ -88,6 +102,8 @@ internal class SendModel<T>(
     }
 
     private fun clearDraft() {
+        if (lastCommand == null) chat?.clear()
+        savedState.remove<String>("lastCommand")
         draft = ""
         error = null
         deliveryUncertain = false
