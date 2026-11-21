@@ -90,7 +90,7 @@ function readText(request: IncomingMessage, signal: AbortSignal) {
 export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(), shutdownSignal }: {
   orcaBin: string; digest: Buffer; summaryId?: string; write?: OrcaWrite; shutdownSignal?: AbortSignal;
 }, requestTimeoutMs = 55_000) {
-  const pendingAnswers = new Map<string, Promise<void>>();
+  const pendingAnswers = new Map<string, Promise<'unknown_result' | undefined>>();
   return createServer(async (request, response) => {
     const started = performance.now();
     const deadline = started + requestTimeoutMs;
@@ -195,24 +195,36 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
         const uid = await orca.findItemUid(bot, number);
         if (!uid) return send(404, notFound);
         const previous = pendingAnswers.get(uid);
+        const waiting = Promise.withResolvers<never>();
+        const onAbort = () => waiting.reject(new OrcaWriteError('orca_failed'));
+        if (previous) {
+          if (signal.aborted) onAbort();
+          else signal.addEventListener('abort', onAbort, { once: true });
+        }
         const result = (async () => {
-          await previous;
+          const previousOutcome = await previous;
+          signal.removeEventListener('abort', onAbort);
+          if (previousOutcome === 'unknown_result') throw new OrcaWriteError(previousOutcome);
+          signal.throwIfAborted();
           const target = await orca.showItem(bot, uid);
           if (!target) return send(404, notFound);
           if (target.page.item.status !== 'needs_you') {
             return send(409, { error: 'conflict', message: 'この項目は判断待ちではありません。' });
           }
           signal.throwIfAborted();
+          if (performance.now() >= deadline) throw new OrcaWriteError('orca_failed');
           await write.answer(uid, text, signal);
           return send(200, { ok: true });
         })();
-        const pending = result.catch(() => {});
-        pendingAnswers.set(uid, pending);
-        try {
-          return await result;
-        } finally {
+        // A waiting response may end early, but its queue slot must still follow the preceding answer.
+        const pending = result.then(
+          () => undefined,
+          error => error instanceof OrcaWriteError && error.code === 'unknown_result' ? error.code : undefined
+        ).finally(() => {
           if (pendingAnswers.get(uid) === pending) pendingAnswers.delete(uid);
-        }
+        });
+        pendingAnswers.set(uid, pending);
+        return await (previous ? Promise.race([result, waiting.promise]) : result);
       }
       if (chats) return send(200, { chats: await orca.chats(bot) });
 

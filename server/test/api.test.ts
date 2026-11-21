@@ -542,6 +542,13 @@ test('判断待ちへの回答は前後の空白を含めて最大8000 UTF-16コ
   assert.deepEqual(calls, [['answer', 'uid-7', text]]);
 });
 
+async function waitForAnswerLookups(t: TestContext, cliCalls: () => string[], count: number) {
+  while (cliCalls().filter(call => call === slowItemCalls[2]).length < count) {
+    await delay(10, undefined, { signal: t.signal });
+  }
+  await delay(50, undefined, { signal: t.signal });
+}
+
 test('同じ UID の同時回答は最初の回答後に状態を読み直して 409 を返す', { timeout: 5000 }, async t => {
   const { bin, calls: cliCalls } = recordOrcaCalls(t);
   const calls: string[][] = [];
@@ -560,10 +567,7 @@ test('同じ UID の同時回答は最初の回答後に状態を読み直して
   const first = post(answer);
   await entered.promise;
   const second = post(answer, '{"text":"保留"}');
-  while (cliCalls().filter(call => call === slowItemCalls[2]).length < 2) {
-    await delay(10, undefined, { signal: t.signal });
-  }
-  await delay(50, undefined, { signal: t.signal });
+  await waitForAnswerLookups(t, cliCalls, 2);
   assert.equal(cliCalls().filter(call => call === 'bot item show --id=uid-7 --json').length, 1);
   release.resolve();
   const [accepted, conflict] = await Promise.all([first, second]);
@@ -571,6 +575,81 @@ test('同じ UID の同時回答は最初の回答後に状態を読み直して
   assert.equal(conflict.status, 409);
   assert.equal((await conflict.json()).error, 'conflict');
   assert.deepEqual(calls, [['answer', 'uid-7', '進める']]);
+});
+
+test('同じ UID の待機中の回答は先行が結果不明なら見送り、確定拒否なら再確認して送る', { timeout: 5000 }, async t => {
+  for (const code of ['unknown_result', 'orca_failed'] as const) {
+    const { bin, calls: cliCalls } = recordOrcaCalls(t);
+    const calls: string[][] = [];
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(release.resolve);
+    const post = await writeApi(t, {
+      ...fakeWrite(calls),
+      async answer(uid, text) {
+        calls.push(['answer', uid, text]);
+        if (calls.length === 1) {
+          entered.resolve();
+          await release.promise;
+          throw new OrcaWriteError(code);
+        }
+      }
+    }, bin);
+
+    const first = post(answer);
+    await entered.promise;
+    const second = post(answer, '{"text":"保留"}');
+    await waitForAnswerLookups(t, cliCalls, 2);
+    release.resolve();
+
+    const [failed, waiting] = await Promise.all([first, second]);
+    assert.equal(failed.status, 502);
+    assert.equal((await failed.json()).error, code);
+    if (code === 'unknown_result') {
+      assert.equal(waiting.status, 502);
+      assert.equal((await waiting.json()).error, code);
+      assert.deepEqual(calls, [['answer', 'uid-7', '進める']]);
+    } else {
+      assert.equal(waiting.status, 200);
+      assert.deepEqual(calls, [['answer', 'uid-7', '進める'], ['answer', 'uid-7', '保留']]);
+    }
+    assert.equal(cliCalls().filter(call => call === 'bot item show --id=uid-7 --json').length,
+      code === 'unknown_result' ? 1 : 2);
+  }
+});
+
+test('同じ UID の待機中に期限切れの回答は先に 502 を返し、後続の順序を保つ', { timeout: 5000 }, async t => {
+  const { bin, calls: cliCalls } = recordOrcaCalls(t);
+  const calls: string[][] = [];
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(release.resolve);
+  const post = await writeApi(t, {
+    ...fakeWrite(calls),
+    async answer(uid, text) {
+      calls.push(['answer', uid, text]);
+      if (calls.length === 1) {
+        entered.resolve();
+        await release.promise;
+        throw new OrcaWriteError('orca_failed');
+      }
+    }
+  }, bin, 1200);
+
+  const first = post(answer);
+  await entered.promise;
+  const expired = await post(answer, '{"text":"期限切れ"}');
+  assert.equal(expired.status, 502);
+  assert.equal((await expired.json()).error, 'orca_failed');
+  const third = post(answer, '{"text":"保留"}');
+  await waitForAnswerLookups(t, cliCalls, 3);
+  assert.equal(cliCalls().filter(call => call === 'bot item show --id=uid-7 --json').length, 1);
+  release.resolve();
+
+  const [failed, accepted] = await Promise.all([first, third]);
+  assert.equal(failed.status, 502);
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(calls, [['answer', 'uid-7', '進める'], ['answer', 'uid-7', '保留']]);
 });
 
 test('書き込みも認証を先に確認し、未知の対象、閉じたチャット、回答済み項目を拒否する', async t => {

@@ -160,7 +160,8 @@ export async function withOrcaDevice<T>(
       if (code === 'unauthorized' || code === 'device_revoked') throw new OrcaWriteError('write_unavailable');
       if ((method === 'bots.items.owner.comment' && code === 'not_found') ||
           (method === 'bots.session.start' && code === 'bot_not_found')) throw new OrcaWriteError('not_found');
-      if (method === 'bots.session.start' && code === 'bots_disabled') throw new OrcaWriteError('orca_failed');
+      if ((method === 'bots.session.start' || method === 'bots.items.owner.comment') &&
+          code === 'bots_disabled') throw new OrcaWriteError('orca_failed');
       if (method === 'agentSession.send' && code === 'runtime_error' &&
           reply.error.data?.refusal?.code === 'structured_agent_session_unsupported') throw new OrcaWriteError('orca_failed');
       throw new OrcaWriteError(mutates && !refusedRpcCodes.has(code) ? 'unknown_result' : 'orca_failed');

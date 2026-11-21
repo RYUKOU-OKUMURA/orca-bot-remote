@@ -165,6 +165,7 @@ test('偽ホストの確定拒否と結果不明の応答を区別して再送�
     ['not_found', 'not_found'],
     ['invalid_argument', 'orca_failed'],
     ['forbidden', 'orca_failed'],
+    ['bots_disabled', 'orca_failed'],
     ['operation_unknown', 'unknown_result'],
     ['runtime_error', 'unknown_result']
   ];
