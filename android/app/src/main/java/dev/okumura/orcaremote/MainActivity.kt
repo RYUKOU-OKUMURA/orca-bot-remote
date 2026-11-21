@@ -1,10 +1,20 @@
 package dev.okumura.orcaremote
 
+import android.Manifest
 import android.app.Application
+import android.app.NotificationManager
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
@@ -19,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.createSavedStateHandle
@@ -26,21 +37,47 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import kotlinx.serialization.Serializable
 
+private data class NotificationOpen(val uri: Uri, val coldStart: Boolean)
+
 class MainActivity : ComponentActivity() {
+    private var notificationTarget by mutableStateOf<NotificationOpen?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationTarget = if (savedInstanceState == null) {
+            intent.data?.takeIf { it.scheme == NotificationScheme }?.let { NotificationOpen(it, coldStart = true) }
+        } else {
+            savedInstanceState.getString("notificationTarget")?.let {
+                NotificationOpen(Uri.parse(it), savedInstanceState.getBoolean("notificationColdStart"))
+            }
+        }
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
                 colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
                 typography = LargeType,
             ) {
-                RemoteApp()
+                RemoteApp(notificationTarget) { notificationTarget = null }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        notificationTarget = intent.data?.takeIf { it.scheme == NotificationScheme }
+            ?.let { NotificationOpen(it, coldStart = false) }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        notificationTarget?.let {
+            outState.putString("notificationTarget", it.uri.toString())
+            outState.putBoolean("notificationColdStart", it.coldStart)
         }
     }
 }
@@ -76,23 +113,51 @@ private val LargeType = Typography().run {
 }
 
 internal class ConnectionStore(application: Application) : AndroidViewModel(application) {
-    private val preferences = application.getSharedPreferences("connection", Application.MODE_PRIVATE)
-    var connection by mutableStateOf(
-        Connection.parse(
-            preferences.getString("url", "").orEmpty(),
-            preferences.getString("token", "").orEmpty(),
-        )
-    )
+    private val preferences = application.connectionPreferences()
+    var connection by mutableStateOf(preferences.savedConnection())
+        private set
+    var notificationsEnabled by mutableStateOf(preferences.getBoolean(NotificationsEnabled, true))
         private set
 
+    init {
+        createNotificationChannels(application)
+        updateNotificationSchedule()
+    }
+
     fun save(verified: Connection) {
-        preferences.edit()
+        val editor = preferences.edit()
             .putString("url", verified.url.toString())
             .putString("token", verified.token)
-            .apply()
+        if (verified.url != connection?.url) {
+            editor.remove(NotifiedItems).remove(NotifiedSummary)
+            getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
+        }
+        editor.apply()
         connection = verified
+        updateNotificationSchedule()
+    }
+
+    fun setNotifications(enabled: Boolean) {
+        preferences.edit().putBoolean(NotificationsEnabled, enabled).apply()
+        notificationsEnabled = enabled
+        updateNotificationSchedule()
+    }
+
+    fun claimNotificationPrompt(): Boolean {
+        if (preferences.getBoolean("notificationPermissionAsked", false)) return false
+        preferences.edit().putBoolean("notificationPermissionAsked", true).apply()
+        return true
+    }
+
+    private fun updateNotificationSchedule() {
+        scheduleNotifications(getApplication(), notificationsEnabled && connection != null)
     }
 }
+
+internal fun Context.connectionPreferences(): SharedPreferences = getSharedPreferences("connection", Context.MODE_PRIVATE)
+
+internal fun SharedPreferences.savedConnection(): Connection? =
+    Connection.parse(getString("url", "").orEmpty(), getString("token", "").orEmpty())
 
 @Serializable private object SettingsRoute
 @Serializable private data class HomeRoute(val connectionVerified: Boolean = false)
@@ -113,8 +178,13 @@ private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String): 
     viewModel(viewModelStoreOwner = entry) { SendModel(createSavedStateHandle()) { api.startChat(bot, it) } }
 
 @Composable
-private fun RemoteApp(store: ConnectionStore = viewModel()) {
+private fun RemoteApp(
+    notificationTarget: NotificationOpen?,
+    store: ConnectionStore = viewModel(),
+    consumeNotification: () -> Unit,
+) {
     val nav = rememberNavController()
+    val currentEntry by nav.currentBackStackEntryAsState()
     val settingsFirst = rememberSaveable { store.connection == null }
     val connection = store.connection
     val api = remember(connection) { connection?.let { OrcaApi(it) } }
@@ -126,7 +196,12 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
 
     NavHost(nav, startDestination = if (settingsFirst) SettingsRoute else HomeRoute()) {
         composable<SettingsRoute> {
-            SettingsScreen(connection, if (nav.previousBackStackEntry != null) back else null) {
+            SettingsScreen(
+                connection,
+                if (nav.previousBackStackEntry != null) back else null,
+                store.notificationsEnabled,
+                store::setNotifications,
+            ) {
                 store.save(it)
                 nav.navigate(HomeRoute(connectionVerified = true)) {
                     popUpTo(nav.graph.id)
@@ -139,6 +214,7 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
             val refreshCounts by entry.savedStateHandle.getStateFlow(RefreshCounts, false).collectAsState()
             LaunchedEffect(api) { if (api == null) openSettings() }
             if (api != null) {
+                RequestNotificationPermission(store)
                 HomeScreen(
                     api,
                     showSuccess,
@@ -175,12 +251,7 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
                         chatsEntry.savedStateHandle[RefreshChats] = true
                         nav.popBackStack()
                     },
-                ) { chatId ->
-                    chatsEntry.savedStateHandle[RefreshChats] = true
-                    nav.navigate(ConversationRoute(bot, chatId, bot)) {
-                        popUpTo<NewChatRoute> { inclusive = true }
-                    }
-                }
+                )
             }
         }
         composable<ConversationRoute> { entry ->
@@ -199,17 +270,78 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
         }
         composable<ItemRoute> { entry ->
             val (bot, number) = entry.toRoute<ItemRoute>()
-            val refreshAfterAnswer = {
+            val itemsEntry = remember(entry) { runCatching { nav.getBackStackEntry<ItemsRoute>() }.getOrNull() }
+            val refreshAfterAnswer: () -> Unit = {
                 nav.getBackStackEntry<HomeRoute>().savedStateHandle[RefreshCounts] = true
-                nav.getBackStackEntry<ItemsRoute>().savedStateHandle[RefreshItems] = true
+                itemsEntry?.savedStateHandle?.set(RefreshItems, true)
             }
-            if (api != null) ItemScreen(api, bot, number, back, openSettings, openConversation, refreshAfterAnswer) {
-                nav.getBackStackEntry<ItemsRoute>().savedStateHandle[Answered] = true
-                nav.popBackStack()
+            if (api != null) ItemScreen(
+                api, bot, number, back, openSettings, openConversation, refreshAfterAnswer,
+                isCurrent = currentEntry == entry,
+            ) {
+                if (nav.currentBackStackEntry == entry) {
+                    itemsEntry?.savedStateHandle?.set(Answered, true)
+                    nav.popBackStack()
+                }
             }
         }
         composable<SummaryRoute> {
             if (api != null) SummaryScreen(api, back, openSettings, openConversation)
         }
+    }
+
+    // Consume chat results even while a notification covers the form.
+    val newChatEntry = remember(currentEntry) { runCatching { nav.getBackStackEntry<NewChatRoute>() }.getOrNull() }
+    if (api != null && newChatEntry != null) {
+        val (bot) = newChatEntry.toRoute<NewChatRoute>()
+        val chatsEntry = remember(newChatEntry) { nav.getBackStackEntry<ChatsRoute>() }
+        val sender = newChatSender(chatsEntry, api, bot)
+        val result = sender.result
+        LaunchedEffect(newChatEntry, result) {
+            if (result != null) {
+                sender.resultShown()
+                chatsEntry.savedStateHandle[RefreshChats] = true
+                if (nav.currentBackStackEntry == newChatEntry) {
+                    nav.navigate(ConversationRoute(bot, result, bot)) {
+                        popUpTo<NewChatRoute> { inclusive = true }
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(notificationTarget, api) {
+        if (notificationTarget == null) return@LaunchedEffect
+        consumeNotification()
+        if (api == null) return@LaunchedEffect
+        val screen = notificationTarget.uri.authority
+        val (bot, number) = notificationTarget.uri.pathSegments.let {
+            it.getOrNull(0).orEmpty() to it.getOrNull(1)?.toLongOrNull()
+        }
+        when (screen) {
+            "summary" -> nav.navigate(SummaryRoute)
+            "items" -> nav.navigate(ItemsRoute)
+            "item" -> if (bot.isNotBlank() && number != null && number > 0) {
+                val route = ItemRoute(bot, number)
+                if (runCatching { nav.getBackStackEntry(route) }.isSuccess) {
+                    nav.popBackStack(route, inclusive = false)
+                } else {
+                    if (notificationTarget.coldStart) nav.navigate(ItemsRoute)
+                    nav.navigate(route)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RequestNotificationPermission(store: ConnectionStore) {
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(store.notificationsEnabled) {
+        if (store.notificationsEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            store.claimNotificationPrompt()
+        ) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }

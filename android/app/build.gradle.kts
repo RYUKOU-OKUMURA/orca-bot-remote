@@ -34,5 +34,6 @@ dependencies {
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.okhttp)
     implementation(libs.serialization.json)
+    implementation(libs.work.runtime.ktx)
     testImplementation(libs.junit)
 }

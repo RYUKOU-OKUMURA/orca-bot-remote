@@ -336,15 +336,7 @@ internal fun NewChatScreen(
     back: () -> Unit,
     settings: () -> Unit,
     checkChats: () -> Unit,
-    openChat: (String) -> Unit,
 ) {
-    val result = sender.result
-    LaunchedEffect(result) {
-        if (result != null) {
-            sender.resultShown()
-            openChat(result)
-        }
-    }
     BackHandler(sender.sending) {}
     Page("新しく頼む", back = { if (!sender.sending) back() }) { modifier ->
         DetailContent(modifier.imePadding()) {
@@ -537,6 +529,7 @@ internal fun ItemScreen(
     settings: () -> Unit,
     openChat: (String, String, String) -> Unit,
     refreshAfterAnswer: () -> Unit,
+    isCurrent: Boolean,
     answered: () -> Unit,
 ) {
     val model = screenModel { api.item(bot, number) }
@@ -550,10 +543,10 @@ internal fun ItemScreen(
     }
     val result = sender.result
     LaunchedEffect(result) {
-        if (result != null) {
-            refreshAfterAnswer()
-            answered()
-        }
+        if (result != null) refreshAfterAnswer()
+    }
+    LaunchedEffect(result, isCurrent) {
+        if (result != null && isCurrent) answered()
     }
     var choice by rememberSaveable { mutableStateOf<String?>(null) }
     val canAnswer = model.data?.status == "needs_you" && model.error == null
@@ -606,7 +599,7 @@ internal fun ItemScreen(
                                 },
                                 enabled = !sender.sending && sender.result == null,
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text(label) }
+                            ) { Text(label, style = MaterialTheme.typography.bodyLarge) }
                         }
                     }
                 }
