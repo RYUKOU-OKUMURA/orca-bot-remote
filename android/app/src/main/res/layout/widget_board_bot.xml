@@ -1,0 +1,17 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/board_bot" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+    android:gravity="center" android:orientation="vertical">
+    <FrameLayout android:layout_width="38dp" android:layout_height="32dp">
+        <ImageView android:id="@+id/bot_icon" android:layout_width="30dp" android:layout_height="30dp"
+            android:layout_gravity="center" android:scaleType="fitCenter" />
+        <ImageView android:id="@+id/bot_working" android:layout_width="9dp" android:layout_height="9dp"
+            android:layout_gravity="bottom|start" android:src="@drawable/board_dot" android:contentDescription="稼働中" />
+        <TextView android:id="@+id/bot_badge" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="top|end" android:gravity="center" android:paddingHorizontal="3dp"
+            android:minWidth="15dp" android:textSize="10sp" android:textStyle="bold" android:textColor="#251603"
+            android:background="@drawable/board_pending" />
+    </FrameLayout>
+    <TextView android:id="@+id/bot_name" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center" android:maxLines="1" android:ellipsize="end" android:textSize="11sp"
+        android:textColor="@color/widget_ink" />
+</LinearLayout>

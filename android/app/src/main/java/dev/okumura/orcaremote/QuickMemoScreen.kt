@@ -63,6 +63,7 @@ internal fun QuickMemoScreen(
             }
             if (currentMode != MemoMode.Inbox) prefs.edit().putString("lastMemoBot", target).apply()
             meta.markRead(target, chatId)
+            SecretaryBoardWidgetProvider.requestRefresh(context)
             target to chatId
         }
     }

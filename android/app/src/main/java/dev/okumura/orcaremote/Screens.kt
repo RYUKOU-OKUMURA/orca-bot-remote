@@ -209,6 +209,7 @@ internal fun HomeScreen(
 ) {
     val context = LocalContext.current.applicationContext
     val bots = screenModel("bots", refreshOnEnter = true) {
+        SecretaryBoardWidgetProvider.requestRefresh(context)
         api.bots().bots.also { list ->
             meta.observeBots(list)
             QuickMemoWidgetProvider.updateCount(context, list.sumOf { it.needsYou })

@@ -30,7 +30,7 @@ internal suspend fun readEvents(reader: BufferedReader, receive: suspend (Stream
 }
 
 @Serializable private data class ReadyEvent(val at: Long)
-@Serializable private data class ChangeEvent(val items: Boolean, val summary: Boolean, val bots: Boolean, val at: Long)
+@Serializable private data class ChangeEvent(val items: Boolean, val summary: Boolean, val bots: Boolean, val at: Long, val board: Boolean = false)
 
 internal fun StreamEvent.triggersSync(): Boolean = try {
     when (event) {

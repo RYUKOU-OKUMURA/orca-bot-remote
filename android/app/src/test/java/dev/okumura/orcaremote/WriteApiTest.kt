@@ -28,6 +28,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WriteApiTest {
+    @Test fun authenticatedBoardAndLegacyServer() {
+        var exists = true
+        withServer({ exchange ->
+            assertEquals("/api/board", exchange.requestURI.path)
+            assertEquals("Bearer mock-token", exchange.requestHeaders.getFirst("Authorization"))
+            if (exists) exchange.reply(200, """{"updatedAt":1,"tasks":[]}""") else exchange.reply(404, "{}")
+        }) { api ->
+            assertEquals(BoardSnapshot(updatedAt = 1), api.board())
+            exists = false
+            assertNull(api.board())
+        }
+    }
+
     @Test
     fun healthChecksOnlyTheAuthenticatedHealthEndpoint() {
         val requests = mutableListOf<List<String>>()

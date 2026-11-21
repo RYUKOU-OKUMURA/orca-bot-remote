@@ -45,8 +45,8 @@ data class Bot(
     val id: String,
     val name: String,
     val specialty: String? = null,
-    val paused: Boolean,
-    val needsYou: Int,
+    val paused: Boolean = false,
+    val needsYou: Int = 0,
     val avatar: String? = null,
     val lastActivityAt: Long? = null,
     val lastSaid: String? = null,
@@ -96,6 +96,7 @@ data class PendingItem(
     val status: String,
     val chatId: String? = null,
     val lastActivityAt: Long? = null,
+    val avatar: String? = null,
 )
 
 @Serializable
@@ -304,6 +305,11 @@ internal class OrcaApi(
     suspend fun chats(bot: String): Chats = get("bots", bot, "chats")
     suspend fun messages(bot: String, chatId: String): Messages =
         get("bots", bot, "chats", chatId, "messages", limit = 100)
+    suspend fun board(): BoardSnapshot? = try {
+        get<BoardSnapshot>("board")
+    } catch (failure: ApiFailure) {
+        if (failure.error == ApiError.NOT_FOUND) null else throw failure
+    }
     suspend fun items(): Items = get("items")
     suspend fun item(bot: String, number: Long): ItemDetail = get("items", bot, number.toString())
     suspend fun summary(): LatestSummary = get("summary")

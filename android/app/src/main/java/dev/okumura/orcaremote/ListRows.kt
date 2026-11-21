@@ -200,11 +200,13 @@ private val Mascots = mapOf(
     "mascot:T1" to R.drawable.mascot_t1,
 )
 
+internal fun avatarDrawable(avatar: String?): Int? = Mascots[avatar]
+
 @Composable
 private fun Mascot(bot: Bot) {
     val shape = MaterialTheme.shapes.small
     val tile = Modifier.size(44.dp).clip(shape)
-    val id = Mascots[bot.avatar]
+    val id = avatarDrawable(bot.avatar)
     if (id != null) {
         Image(painterResource(id), contentDescription = null, modifier = tile, contentScale = ContentScale.Crop)
     } else {

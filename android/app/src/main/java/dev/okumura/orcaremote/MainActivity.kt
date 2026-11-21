@@ -145,7 +145,6 @@ internal fun SharedPreferences.savedConnection(): Connection? =
 @Serializable private data class ConversationRoute(val bot: String, val chatId: String, val title: String)
 @Serializable private object ItemsRoute
 @Serializable private data class ItemRoute(val bot: String, val number: Long)
-
 @Serializable private object ShareRoute
 @Serializable private object SummaryRoute
 

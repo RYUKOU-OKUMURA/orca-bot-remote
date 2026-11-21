@@ -29,6 +29,10 @@ class EventStreamTest {
         assertEquals(listOf(false, false, false, true), sync)
     }
 
+    @Test fun boardOnlyChangeTriggersSync() {
+        assertTrue(StreamEvent("change", """{"items":false,"summary":false,"bots":false,"board":true,"at":2}""").triggersSync())
+    }
+
     @Test fun reconnectBackoffIsCapped() {
         assertEquals(listOf(3000L, 6000L, 12000L, 30000L, 60000L, 60000L), (0..5).map(::reconnectDelay))
     }

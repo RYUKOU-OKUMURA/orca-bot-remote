@@ -22,6 +22,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -70,6 +71,7 @@ internal object NotificationSync {
             saved to prefs.getString(NotificationConnectionId, "")
         }
         createNotificationChannels(context)
+        launch { SecretaryBoardWidgetProvider.refresh(context) }
         val api = OrcaApi(connection)
         val itemsRequest = async { readOrNull { api.items().items } }
         val summaryRequest = async { readOrNull { api.summary() } }
