@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -14,10 +15,6 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -70,7 +67,19 @@ class NotificationWorker(context: Context, parameters: WorkerParameters) : Corou
             NotificationHistory(notifiedItems, runAt)
         }
         val manager = context.getSystemService(NotificationManager::class.java)
-        val decision = decideNotifications(previous, items, summaryRunAt, manager.areNotificationsEnabled())
+        val canNotify = manager.areNotificationsEnabled()
+        val decision = decideNotifications(
+            previous, items, summaryRunAt,
+            canNotifyItems = canNotify && manager.isChannelEnabled(ItemsChannel),
+            canNotifySummary = canNotify && manager.isChannelEnabled(SummaryChannel),
+        )
+        if (decision.history == previous) return@withContext Result.success()
+        // If the process stops after saving and before posting, those notifications can be lost.
+        if (!preferences.editHistory(decision.history).commit()) {
+            // A failed commit still updates the in-memory preferences seen by the next run.
+            preferences.editHistory(previous).apply()
+            return@withContext Result.success()
+        }
         decision.newItems.forEach {
             val target = notificationTarget("item").buildUpon()
                 .appendPath(it.bot).appendPath(it.number.toString()).build()
@@ -79,17 +88,21 @@ class NotificationWorker(context: Context, parameters: WorkerParameters) : Corou
         if (decision.remainingItems > 0) {
             manager.post(context, ItemsChannel, notificationTarget("items"), "判断待ち：ほか ${decision.remainingItems} 件")
         }
-        decision.newSummaryRunAt?.let {
-            val time = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT).withZone(ZoneId.systemDefault())
-                .format(Instant.ofEpochMilli(it))
-            manager.post(context, SummaryChannel, notificationTarget("summary"), "${time}のまとめが届きました")
+        if (decision.notifySummary) {
+            manager.post(context, SummaryChannel, notificationTarget("summary"), "12:00のまとめが届きました")
         }
-        val editor = preferences.edit().putStringSet(NotifiedItems, decision.history.items)
-        decision.history.summaryRunAt?.let { editor.putLong(NotifiedSummary, it) }
-        editor.apply()
         Result.success()
     }
 }
+
+private fun SharedPreferences.editHistory(history: NotificationHistory?): SharedPreferences.Editor =
+    edit().putStringSet(NotifiedItems, history?.items).apply {
+        val runAt = history?.summaryRunAt
+        if (runAt == null) remove(NotifiedSummary) else putLong(NotifiedSummary, runAt)
+    }
+
+private fun NotificationManager.isChannelEnabled(channel: String): Boolean =
+    getNotificationChannel(channel)?.let { it.importance != NotificationManager.IMPORTANCE_NONE } == true
 
 internal fun createNotificationChannels(context: Context) {
     context.getSystemService(NotificationManager::class.java).createNotificationChannels(

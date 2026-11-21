@@ -1,7 +1,7 @@
 package dev.okumura.orcaremote
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -14,7 +14,7 @@ class NotificationDecisionTest {
         val result = decideNotifications(null, listOf(item(7)), 100)
 
         assertTrue(result.newItems.isEmpty())
-        assertNull(result.newSummaryRunAt)
+        assertFalse(result.notifySummary)
         assertEquals(NotificationHistory(setOf("7:メインBot"), 100), result.history)
     }
 
@@ -47,14 +47,14 @@ class NotificationDecisionTest {
 
         for (runAt in listOf(null, 99L, 100L)) {
             val result = decideNotifications(previous, emptyList(), runAt)
-            assertNull(result.newSummaryRunAt)
+            assertFalse(result.notifySummary)
             assertEquals(previous, result.history)
         }
         val newer = decideNotifications(previous, emptyList(), 101)
-        assertEquals(101L, newer.newSummaryRunAt)
+        assertTrue(newer.notifySummary)
         assertEquals(101L, newer.history.summaryRunAt)
         val firstSummary = decideNotifications(NotificationHistory(emptySet(), null), emptyList(), 100)
-        assertEquals(100L, firstSummary.newSummaryRunAt)
+        assertTrue(firstSummary.notifySummary)
     }
 
     @Test
@@ -71,11 +71,39 @@ class NotificationDecisionTest {
     @Test
     fun deniedPermissionPrunesResolvedItemsWithoutMarkingNewArrivalsAsNotified() {
         val previous = NotificationHistory(setOf("7:メインBot"), 100)
-        val result = decideNotifications(previous, listOf(item(8)), 101, canNotify = false)
+        val result = decideNotifications(previous, listOf(item(8)), 101, canNotifyItems = false, canNotifySummary = false)
 
         assertTrue(result.newItems.isEmpty())
-        assertNull(result.newSummaryRunAt)
+        assertFalse(result.notifySummary)
         assertEquals(NotificationHistory(emptySet(), 100), result.history)
         assertEquals(listOf(item(8)), decideNotifications(result.history, listOf(item(8)), 101).newItems)
+    }
+
+    @Test
+    fun disabledItemsChannelPreservesNewItemsForWhenItIsReenabled() {
+        val previous = NotificationHistory(setOf("7:メインBot"), 100)
+        val items = listOf(item(8))
+        val result = decideNotifications(previous, items, 101, canNotifyItems = false)
+
+        assertTrue(result.newItems.isEmpty())
+        assertTrue(result.notifySummary)
+        assertEquals(NotificationHistory(emptySet(), 101), result.history)
+        val reenabled = decideNotifications(result.history, items, 101)
+        assertEquals(items, reenabled.newItems)
+        assertFalse(reenabled.notifySummary)
+    }
+
+    @Test
+    fun disabledSummaryChannelPreservesNewSummaryForWhenItIsReenabled() {
+        val previous = NotificationHistory(emptySet(), 100)
+        val items = listOf(item(8))
+        val result = decideNotifications(previous, items, 101, canNotifySummary = false)
+
+        assertEquals(items, result.newItems)
+        assertFalse(result.notifySummary)
+        assertEquals(NotificationHistory(setOf("8:メインBot"), 100), result.history)
+        val reenabled = decideNotifications(result.history, items, 101)
+        assertTrue(reenabled.newItems.isEmpty())
+        assertTrue(reenabled.notifySummary)
     }
 }

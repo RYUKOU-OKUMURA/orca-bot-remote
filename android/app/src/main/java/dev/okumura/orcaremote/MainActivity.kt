@@ -35,22 +35,25 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavBackStackEntry
-import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import kotlinx.serialization.Serializable
 
+private data class NotificationOpen(val uri: Uri, val coldStart: Boolean)
+
 class MainActivity : ComponentActivity() {
-    private var notificationTarget by mutableStateOf<Uri?>(null)
+    private var notificationTarget by mutableStateOf<NotificationOpen?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         notificationTarget = if (savedInstanceState == null) {
-            intent.data?.takeIf { it.scheme == NotificationScheme }
+            intent.data?.takeIf { it.scheme == NotificationScheme }?.let { NotificationOpen(it, coldStart = true) }
         } else {
-            savedInstanceState.getString("notificationTarget")?.let(Uri::parse)
+            savedInstanceState.getString("notificationTarget")?.let {
+                NotificationOpen(Uri.parse(it), savedInstanceState.getBoolean("notificationColdStart"))
+            }
         }
         enableEdgeToEdge()
         setContent {
@@ -66,11 +69,15 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         notificationTarget = intent.data?.takeIf { it.scheme == NotificationScheme }
+            ?.let { NotificationOpen(it, coldStart = false) }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putString("notificationTarget", notificationTarget?.toString())
+        notificationTarget?.let {
+            outState.putString("notificationTarget", it.uri.toString())
+            outState.putBoolean("notificationColdStart", it.coldStart)
+        }
     }
 }
 
@@ -171,7 +178,7 @@ private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String): 
 
 @Composable
 private fun RemoteApp(
-    notificationTarget: Uri?,
+    notificationTarget: NotificationOpen?,
     store: ConnectionStore = viewModel(),
     consumeNotification: () -> Unit,
 ) {
@@ -266,12 +273,13 @@ private fun RemoteApp(
         }
         composable<ItemRoute> { entry ->
             val (bot, number) = entry.toRoute<ItemRoute>()
-            val refreshAfterAnswer = {
+            val itemsEntry = remember(entry) { runCatching { nav.getBackStackEntry<ItemsRoute>() }.getOrNull() }
+            val refreshAfterAnswer: () -> Unit = {
                 nav.getBackStackEntry<HomeRoute>().savedStateHandle[RefreshCounts] = true
-                nav.getBackStackEntry<ItemsRoute>().savedStateHandle[RefreshItems] = true
+                itemsEntry?.savedStateHandle?.set(RefreshItems, true)
             }
             if (api != null) ItemScreen(api, bot, number, back, openSettings, openConversation, refreshAfterAnswer) {
-                nav.getBackStackEntry<ItemsRoute>().savedStateHandle[Answered] = true
+                itemsEntry?.savedStateHandle?.set(Answered, true)
                 nav.popBackStack()
             }
         }
@@ -284,21 +292,17 @@ private fun RemoteApp(
         if (notificationTarget == null) return@LaunchedEffect
         consumeNotification()
         if (api == null) return@LaunchedEffect
-        val screen = notificationTarget.authority
-        val (bot, number) = notificationTarget.pathSegments.let {
+        val screen = notificationTarget.uri.authority
+        val (bot, number) = notificationTarget.uri.pathSegments.let {
             it.getOrNull(0).orEmpty() to it.getOrNull(1)?.toLongOrNull()
         }
-        if (screen !in listOf("item", "items", "summary") ||
-            (screen == "item" && (bot.isBlank() || number == null || number <= 0))
-        ) return@LaunchedEffect
-        if (nav.currentDestination?.hasRoute<HomeRoute>() != true && !nav.popBackStack<HomeRoute>(false)) {
-            nav.navigate(HomeRoute()) { popUpTo(nav.graph.id) }
-        }
-        if (screen == "summary") {
-            nav.navigate(SummaryRoute)
-        } else {
-            nav.navigate(ItemsRoute)
-            if (screen == "item" && number != null) nav.navigate(ItemRoute(bot, number))
+        when (screen) {
+            "summary" -> nav.navigate(SummaryRoute)
+            "items" -> nav.navigate(ItemsRoute)
+            "item" -> if (bot.isNotBlank() && number != null && number > 0) {
+                if (notificationTarget.coldStart) nav.navigate(ItemsRoute)
+                nav.navigate(ItemRoute(bot, number))
+            }
         }
     }
 }

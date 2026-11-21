@@ -6,32 +6,34 @@ internal data class NotificationDecision(
     val history: NotificationHistory,
     val newItems: List<PendingItem>,
     val remainingItems: Int,
-    val newSummaryRunAt: Long?,
+    val notifySummary: Boolean,
 )
 
 internal fun decideNotifications(
     previous: NotificationHistory?,
     items: List<PendingItem>,
     summaryRunAt: Long?,
-    canNotify: Boolean = true,
+    canNotifyItems: Boolean = true,
+    canNotifySummary: Boolean = true,
 ): NotificationDecision {
     val pending = items.filter { it.status == "needs_you" }.associateBy { "${it.number}:${it.bot}" }
     val previousRunAt = previous?.summaryRunAt
     val newRunAt = summaryRunAt?.takeIf { previousRunAt == null || it > previousRunAt }
-    val newItems = if (previous != null && canNotify) {
+    val newItems = if (previous != null && canNotifyItems) {
         pending.filterKeys { it !in previous.items }.values.toList()
     } else {
         emptyList()
     }
-    val history = if (previous == null || canNotify) {
-        NotificationHistory(pending.keys, newRunAt ?: previousRunAt)
+    val notifiedItems = if (previous == null || canNotifyItems) {
+        pending.keys
     } else {
-        NotificationHistory(previous.items.intersect(pending.keys), previousRunAt)
+        previous.items.intersect(pending.keys)
     }
+    val notifiedRunAt = if (previous == null || canNotifySummary) newRunAt ?: previousRunAt else previousRunAt
     return NotificationDecision(
-        history,
+        NotificationHistory(notifiedItems, notifiedRunAt),
         newItems.take(5),
         (newItems.size - 5).coerceAtLeast(0),
-        newRunAt.takeIf { previous != null && canNotify },
+        previous != null && canNotifySummary && newRunAt != null,
     )
 }
