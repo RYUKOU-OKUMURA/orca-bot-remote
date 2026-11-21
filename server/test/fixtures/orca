@@ -5,7 +5,11 @@ fi
 case "$*" in
     'worktree ps --json')
         if [ -f "$0.fail-ps" ]; then exit 1; fi
-        if [ -f "$0.slow-ps" ]; then sleep 10; fi
+        if [ -f "$0.slow-ps" ]; then
+            echo "$$" > "$0.ps-pid.tmp"
+            mv "$0.ps-pid.tmp" "$0.ps-pid"
+            sleep 10
+        fi
         result='{"worktrees":[]}'
         if [ -f "$0.ps-result" ]; then result=$(/bin/cat "$0.ps-result"); fi
         ;;
@@ -42,6 +46,7 @@ case "$*" in
         ;;
     'bot item list --bot=専門Bot --status needs-you --limit 100 --json')
         result='{"items":[{"number":2,"title":"確認","status":"needs_you","lastActivityAt":200}]}'
+        if [ -f "$0.items-result" ]; then result=$(/bin/cat "$0.items-result"); fi
         ;;
     'bot item list --bot=メインBot --all --limit 100 --json')
         if [ -f "$0.slow" ]; then sleep 0.6; fi
@@ -83,6 +88,7 @@ case "$*" in
         ;;
     'automations runs --id daily --limit 20 --json'|'automations runs --id missing-bot --limit 20 --json')
         result='{"runs":[{"trigger":"manual","status":"completed","scheduledFor":500,"outputSnapshot":{"content":"手動"}},{"trigger":"scheduled","status":"failed","scheduledFor":400},{"trigger":"scheduled","status":"completed","scheduledFor":300,"chatSessionId":"home","outputSnapshot":{"content":"状況まとめ"}},{"trigger":"scheduled","status":"completed","scheduledFor":200,"outputSnapshot":{"content":"以前"}}]}'
+        if [ -f "$0.runs-result" ]; then result=$(/bin/cat "$0.runs-result"); fi
         ;;
     'automations runs --id empty --limit 20 --json')
         result='{"runs":[],"nextCursor":null}'

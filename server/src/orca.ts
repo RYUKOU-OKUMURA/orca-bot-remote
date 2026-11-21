@@ -229,7 +229,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     return readList<Chat>('chats', 3_000, validChats, () => true, 'bot', 'chats', `--bot=${bot.name}`);
   }
 
-  async function activeWorkByBot() {
+  async function activeWorkByBot(required = false) {
     const byBot = new Map<string, ActiveWork>();
     const working = (state: unknown) => state === 'working' || state === 'running';
     function label(value: unknown) {
@@ -241,7 +241,10 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       tree.agents.every(agent => agent && typeof agent === 'object' && !Array.isArray(agent)));
     const worktrees = await readList<Worktree>('worktrees', 3_000, valid, () => true, 'worktree', 'ps').catch(() => null);
     signal.throwIfAborted();
-    if (!Array.isArray(worktrees) || !valid(worktrees)) return byBot;
+    if (!Array.isArray(worktrees) || !valid(worktrees)) {
+      if (required) throw new OrcaError();
+      return byBot;
+    }
     for (const wt of worktrees) {
       if (typeof wt.bot !== 'string' || !wt.bot) continue;
       for (const agent of wt.agents) {
@@ -268,13 +271,16 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     return chats.filter(chat => !chat.closed).sort(newestFirst);
   }
 
-  async function latestChat(bot: Bot) {
+  async function latestChat(bot: Bot, required = false) {
     const chats = await listChats(bot).catch(error => {
       signal.throwIfAborted();
-      if (!(error instanceof OrcaError)) throw error;
+      if (required || !(error instanceof OrcaError)) throw error;
       return null;
     });
-    if (!validChats(chats)) return null;
+    if (!validChats(chats)) {
+      if (required) throw new OrcaError();
+      return null;
+    }
     return openChats(chats)[0];
   }
 
@@ -325,6 +331,31 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     findChat,
     findItemUid,
     showItem,
+    async notificationRows() {
+      const bots = await listBots();
+      // Two serial reads across the bots leave room for foreground requests even while summary uses a third slot.
+      async function readEachBot<T>(readBot: (bot: Bot) => Promise<T>) {
+        const results: T[] = [];
+        for (const bot of bots) results.push(await readBot(bot));
+        return results;
+      }
+      async function detailsByBot() {
+        const activity = await activeWorkByBot(true);
+        const chats = await readEachBot(bot => latestChat(bot, true));
+        return { activity, chats };
+      }
+      const [lists, details] = await Promise.all([readEachBot(needsYou), detailsByBot().catch(() => null)]);
+      return {
+        items: lists.flatMap((items, i) => items.map(item =>
+          [bots[i].name, item.number, item.status, item.lastActivityAt ?? null])),
+        bots: details && bots.map((bot, i) => {
+          const chat = details.chats[i];
+          const work = details.activity.get(bot.name);
+          return [bot.id, chat?.lastActivityAt ?? null, chat?.lastSaid ?? null, lists[i].length,
+            !!(work?.chatIds.size || work?.workers.length)];
+        })
+      };
+    },
     async bots() {
       const bots = await listBots();
       const [previews, avatars, activity] = await Promise.all([

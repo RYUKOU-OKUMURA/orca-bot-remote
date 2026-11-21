@@ -6,3 +6,4 @@ import './launchd.test.ts';
 import './orca-write.test.ts';
 import './pair.test.ts';
 import './app-release.test.ts';
+import './events.test.ts';
