@@ -80,7 +80,12 @@ internal class ChatMetaStore(
 internal fun restoreBotMeta(value: Any?): BotMeta =
     (value as? String)?.let { runCatching { apiJson.decodeFromString<BotMeta>(it) }.getOrNull() } ?: BotMeta()
 
+// UI and notification replies mutate the same instance on the main thread.
+private var currentStore: Pair<String, ChatMetaStore>? = null
+
+@androidx.annotation.MainThread
 internal fun Context.chatMetaStore(server: String): ChatMetaStore {
+    currentStore?.let { if (it.first == server) return it.second }
     val prefs = getSharedPreferences("chat-meta-" + server.encodeUtf8().sha256().hex(), Context.MODE_PRIVATE)
     val values = prefs.all
     val initial = values.filterKeys { it.startsWith("bot/") }.mapKeys { it.key.removePrefix("bot/") }
@@ -89,5 +94,5 @@ internal fun Context.chatMetaStore(server: String): ChatMetaStore {
         prefs.edit().putBoolean("initialized", true).apply()
     }) { bot, value ->
         prefs.edit().putString("bot/$bot", apiJson.encodeToString(value)).apply()
-    }
+    }.also { currentStore = server to it }
 }

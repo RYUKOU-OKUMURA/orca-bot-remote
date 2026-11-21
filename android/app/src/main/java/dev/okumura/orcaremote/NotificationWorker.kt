@@ -88,6 +88,13 @@ internal object NotificationSync {
                 manager.areNotificationsEnabled() && manager.getNotificationChannel(it)?.importance != NotificationManager.IMPORTANCE_NONE
             }
         }
+        val newItems = decideNotifications(previous, items, null, summaryUpdated = false,
+            canNotifyItems = delivery(ItemsChannel) != null).newItems
+        val questionsRequest = async {
+            newItems.map { item ->
+                async { item to readOrNull { api.item(item.bot, item.number).question } }
+            }.awaitAll().toMap()
+        }
         val chats = replies?.newReplies.orEmpty().filter { delivery(RepliesChannel) != null }.map { bot ->
             async {
                 val chat = readOrNull { api.chats(bot.name).chats }?.singleOrNull {
@@ -96,6 +103,7 @@ internal object NotificationSync {
                 bot to ChatTarget(bot.name, chat?.id)
             }
         }.awaitAll()
+        val questions = questionsRequest.await()
         notificationSettingsMutex.withLock {
             ensureActive()
             if (!connection.matches(prefs.enabledConnection())) return@withLock
@@ -113,8 +121,11 @@ internal object NotificationSync {
                 }
             }
             decision.newItems.forEach { item ->
-                manager.post(context, itemChannel!!, notificationTarget("item", item.bot, item.number.toString()),
-                    "判断待ち：${item.bot}", item.title)
+                val target = notificationTarget("item", item.bot, item.number.toString())
+                val question = questions[item]
+                manager.post(context, itemChannel!!, target, "判断待ち：${item.bot}", question?.text?.ifBlank { item.title } ?: item.title) {
+                    addResponseActions(context, target, question?.options.orEmpty())
+                }
             }
             if (decision.remainingItems > 0) {
                 manager.post(context, itemChannel!!, notificationTarget("items"), "判断待ち", "ほか ${decision.remainingItems} 件")
@@ -126,7 +137,9 @@ internal object NotificationSync {
                 delivery(RepliesChannel, chat)?.let { channel ->
                     val target = chat.chatId?.let { notificationTarget("chat", bot.name, it) }
                         ?: notificationTarget("chats", bot.name)
-                    manager.post(context, channel, target, "ボットの返答：${bot.name}", bot.lastSaid.orEmpty())
+                    manager.post(context, channel, target, "ボットの返答：${bot.name}", bot.lastSaid.orEmpty()) {
+                        if (chat.chatId != null) addResponseActions(context, target, emptyList())
+                    }
                 }
             }
         }

@@ -94,11 +94,14 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
         val editor = preferences.edit()
             .putString("url", verified.url.toString())
             .putString("token", verified.token)
+        if (!verified.matches(connection)) {
+            editor.putString(NotificationConnectionId, java.util.UUID.randomUUID().toString())
+            getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
+        }
         if (verified.url != connection?.url) {
             editor.remove("lastMemoBot")
             QuickMemoWidgetProvider.updateCount(getApplication(), -1)
             editor.remove(NotifiedItems).remove(NotifiedSummary).remove(SummaryInitialized).remove(ReplyHistory)
-            getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
         }
         editor.apply()
         connection = verified

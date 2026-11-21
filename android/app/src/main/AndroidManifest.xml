@@ -15,6 +15,7 @@
         android:label="Orca Bot Remote"
         android:theme="@style/Theme.Orca">
         <receiver android:name=".AppInstallReceiver" android:exported="false" />
+        <receiver android:name=".NotificationActionReceiver" android:exported="false" />
         <receiver android:name=".QuickMemoWidgetProvider" android:label="@string/quick_memo" android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
