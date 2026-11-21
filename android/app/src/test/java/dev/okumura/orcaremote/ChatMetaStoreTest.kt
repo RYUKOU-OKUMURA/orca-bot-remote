@@ -22,6 +22,14 @@ class ChatMetaStoreTest {
         assertTrue(meta.unread(bot))
     }
 
+    @Test fun bothGroupsUseDescendingActivity() {
+        val meta = ChatMetaStore(emptyMap()) { _, _ -> }
+        val chats = (1..4).map { Chat(it.toString(), home = it == 4, lastActivityAt = it.toLong()) }
+        meta.togglePin("B", "1")
+        meta.togglePin("B", "3")
+        assertEquals(listOf("3", "1", "4", "2"), meta.sorted("B", chats).map { it.id })
+    }
+
     @Test fun baselineUpdatesPinsAndRestoration() {
         val saved = mutableMapOf<String, BotMeta>()
         val meta = ChatMetaStore(saved) { k, v -> saved[k] = v }

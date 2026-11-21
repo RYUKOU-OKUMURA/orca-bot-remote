@@ -49,6 +49,19 @@ class AttachmentsTest {
         assertEquals(listOf("first", "second", "second"), attempts)
     }
 
+    @Test fun changingMemoDestinationChecksLimitsAndDropsPreviousUploadReceipts() = runBlocking {
+        val chat = draft("1", "2", "3", "4", "5", "6", limits = AttachmentLimits.Conversation)
+        chat.uploadPending { UploadedAttachment("/old/" + it.name, it.name, "file") }
+        assertFalse(chat.changeDestination(AttachmentLimits.NewChat))
+        assertEquals(AttachmentLimits.Conversation, chat.limits)
+        assertTrue(chat.attachments.all { it.uploaded != null })
+        chat.remove(chat.attachments.last())
+        assertTrue(chat.changeDestination(AttachmentLimits.NewChat))
+        assertEquals(5, chat.attachments.size)
+        assertTrue(chat.attachments.all { it.uploaded == null })
+        assertEquals(AttachmentLimits.NewChat, chat.limits)
+    }
+
     @Test fun inlineReadsActualBytesAndEnforcesBothCaps() = runBlocking {
         val draft = draft("first", "second", limits = AttachmentLimits.NewChat)
         assertEquals(listOf("YQ==", "YQ=="), draft.inline { "a".byteInputStream() }.map { it.contentBase64 })
