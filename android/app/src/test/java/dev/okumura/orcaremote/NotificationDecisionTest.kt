@@ -36,7 +36,7 @@ class NotificationDecisionTest {
         val previous = decideNotifications(null, listOf(pending, item(8)), null).history
         val resolved = decideNotifications(previous, listOf(item(7, status = "done")), null)
 
-        assertTrue(resolved.history.items.isEmpty())
+        assertEquals(emptySet<String>(), resolved.history.items)
         assertTrue(resolved.newItems.isEmpty())
         assertEquals(listOf(pending), decideNotifications(resolved.history, listOf(pending), null).newItems)
     }
@@ -123,5 +123,44 @@ class NotificationDecisionTest {
         val reenabled = decideNotifications(result.history, items, 101)
         assertTrue(reenabled.newItems.isEmpty())
         assertTrue(reenabled.notifySummary)
+    }
+
+    @Test
+    fun itemsAndSummaryKeepIndependentHistoriesDuringFailures() {
+        val old = item(7)
+        val new = item(8)
+        val initial = decideNotifications(null, listOf(old), 100).history
+        val summaryOnly = decideNotifications(initial, null, 101)
+        assertTrue(summaryOnly.notifySummary)
+        assertTrue(summaryOnly.newItems.isEmpty())
+        assertEquals(initial.copy(summaryRunAt = 101), summaryOnly.history)
+
+        val itemsOnly = decideNotifications(summaryOnly.history, listOf(old, new), null, summaryUpdated = false)
+        assertEquals(listOf(new), itemsOnly.newItems)
+        assertFalse(itemsOnly.notifySummary)
+        assertEquals(NotificationHistory(setOf("7:メインBot", "8:メインBot"), 101), itemsOnly.history)
+        val bothFailed = decideNotifications(itemsOnly.history, null, null, summaryUpdated = false)
+        assertEquals(itemsOnly.history, bothFailed.history)
+    }
+
+    @Test
+    fun eachEndpointSilentlyRecordsItsOwnFirstSuccessfulCheck() {
+        val summaryFirst = decideNotifications(null, null, 100)
+        assertEquals(NotificationHistory(null, 100), summaryFirst.history)
+        assertFalse(summaryFirst.notifySummary)
+        val firstItems = decideNotifications(summaryFirst.history, listOf(item(7)), 101)
+        assertTrue(firstItems.newItems.isEmpty())
+        assertTrue(firstItems.notifySummary)
+        assertEquals(NotificationHistory(setOf("7:メインBot"), 101), firstItems.history)
+
+        val itemsFirst = decideNotifications(null, emptyList(), null, summaryUpdated = false)
+        assertEquals(NotificationHistory(emptySet(), null, summaryInitialized = false), itemsFirst.history)
+        val firstSummary = decideNotifications(itemsFirst.history, listOf(item(7)), 100)
+        assertEquals(listOf(item(7)), firstSummary.newItems)
+        assertFalse(firstSummary.notifySummary)
+        assertEquals(NotificationHistory(setOf("7:メインBot"), 100), firstSummary.history)
+
+        val emptySummary = decideNotifications(null, null, null, summaryUpdated = true)
+        assertTrue(decideNotifications(emptySummary.history, null, 100).notifySummary)
     }
 }

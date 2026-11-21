@@ -1,6 +1,10 @@
 package dev.okumura.orcaremote
 
-internal data class NotificationHistory(val items: Set<String>, val summaryRunAt: Long?)
+internal data class NotificationHistory(
+    val items: Set<String>?,
+    val summaryRunAt: Long?,
+    val summaryInitialized: Boolean = true,
+)
 
 internal data class NotificationDecision(
     val history: NotificationHistory,
@@ -11,29 +15,32 @@ internal data class NotificationDecision(
 
 internal fun decideNotifications(
     previous: NotificationHistory?,
-    items: List<PendingItem>,
+    items: List<PendingItem>?,
     summaryRunAt: Long?,
+    summaryUpdated: Boolean = true,
     canNotifyItems: Boolean = true,
     canNotifySummary: Boolean = true,
 ): NotificationDecision {
-    val pending = items.filter { it.status == "needs_you" }.associateBy { "${it.number}:${it.bot}" }
+    val pending = items?.filter { it.status == "needs_you" }?.associateBy { "${it.number}:${it.bot}" }
+    val previousItems = previous?.items
+    val summaryInitialized = previous?.summaryInitialized == true
     val previousRunAt = previous?.summaryRunAt
-    val newRunAt = summaryRunAt?.takeIf { previousRunAt == null || it > previousRunAt }
-    val newItems = if (previous != null && canNotifyItems) {
-        pending.filterKeys { it !in previous.items }.values.toList()
+    val newRunAt = summaryRunAt?.takeIf { summaryUpdated && (previousRunAt == null || it > previousRunAt) }
+    val newItems = if (pending != null && previousItems != null && canNotifyItems) {
+        pending.filterKeys { it !in previousItems }.values.toList()
     } else {
         emptyList()
     }
-    val notifiedItems = if (previous == null || canNotifyItems) {
-        pending.keys
-    } else {
-        previous.items.intersect(pending.keys)
+    val notifiedItems = when {
+        pending == null -> previousItems
+        previousItems == null || canNotifyItems -> pending.keys
+        else -> previousItems.intersect(pending.keys)
     }
-    val notifiedRunAt = if (previous == null || canNotifySummary) newRunAt ?: previousRunAt else previousRunAt
+    val notifiedRunAt = if (!summaryInitialized || canNotifySummary) newRunAt ?: previousRunAt else previousRunAt
     return NotificationDecision(
-        NotificationHistory(notifiedItems, notifiedRunAt),
+        NotificationHistory(notifiedItems, notifiedRunAt, summaryInitialized || summaryUpdated),
         newItems.take(5),
         (newItems.size - 5).coerceAtLeast(0),
-        previous != null && canNotifySummary && newRunAt != null,
+        summaryInitialized && canNotifySummary && newRunAt != null,
     )
 }

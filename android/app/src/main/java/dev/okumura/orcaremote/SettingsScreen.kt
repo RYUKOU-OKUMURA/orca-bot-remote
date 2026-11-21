@@ -85,12 +85,12 @@ internal fun SettingsScreen(
     back: (() -> Unit)?,
     notificationsEnabled: Boolean,
     onNotificationsChanged: (Boolean) -> Unit,
-    onSaved: (Connection) -> Unit,
+    onSaved: suspend (Connection) -> Unit,
 ) {
     val context = LocalContext.current
     val model: SettingsModel = viewModel { SettingsModel(connection) }
     val checkConnection = withLocalNetworkPermission(model::permissionDenied, model::check)
-    LaunchedEffect(model.verified) { model.verified?.let(onSaved) }
+    LaunchedEffect(model.verified) { model.verified?.let { onSaved(it) } }
 
     Page("設定", back = back) { modifier ->
         Column(
