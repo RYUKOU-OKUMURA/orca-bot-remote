@@ -8,6 +8,7 @@
 
 | メソッドとパス | 応答 |
 | --- | --- |
+| `GET /api/health` | `{"ok":true}`。Orca CLI を起動せず、サーバーへの接続と認証を確認します |
 | `GET /api/bots` | `{"bots":[{"id":string,"name":string,"specialty":string?,"paused":boolean,"needsYou":number,"avatar":string?,"lastActivityAt":number?,"lastSaid":string?}]}` |
 | `GET /api/bots/{botName}/chats` | `{"chats":[{"id":string,"title":string?,"home":boolean,"lastActivityAt":number?,"lastAsked":string?,"lastSaid":string?}]}` |
 | `GET /api/bots/{botName}/chats/{chatId}/messages?limit=N` | `{"state":string?,"entries":[{"kind":"message","role":string,"text":string} \| {"kind":"tool","name":string,"state":string?}]}` |
