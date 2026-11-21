@@ -61,6 +61,17 @@ class ChatMetaStoreTest {
         assertEquals(setOf("b"), saved.getValue("B").read.keys)
     }
 
+    @Test fun notificationReplyAcknowledgesOnlyTheDisplayedActivity() {
+        val meta = ChatMetaStore(emptyMap()) { _, _ -> }
+        meta.observeBots(listOf(bot))
+        meta.markNotificationRead("B", b.id, 20)
+        assertFalse(meta.unread(bot.copy(lastActivityAt = 20)))
+        meta.observeChats("B", listOf(a, b.copy(lastActivityAt = 25)))
+        meta.markNotificationRead("B", b.id, 20)
+        assertTrue(meta.unread(bot.copy(lastActivityAt = 25)))
+        assertTrue(meta.unread("B", b.copy(lastActivityAt = 25)))
+    }
+
     @Test fun corruptMetadataFallsBackPerBot() {
         val good = BotMeta(readAt = 10, pins = setOf("a"))
         assertEquals(good, restoreBotMeta(apiJson.encodeToString(good)))

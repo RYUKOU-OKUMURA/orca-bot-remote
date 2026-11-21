@@ -76,6 +76,19 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
     var notificationsEnabled by mutableStateOf(preferences.getBoolean(NotificationsEnabled, true))
         private set
 
+    var notificationPrefs by mutableStateOf(preferences.notificationPrefs())
+        private set
+
+    fun updateNotificationPrefs(value: NotificationPrefs) {
+        viewModelScope.launch {
+            notificationSettingsMutex.withLock {
+                preferences.edit().putString("notificationDetails", apiJson.encodeToString(value)).apply()
+                notificationPrefs = value
+                updateNotificationSchedule()
+            }
+        }
+    }
+
     init {
         createNotificationChannels(application)
         updateNotificationSchedule()
@@ -85,11 +98,14 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
         val editor = preferences.edit()
             .putString("url", verified.url.toString())
             .putString("token", verified.token)
+        if (!verified.matches(connection)) {
+            editor.putString(NotificationConnectionId, java.util.UUID.randomUUID().toString())
+            getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
+        }
         if (verified.url != connection?.url) {
             editor.remove("lastMemoBot")
             QuickMemoWidgetProvider.updateCount(getApplication(), -1)
-            editor.remove(NotifiedItems).remove(NotifiedSummary).remove(SummaryInitialized)
-            getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
+            editor.remove(NotifiedItems).remove(NotifiedSummary).remove(SummaryInitialized).remove(ReplyHistory)
         }
         editor.apply()
         connection = verified
@@ -113,7 +129,7 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
     }
 
     private fun updateNotificationSchedule() {
-        scheduleNotifications(getApplication(), notificationsEnabled && connection != null)
+        reconcileNotifications(getApplication())
     }
 }
 
@@ -176,6 +192,8 @@ private fun RemoteApp(
                 if (nav.previousBackStackEntry != null) back else null,
                 store.notificationsEnabled,
                 store::setNotifications,
+                store.notificationPrefs,
+                store::updateNotificationPrefs,
             ) {
                 store.save(it)
                 nav.navigate(HomeRoute(connectionVerified = true)) {
@@ -247,6 +265,11 @@ private fun RemoteApp(
         }
         composable<ConversationRoute> { entry ->
             val (bot, chatId, title) = entry.toRoute<ConversationRoute>()
+            androidx.lifecycle.compose.LifecycleResumeEffect(bot, chatId, lifecycleOwner = entry) {
+                val target = ChatTarget(bot, chatId)
+                ActiveChatTracker.current = target
+                onPauseOrDispose { if (ActiveChatTracker.current === target) ActiveChatTracker.current = null }
+            }
             if (api != null) ConversationScreen(api, meta, bot, chatId, title, entry.savedStateHandle, back, openSettings)
         }
         composable<ItemsRoute> { entry ->
@@ -326,6 +349,10 @@ private fun RemoteApp(
         when (screen) {
             "summary" -> nav.navigate(SummaryRoute) { launchSingleTop = true }
             "items" -> nav.navigate(ItemsRoute) { launchSingleTop = true }
+            "chats" -> if (bot.isNotBlank()) nav.navigate(ChatsRoute(bot)) { launchSingleTop = true }
+            "chat" -> uri.pathSegments.getOrNull(1)?.takeIf { it.isNotBlank() && bot.isNotBlank() }?.let {
+                nav.navigate(ConversationRoute(bot, it, bot)) { launchSingleTop = true }
+            }
             "item" -> if (bot.isNotBlank() && number != null && number > 0) {
                 val route = ItemRoute(bot, number)
                 if (runCatching { nav.getBackStackEntry(route) }.isSuccess) {

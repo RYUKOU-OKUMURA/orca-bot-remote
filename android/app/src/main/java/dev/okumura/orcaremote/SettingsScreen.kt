@@ -85,6 +85,8 @@ internal fun SettingsScreen(
     back: (() -> Unit)?,
     notificationsEnabled: Boolean,
     onNotificationsChanged: (Boolean) -> Unit,
+    details: NotificationPrefs,
+    onDetailsChanged: (NotificationPrefs) -> Unit,
     onSaved: suspend (Connection) -> Unit,
 ) {
     val context = LocalContext.current
@@ -144,9 +146,42 @@ internal fun SettingsScreen(
             }) {
                 Text("通知を許可する")
             }
+            Text("通知の詳細", style = MaterialTheme.typography.headlineSmall)
+            NotificationToggle("ボットの返答も通知する", details.replies) { onDetailsChanged(details.copy(replies = it)) }
+            NotificationToggle("おやすみ時間", details.quietHours) { onDetailsChanged(details.copy(quietHours = it)) }
+            if (details.quietHours) {
+                Row(horizontalArrangement = Arrangement.spacedBy(OrcaInset)) {
+                    TimeButton("開始", details.startMinute) { onDetailsChanged(details.copy(startMinute = it)) }
+                    TimeButton("終了", details.endMinute) { onDetailsChanged(details.copy(endMinute = it)) }
+                }
+                if (details.startMinute == details.endMinute) {
+                    Text("開始と終了が同じ時刻のため、おやすみ時間は無効です。")
+                }
+            }
+            NotificationToggle("リアルタイム通知（数秒でお知らせ）", details.realtime) {
+                onDetailsChanged(details.copy(realtime = it))
+            }
+            Text("オフにすると約15分ごとの確認になります。")
             AppUpdateSection(connection)
         }
     }
+}
+
+@Composable
+private fun NotificationToggle(label: String, checked: Boolean, change: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().toggleable(checked, role = Role.Switch, onValueChange = change),
+        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null)
+    }
+}
+
+@Composable
+private fun TimeButton(label: String, value: Int, change: (Int) -> Unit) {
+    val context = LocalContext.current
+    OrcaOutlinedButton(onClick = {
+        android.app.TimePickerDialog(context, { _, h, m -> change(h * 60 + m) }, value / 60, value % 60, true).show()
+    }) { Text("%s %02d:%02d".format(label, value / 60, value % 60)) }
 }
 
 @Composable

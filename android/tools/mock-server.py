@@ -222,11 +222,40 @@ class MockHandler(BaseHTTPRequestHandler):
     def method_not_allowed(self, allowed):
         self.reply(405, {"error": "bad_request"}, allow=allowed)
 
+    def events(self):
+        def state():
+            with LOCK:
+                return (ITEM["status"], SUMMARY["runAt"], tuple(
+                    (chat["id"], chat.get("lastActivityAt"), chat.get("lastSaid"))
+                    for chats in CHATS.values() for chat in chats))
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        previous = state()
+        line = f'event: ready\ndata: {json.dumps({"at": int(time.time() * 1000)})}\n\n'
+        try:
+            while True:
+                self.wfile.write(line.encode())
+                self.wfile.flush()
+                time.sleep(1)
+                current = state()
+                changes = {k: a != b for k, a, b in zip(("items", "summary", "bots"), previous, current)}
+                previous = current
+                line = (f'event: change\ndata: {json.dumps(dict(changes, at=int(time.time() * 1000)))}\n\n'
+                        if any(changes.values()) else ": ping\n\n")
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def do_GET(self):
         if not self.authorized():
             return
         url = urlsplit(self.path)
         path = [unquote(part) for part in url.path.split("/")[1:]]
+        if path == ["api", "events"]:
+            self.events()
+            return
         with LOCK:
             match path:
                 case ["api", "health"]:
