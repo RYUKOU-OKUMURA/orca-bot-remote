@@ -22,7 +22,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -37,7 +36,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -95,8 +93,8 @@ internal fun SettingsScreen(
 
     Page("設定", back = back) { modifier ->
         Column(
-            modifier.imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            modifier.imePadding().verticalScroll(rememberScrollState()).padding(OrcaInset),
+            verticalArrangement = Arrangement.spacedBy(OrcaInset),
         ) {
             Text("Mac mini への接続", style = MaterialTheme.typography.headlineSmall)
             Text("Tailscale をオンにして、Mac mini のアドレスとトークンを入力してください。")
@@ -118,6 +116,7 @@ internal fun SettingsScreen(
                 enabled = !model.checking,
             )
             Button(
+                shape = MaterialTheme.shapes.medium,
                 onClick = checkConnection,
                 enabled = !model.checking && model.url.isNotBlank() && model.token.text.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
@@ -135,7 +134,7 @@ internal fun SettingsScreen(
                 Text("通知")
                 Switch(checked = notificationsEnabled, onCheckedChange = null)
             }
-            OutlinedButton(onClick = {
+            OrcaOutlinedButton(onClick = {
                 context.startActivity(
                     Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                         .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)

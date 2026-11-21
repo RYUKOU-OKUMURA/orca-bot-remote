@@ -107,13 +107,17 @@ internal fun shouldPoll(state: String?, error: ApiError?): Boolean = state == "w
     else -> false
 }
 
-internal fun relativeTime(timestamp: Long?, now: Long = System.currentTimeMillis()): String? {
+internal fun relativeTime(
+    timestamp: Long?,
+    now: Long = System.currentTimeMillis(),
+    compact: Boolean = false,
+): String? {
     if (timestamp == null) return null
     val minutes = ((now - timestamp) / 60_000).coerceAtLeast(0)
     return when {
         minutes < 1 -> "たった今"
-        minutes < 60 -> "${minutes}分前"
-        minutes < 1_440 -> "${minutes / 60}時間前"
-        else -> "${minutes / 1_440}日前"
+        minutes < 60 -> if (compact) "${minutes}m" else "${minutes}分前"
+        minutes < 1_440 -> if (compact) "${minutes / 60}h" else "${minutes / 60}時間前"
+        else -> if (compact) "${minutes / 1_440}d" else "${minutes / 1_440}日前"
     }
 }

@@ -18,6 +18,16 @@ class ApiTest {
     }
 
     @Test
+    fun botListIncludesMascotAndLatestChat() {
+        val result = apiJson.decodeFromString<Bots>(
+            """{"bots":[{"id":"bot-1","name":"メインBot","paused":false,"needsYou":1,
+                "avatar":"mascot:A1","lastActivityAt":1795230000000,"lastSaid":"回答しました"}]}"""
+        )
+
+        assertEquals(Bot("bot-1", "メインBot", null, false, 1, "mascot:A1", 1795230000000, "回答しました"), result.bots.single())
+    }
+
+    @Test
     fun chatList() {
         val result = apiJson.decodeFromString<Chats>(
             """{"chats":[{"id":"chat-1","title":null,"home":true,"lastActivityAt":1795230000000,
@@ -143,5 +153,8 @@ class ApiTest {
         assertEquals("5分前", relativeTime(now - 5 * minute, now))
         assertEquals("1時間前", relativeTime(now - 60 * minute, now))
         assertEquals("1日前", relativeTime(now - 1_440 * minute, now))
+        assertEquals("5m", relativeTime(now - 5 * minute, now, compact = true))
+        assertEquals("6h", relativeTime(now - 360 * minute, now, compact = true))
+        assertEquals("1d", relativeTime(now - 1_440 * minute, now, compact = true))
     }
 }

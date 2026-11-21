@@ -34,6 +34,9 @@ data class Bot(
     val specialty: String? = null,
     val paused: Boolean,
     val needsYou: Int,
+    val avatar: String? = null,
+    val lastActivityAt: Long? = null,
+    val lastSaid: String? = null,
 )
 
 @Serializable

@@ -15,11 +15,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Typography
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -28,9 +23,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -58,10 +51,7 @@ class MainActivity : ComponentActivity() {
         }
         enableEdgeToEdge()
         setContent {
-            MaterialTheme(
-                colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
-                typography = LargeType,
-            ) {
+            OrcaTheme {
                 RemoteApp(notificationTarget) { notificationTarget = null }
             }
         }
@@ -80,36 +70,6 @@ class MainActivity : ComponentActivity() {
             outState.putBoolean("notificationColdStart", it.coldStart)
         }
     }
-}
-
-private val LightColors = lightColorScheme(
-    primary = Color(0xFF24605B),
-    primaryContainer = Color(0xFFC1EDE6),
-    onPrimaryContainer = Color(0xFF083A35),
-    secondaryContainer = Color(0xFFE2EAEF),
-    onSecondaryContainer = Color(0xFF263C48),
-    background = Color(0xFFF8FAF9),
-    surface = Color(0xFFF8FAF9),
-    surfaceContainer = Color(0xFFEDF3F1),
-)
-
-private val DarkColors = darkColorScheme(
-    primary = Color(0xFFA4D7D0),
-    primaryContainer = Color(0xFF174A44),
-    onPrimaryContainer = Color(0xFFC1EDE6),
-    secondaryContainer = Color(0xFF344957),
-    onSecondaryContainer = Color(0xFFDFEBF2),
-)
-
-private val LargeType = Typography().run {
-    copy(
-        bodyLarge = bodyLarge.copy(fontSize = 18.sp, lineHeight = 28.sp),
-        bodyMedium = bodyMedium.copy(fontSize = 16.sp, lineHeight = 24.sp),
-        bodySmall = bodySmall.copy(fontSize = 14.sp, lineHeight = 21.sp),
-        titleLarge = titleLarge.copy(fontSize = 24.sp, lineHeight = 32.sp),
-        titleMedium = titleMedium.copy(fontSize = 20.sp, lineHeight = 28.sp),
-        labelLarge = labelLarge.copy(fontSize = 16.sp, lineHeight = 24.sp),
-    )
 }
 
 internal class ConnectionStore(application: Application) : AndroidViewModel(application) {
@@ -225,6 +185,7 @@ private fun RemoteApp(
                     { nav.navigate(ChatsRoute(it)) },
                     { nav.navigate(ItemsRoute) },
                     { nav.navigate(SummaryRoute) },
+                    openConversation,
                 )
             }
         }
