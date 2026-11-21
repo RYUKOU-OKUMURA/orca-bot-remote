@@ -3,8 +3,12 @@ package dev.okumura.orcaremote
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -73,6 +77,28 @@ class WriteApiTest {
     }
 
     @Test
+    fun readTimeoutIsUncertainAndNeverReplayed() {
+        val posts = AtomicInteger()
+        val releaseResponse = CountDownLatch(1)
+        val client = OrcaApi.writeClient.newBuilder().readTimeout(500, TimeUnit.MILLISECONDS).build()
+        withServer({ exchange ->
+            exchange.requestBody.readBytes()
+            if (exchange.requestMethod == "POST" && posts.incrementAndGet() == 1) {
+                releaseResponse.await(5, TimeUnit.SECONDS)
+            } else {
+                exchange.reply(202, """{"ok":true}""")
+            }
+        }, client) { api ->
+            try {
+                assertEquals(ApiError.UNKNOWN_RESULT, failureFrom { api.sendMessage("bot", "chat", "一回だけ") })
+                assertEquals(1, posts.get())
+            } finally {
+                releaseResponse.countDown()
+            }
+        }
+    }
+
+    @Test
     fun retryAfterZeroDoesNotReplayPost() {
         val calls = AtomicInteger()
         withServer({ exchange ->
@@ -95,16 +121,20 @@ class WriteApiTest {
 
     private fun withServer(
         handle: (HttpExchange) -> Unit,
+        client: OkHttpClient = OrcaApi.writeClient,
         test: suspend (OrcaApi) -> Unit,
     ) {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val executor = Executors.newFixedThreadPool(2)
+        server.executor = executor
         server.createContext("/") { exchange -> exchange.use(handle) }
         server.start()
         try {
             val connection = requireNotNull(Connection.parse("http://127.0.0.1:${server.address.port}", "mock-token"))
-            runBlocking { test(OrcaApi(connection)) }
+            runBlocking { test(OrcaApi(connection, client)) }
         } finally {
             server.stop(0)
+            executor.shutdownNow()
         }
     }
 

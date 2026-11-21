@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
 TOKEN = "mock-orca-token"
+# Match the server's JavaScript trim() when counting message characters.
+JS_WHITESPACE = "\t\n\v\f\r \xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 BOT = "メインBot"
 HOME_ID = "00000000-0000-4000-8000-000000000001"
 REVIEW_ID = "00000000-0000-4000-8000-000000000002"
@@ -104,7 +106,7 @@ WORKING_UNTIL = {}
 
 class MockHandler(BaseHTTPRequestHandler):
     def reply(self, status, data, allow=None):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8", "backslashreplace")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -196,11 +198,17 @@ class MockHandler(BaseHTTPRequestHandler):
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 64 * 1024:
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json" or not 0 < length <= 64 * 1024:
                 raise ValueError()
-            body = json.loads(self.rfile.read(length))
+            body = json.loads(self.rfile.read(length).decode("utf-8-sig"))
             message = body.get("text") if isinstance(body, dict) else None
-            if not isinstance(message, str) or not 1 <= len(message.strip()) <= 10000:
+            if not isinstance(message, str):
+                raise ValueError()
+            trimmed = message.strip(JS_WHITESPACE)
+            if not 1 <= len(trimmed) <= 10000:
+                raise ValueError()
+            if operation == "answer" and len(message.encode("utf-16-le", "surrogatepass")) // 2 > 8000:
                 raise ValueError()
         except ValueError:
             self.reply(400, {"error": "bad_request", "message": "入力内容を確認してください。"})
@@ -221,7 +229,7 @@ class MockHandler(BaseHTTPRequestHandler):
                 chat_id = str(uuid4())
                 CHATS.setdefault(name, []).insert(0, {
                     "id": chat_id,
-                    "title": message.strip().splitlines()[0][:60],
+                    "title": trimmed.splitlines()[0][:60],
                     "home": False,
                 })
                 MESSAGES[chat_id] = ("done", [])

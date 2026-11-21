@@ -142,7 +142,10 @@ internal enum class ApiError(val text: String) {
 
 internal class ApiFailure(val error: ApiError) : Exception()
 
-internal class OrcaApi(private val connection: Connection) {
+internal class OrcaApi(
+    private val connection: Connection,
+    private val postClient: OkHttpClient = writeClient,
+) {
     suspend fun bots(): Bots = get("bots")
     suspend fun chats(bot: String): Chats = get("bots", bot, "chats")
     suspend fun messages(bot: String, chatId: String): Messages =
@@ -192,7 +195,7 @@ internal class OrcaApi(private val connection: Connection) {
     private suspend inline fun <reified T> post(status: Int, text: String, vararg path: String): T {
         val request = request(path).post(writeBody(text)).build()
         return try {
-            val body = writeClient.newCall(request).readBody(status)
+            val body = postClient.newCall(request).readBody(status)
             withContext(Dispatchers.Default) { apiJson.decodeFromString(body) }
         } catch (_: IOException) {
             throw ApiFailure(ApiError.UNKNOWN_RESULT)
