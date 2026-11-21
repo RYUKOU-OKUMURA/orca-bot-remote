@@ -153,6 +153,28 @@ test('最新のチャットを取得できなくても Bot と判断待ちの件
   await get(chats, 502);
 });
 
+test('最新チャットの応答形式が不正なら Bot 一覧のプレビューを空にする', async t => {
+  const { bin } = recordOrcaCalls(t);
+  const get = await openApi(t, undefined, bin);
+  for (const result of [
+    {},
+    { chats: {} },
+    { chats: [null] },
+    { chats: [{ id: 'new', home: true, lastActivityAt: '300', lastSaid: '回答' }] },
+    { chats: [{ id: 'new', home: true, lastActivityAt: 300, lastSaid: 42 }] }
+  ]) {
+    writeFileSync(`${bin}.chats-result`, JSON.stringify(result));
+    const { bots: [main] } = await get('/api/bots');
+    assert.equal(main.id, 'main');
+    assert.equal(main.needsYou, 2);
+    assert.equal(main.lastActivityAt, null);
+    assert.equal(main.lastSaid, null);
+  }
+  assert.equal((await get(chats)).chats[0].lastSaid, 42);
+  writeFileSync(`${bin}.chats-result`, '{}');
+  await get(chats, 502);
+});
+
 test('チャット一覧は閉じたチャットを除き新しい順で返す', async t => {
   const get = await openApi(t);
   assert.deepEqual(await get(`/api/bots/${bot}/chats`), { chats: [

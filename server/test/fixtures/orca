@@ -9,6 +9,7 @@ case "$*" in
     'bot chats --bot=メインBot --json')
         if [ -f "$0.fail-chats" ]; then exit 1; fi
         result='{"chats":[{"id":"old","home":false,"lastActivityAt":100},{"id":"closed","closed":true,"lastActivityAt":400},{"id":"new","title":"会話","home":true,"lastActivityAt":300,"lastAsked":"質問","lastSaid":"回答","self":true},{"id":"no-time","home":false}]}'
+        if [ -f "$0.chats-result" ]; then result=$(/bin/cat "$0.chats-result"); fi
         ;;
     'bot chats --bot=メインBot --all --json')
         result='{"chats":[{"id":"12345678-abcd-1234-abcd-123456789abc","home":true,"closed":true}]}'

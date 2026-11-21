@@ -149,8 +149,23 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     return (await read<{ chats: Chat[] }>('bot', 'chats', `--bot=${bot.name}`, ...filters)).chats;
   }
 
-  async function openChats(bot: Bot) {
-    return (await listChats(bot)).filter(chat => !chat.closed).sort(newestFirst);
+  function openChats(chats: Chat[]) {
+    return chats.filter(chat => !chat.closed).sort(newestFirst);
+  }
+
+  async function latestChat(bot: Bot) {
+    const chats = await listChats(bot).catch(error => {
+      signal.throwIfAborted();
+      if (!(error instanceof OrcaError)) throw error;
+      return null;
+    });
+    if (!Array.isArray(chats) || !chats.every(chat =>
+      chat && typeof chat === 'object' && !Array.isArray(chat) &&
+      (chat.closed == null || typeof chat.closed === 'boolean') &&
+      (chat.lastActivityAt == null || Number.isFinite(chat.lastActivityAt)) &&
+      (chat.lastSaid == null || typeof chat.lastSaid === 'string')
+    )) return null;
+    return openChats(chats)[0];
   }
 
   async function findChat(bot: Bot, chatId: string) {
@@ -198,22 +213,23 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     findItemUid,
     showItem,
     async bots() {
-      const [bots, avatars] = await Promise.all([listBots(), readMascots(signal)]);
-      return Promise.all(bots.map(async bot => {
-        const [items, chats] = await Promise.all([needsYou(bot), openChats(bot).catch(error => {
-          signal.throwIfAborted();
-          if (!(error instanceof OrcaError)) throw error;
-          return [];
-        })]);
+      const bots = await listBots();
+      const [previews, avatars] = await Promise.all([
+        Promise.all(bots.map(bot => Promise.all([needsYou(bot), latestChat(bot)]))),
+        readMascots(signal)
+      ]);
+      signal.throwIfAborted();
+      return bots.map((bot, index) => {
+        const [items, chat] = previews[index];
         return {
           id: bot.id, name: bot.name, specialty: bot.specialty ?? null, paused: bot.paused,
           needsYou: items.length, avatar: avatars.get(bot.id) ?? null,
-          lastActivityAt: chats[0]?.lastActivityAt ?? null, lastSaid: chats[0]?.lastSaid ?? null
+          lastActivityAt: chat?.lastActivityAt ?? null, lastSaid: chat?.lastSaid ?? null
         };
-      }));
+      });
     },
     async chats(bot: Bot) {
-      return (await openChats(bot)).map(chat => ({
+      return openChats(await listChats(bot)).map(chat => ({
         id: chat.id, title: chat.title ?? null, home: chat.home, lastActivityAt: chat.lastActivityAt ?? null,
         lastAsked: chat.lastAsked ?? null, lastSaid: chat.lastSaid ?? null
       }));
