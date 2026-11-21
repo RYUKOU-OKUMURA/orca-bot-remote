@@ -4,5 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/"
+  },
+  "dependencies": {
+    "tweetnacl": "1.0.3"
   }
 }

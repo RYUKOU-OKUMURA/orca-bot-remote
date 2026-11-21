@@ -17,6 +17,21 @@ server/launchd/install.sh
 
 インストール時に Orca から「専門Botの状況まとめ（毎日12:00）」を名前で検索し、見つかった ID を plist に書きます。自動化を後から作成・変更した場合は再実行してください。
 
+## 本人として書き込む端末をペアリングする
+
+Orca を起動した状態で、設置と同じ macOS ユーザーのターミナルから、リポジトリのルートで次を実行します。
+
+```sh
+npm --prefix server ci
+node server/src/pair.ts
+```
+
+スクリプトはモバイル招待を端末トークンに交換し、`~/.config/orca-bot-remote/orca-device.json` に権限 `600` で保存します。既存のファイルがあれば発行をスキップします。招待と資格情報は表示されません。端末名には Orca が付ける `Mobile <日付>` が使われます。配布版の `orca pair --mobile` には名前を指定するオプションがありません。
+
+Mac mini では `127.0.0.1:6768` への TCP 接続とペアリング後の E2EE 認証を確認したため、Orca への接続に loopback を使います。スクリプトは loopback へ届かない場合に Tailscale IPv4 の到達性を確認します。Orca のネットワークペアリングは初回に Orca 自身の待ち受けを広げることがあります。検証した Mac mini では、ペアリング前から Orca が全 IPv4 インターフェースの TCP 6768 で待ち受けていました。Android が接続する中継サーバーは Tailscale IP にバインドします。
+
+取り消すときは Orca の Settings → Mobile の端末一覧で、登録日時が一致するサーバー用モバイル端末を削除します。再設定する場合は、取り消し後に `~/.config/orca-bot-remote/orca-device.json` を削除してペアリング手順を実行します。資格情報ファイルが無い、または失効した場合は書き込みが `503 write_unavailable` になり、読み取りは利用できます。
+
 ## 動作確認
 
 ```sh
@@ -26,7 +41,7 @@ printf 'Authorization: Bearer %s\n' "$(cat ~/.config/orca-bot-remote/token)" |
   curl --noproxy '*' --fail-with-body --silent --show-error --header @- "http://$host:8787/api/bots"
 ```
 
-Bot 一覧を受け取れたら、Android から同じ IP または MagicDNS 名とポート `8787`、同じトークンで接続します。会話履歴の確認には `/api/bots/{botName}/chats/{chatId}/messages?limit=10` を使います。`botName` には URL エンコードした Bot 名、`chatId` にはその Bot のチャット ID を指定します。API のパスと応答は [API v1](api.md) を参照してください。
+Bot 一覧を受け取れたら、Android から同じ IP または MagicDNS 名とポート `8787`、同じトークンで接続します。会話履歴の確認には `/api/bots/{botName}/chats/{chatId}/messages?limit=10` を使います。`botName` には URL エンコードした Bot 名、`chatId` にはその Bot のチャット ID を指定します。API のパスと応答は [API](api.md) を参照してください。
 
 標準出力は `~/Library/Logs/orca-bot-remote/access.log` に保存され、1リクエストにつきルートのテンプレート、HTTP ステータス、所要時間が1行で出ます。認証失敗時は `unauthenticated`、不明なルートは `unknown` と記録します。起動エラーは同じディレクトリの `error.log` に出ます。
 
@@ -39,7 +54,7 @@ launchctl bootout "gui/$(id -u)/dev.okumura.orca-bot-remote"
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/dev.okumura.orca-bot-remote.plist"
 ```
 
-アンインストールする場合は `server/launchd/uninstall.sh` を実行します。設置済みのサーバーと plist を削除します。トークンとログは再設置や調査に使えるよう残します。
+アンインストールする場合は `server/launchd/uninstall.sh` を実行します。設置済みのサーバーと plist を削除します。トークン、端末資格情報、ログは再設置や調査に使えるよう残します。端末のアクセスを取り消す場合は Orca の設定で端末を削除します。
 
 ## 環境変数
 

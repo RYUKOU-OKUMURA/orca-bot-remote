@@ -79,6 +79,9 @@ fi
     '
 )
 
+node_dir=$(dirname -- "$node_bin")
+PATH="$node_dir:$PATH" "$node_dir/npm" ci --prefix "$server_dir" --omit=dev --ignore-scripts --no-audit --no-fund
+
 if /bin/launchctl print "$domain/$label" >/dev/null 2>&1; then
     /bin/launchctl bootout "$domain/$label"
 fi
