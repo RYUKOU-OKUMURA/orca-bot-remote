@@ -1,10 +1,37 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
 
+val revision = runCatching {
+    providers.exec {
+        commandLine("git", "rev-list", "--count", "HEAD")
+        isIgnoreExitValue = true
+    }.let { git ->
+        if (git.result.get().exitValue == 0) git.standardOutput.asText.get().trim().toIntOrNull()
+        else null
+    }
+}.getOrNull() ?: 1
+
+val signingFile = rootProject.file(providers.gradleProperty("orcaRemoteSigning").getOrElse(
+    "${System.getProperty("user.home")}/.config/orca-bot-remote/release/signing.properties"
+))
+
 android {
+    if (signingFile.isFile) {
+        val signing = Properties().apply { signingFile.inputStream().use { load(it) } }
+        val releaseSigning = signingConfigs.create("release") {
+            storeFile = signingFile.parentFile.resolve(signing.getProperty("storeFile"))
+            storePassword = signing.getProperty("storePassword")
+            keyAlias = signing.getProperty("keyAlias")
+            keyPassword = signing.getProperty("keyPassword")
+        }
+        buildTypes.named("release") { signingConfig = releaseSigning }
+    }
+
     namespace = "dev.okumura.orcaremote"
     compileSdk {
         version = release(37) {
@@ -17,8 +44,8 @@ android {
         applicationId = "dev.okumura.orcaremote"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = revision
+        versionName = "0.2.$revision"
     }
 
     buildFeatures {
