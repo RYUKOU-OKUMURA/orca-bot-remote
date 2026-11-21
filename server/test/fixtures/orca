@@ -1,0 +1,74 @@
+#!/bin/sh
+case "$*" in
+    'bot list --json')
+        result='{"bots":[{"id":"main","name":"メインBot","specialty":"総合","paused":false,"agent":"codex"},{"id":"other","name":"専門Bot","paused":true}]}'
+        ;;
+    'bot chats --bot=メインBot --json')
+        result='{"chats":[{"id":"old","home":false,"lastActivityAt":100},{"id":"closed","closed":true,"lastActivityAt":400},{"id":"new","title":"会話","home":true,"lastActivityAt":300,"lastAsked":"質問","lastSaid":"回答","self":true},{"id":"no-time","home":false}]}'
+        ;;
+    'bot chats --bot=メインBot --all --json')
+        result='{"chats":[{"id":"12345678-abcd-1234-abcd-123456789abc","home":true,"closed":true}]}'
+        ;;
+    'bot chats --bot=専門Bot --all --json')
+        result='{"chats":[{"id":"abcdef00-abcd-1234-abcd-123456789abc","home":true}]}'
+        ;;
+    'agent read orca_session_id:12345678-abcd-1234-abcd-123456789abc --limit 100 --json'|\
+    'agent read orca_session_id:00000000-0000-0000-0000-000000000000 --limit 100 --json')
+        result='{"state":"idle","limited":false,"entries":[{"kind":"message","role":"user","text":"質問","id":"unused"},{"kind":"tool","name":"Read","state":"done","input":"unused"},{"kind":"other"},{"kind":"message","role":"assistant","text":"回答"},{"kind":"tool","name":"List"}]}'
+        ;;
+    'agent read orca_session_id:12345678-abcd-1234-abcd-123456789abc --limit 1 --json')
+        result='{"entries":[{"kind":"message","role":"assistant","text":"回答"}]}'
+        ;;
+    'bot item list --bot=メインBot --status needs-you --limit 100 --json')
+        result='{"items":[{"number":7,"title":"判断待ち","status":"needs_you","chat":{"id":"chat-7"},"lastActivityAt":100}],"counts":{"needs_you":2,"done":1},"nextCursor":"100:7"}'
+        ;;
+    'bot item list --bot=メインBot --status needs-you --limit 100 --cursor 100:7 --json')
+        result='{"items":[{"number":6,"title":"メモ","status":"needs_you"}]}'
+        ;;
+    'bot item list --bot=専門Bot --status needs-you --limit 100 --json')
+        result='{"items":[{"number":2,"title":"確認","status":"needs_you","lastActivityAt":200}]}'
+        ;;
+    'bot item list --bot=メインBot --all --limit 100 --json')
+        result='{"items":[{"uid":"uid-1","number":1}],"nextCursor":"400:1"}'
+        ;;
+    'bot item list --bot=メインBot --all --limit 100 --cursor 400:1 --json')
+        result='{"items":[{"uid":"uid-7","number":7}]}'
+        ;;
+    'bot item list --bot=専門Bot --all --limit 100 --json')
+        result='{"items":[]}'
+        ;;
+    'bot item show --id=uid-7 --json')
+        result='{"item":{"number":7,"title":"判断待ち","status":"needs_you","chat":{"id":"chat-7","kind":"home","title":"Home"},"owner":{"botId":"main","name":"メインBot"},"question":{"eventId":"e51","text":"質問の投影は使用しない"}},"events":[{"id":"e50","kind":"commented","data":{"text":"古い質問","ask":{"questions":[{"prompt":"古い質問","options":[{"label":"古い選択肢"}]}]}}}],"nextCursor":"e50"}'
+        ;;
+    'bot item show --id=uid-7 --after e50 --json')
+        result='{"item":{"number":7},"events":[{"id":"e51","kind":"commented","data":{"text":"どちらにしますか？","ask":{"questions":[{"prompt":"どちらにしますか？","options":[{"label":"進める"},{"label":"保留","detail":"追加情報"}],"recommended":0}]},"answerable":true}}]}'
+        ;;
+    'bot item show --id=uid-1 --json')
+        result='{"item":{"number":1,"title":"完了済み","status":"done","owner":{"botId":"main"},"question":null},"events":[]}'
+        ;;
+    'automations list --json')
+        result='{"automations":[{"id":"daily","name":"専門Botの状況まとめ（毎日12:00）"}]}'
+        ;;
+    'automations show --id daily --json')
+        result='{"automation":{"id":"daily","bot":{"botId":"main"}}}'
+        ;;
+    'automations show --id missing-bot --json')
+        result='{"automation":{"id":"missing-bot","bot":{"botId":"deleted-bot"}}}'
+        ;;
+    'automations runs --id daily --limit 20 --json'|'automations runs --id missing-bot --limit 20 --json')
+        result='{"runs":[{"trigger":"manual","status":"completed","scheduledFor":500,"outputSnapshot":{"content":"手動"}},{"trigger":"scheduled","status":"failed","scheduledFor":400},{"trigger":"scheduled","status":"completed","scheduledFor":300,"chatSessionId":"home","outputSnapshot":{"content":"状況まとめ"}},{"trigger":"scheduled","status":"completed","scheduledFor":200,"outputSnapshot":{"content":"以前"}}]}'
+        ;;
+    'automations runs --id empty --limit 20 --json')
+        result='{"runs":[],"nextCursor":null}'
+        ;;
+    'automations runs --id failed --limit 20 --json')
+        printf '%s\n' '{"ok":false,"error":{"code":"runtime_unavailable","message":"LEAK-CANARY-stdout"}}'
+        printf '%s\n' 'LEAK-CANARY-stderr' >&2
+        exit 1
+        ;;
+    *)
+        printf '%s\n' 'unexpected CLI arguments' >&2
+        exit 2
+        ;;
+esac
+printf '{"id":"test","ok":true,"result":%s}\n' "$result"
