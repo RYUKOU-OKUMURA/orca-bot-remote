@@ -148,7 +148,7 @@ private suspend fun prepareAppInstall(
 class AppInstallReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
-            PackageInstaller.STATUS_SUCCESS -> return
+            PackageInstaller.STATUS_SUCCESS, PackageInstaller.STATUS_FAILURE_ABORTED -> return
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 @Suppress("DEPRECATION")
                 val confirmation = if (Build.VERSION.SDK_INT >= 33) {

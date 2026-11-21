@@ -255,7 +255,7 @@ internal class OrcaApi(
                 }
 
                 override fun onResponse(call: Call, response: Response) {
-                    try {
+                    val result = try {
                         response.use {
                             if (!continuation.isActive) return
                             if (!response.isSuccessful) throw IOException("APK download failed")
@@ -281,14 +281,13 @@ internal class OrcaApi(
                                 throw InvalidAppDownload()
                             }
                         }
-                        continuation.resume(Unit)
-                    } catch (_: ProtocolException) {
-                        continuation.resumeWithException(InvalidAppDownload())
-                    } catch (failure: IOException) {
-                        continuation.resumeWithException(failure)
+                        Result.success(Unit)
+                    } catch (failure: Exception) {
+                        Result.failure(if (failure is ProtocolException) InvalidAppDownload() else failure)
                     } finally {
                         if (call.isCanceled()) file.delete()
                     }
+                    continuation.resumeWith(result)
                 }
             })
         }
