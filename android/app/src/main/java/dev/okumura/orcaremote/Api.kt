@@ -50,6 +50,8 @@ data class Bot(
     val avatar: String? = null,
     val lastActivityAt: Long? = null,
     val lastSaid: String? = null,
+    val working: Boolean = false,
+    val activeWork: String? = null,
 )
 
 @Serializable
@@ -63,10 +65,14 @@ data class Chat(
     val lastActivityAt: Long? = null,
     val lastAsked: String? = null,
     val lastSaid: String? = null,
+    val working: Boolean = false,
 )
 
 @Serializable
-data class Messages(val state: String? = null, val entries: List<Entry>)
+data class Messages(val state: String? = null, val entries: List<Entry>, val activeWorkers: List<ActiveWorker> = emptyList())
+
+@Serializable
+data class ActiveWorker(val title: String, val tool: String? = null)
 
 @Serializable
 sealed interface Entry {

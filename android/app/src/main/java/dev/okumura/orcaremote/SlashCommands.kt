@@ -164,6 +164,7 @@ internal fun ColumnScope.ConversationInput(
     }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         AttachmentPicker(chat, enabled)
+        VoiceInput(sender, enabled)
         DraftField(sender, "メッセージ", Modifier.weight(1f))
         SendButton(sender, Modifier.widthIn(min = 72.dp), enabled = enabled, onClick = {
             val text = sender.draft

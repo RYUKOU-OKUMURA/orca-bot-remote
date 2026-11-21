@@ -38,39 +38,33 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 
-private data class NotificationOpen(val uri: Uri, val coldStart: Boolean)
-
 class MainActivity : ComponentActivity() {
-    private var notificationTarget by mutableStateOf<NotificationOpen?>(null)
+    private var incoming by mutableStateOf<ExternalOpen?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        notificationTarget = if (savedInstanceState == null) {
-            intent.data?.takeIf { it.scheme == NotificationScheme }?.let { NotificationOpen(it, coldStart = true) }
+        incoming = if (savedInstanceState == null) {
+            intent.externalOpen(coldStart = true)
         } else {
-            savedInstanceState.getString("notificationTarget")?.let {
-                NotificationOpen(Uri.parse(it), savedInstanceState.getBoolean("notificationColdStart"))
-            }
+            savedInstanceState.getString("externalOpen")?.let { apiJson.decodeFromString<ExternalOpen>(it) }
         }
         enableEdgeToEdge()
         setContent {
             OrcaTheme {
-                RemoteApp(notificationTarget) { notificationTarget = null }
+                RemoteApp(incoming) { incoming = null }
             }
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        notificationTarget = intent.data?.takeIf { it.scheme == NotificationScheme }
-            ?.let { NotificationOpen(it, coldStart = false) }
+        incoming = intent.externalOpen(coldStart = false)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        notificationTarget?.let {
-            outState.putString("notificationTarget", it.uri.toString())
-            outState.putBoolean("notificationColdStart", it.coldStart)
+        incoming?.let {
+            outState.putString("externalOpen", apiJson.encodeToString(it))
         }
     }
 }
@@ -92,6 +86,8 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
             .putString("url", verified.url.toString())
             .putString("token", verified.token)
         if (verified.url != connection?.url) {
+            editor.remove("lastMemoBot")
+            QuickMemoWidgetProvider.updateCount(getApplication(), -1)
             editor.remove(NotifiedItems).remove(NotifiedSummary).remove(SummaryInitialized)
             getApplication<Application>().getSystemService(NotificationManager::class.java).cancelAll()
         }
@@ -128,11 +124,13 @@ internal fun SharedPreferences.savedConnection(): Connection? =
 
 @Serializable private object SettingsRoute
 @Serializable private data class HomeRoute(val connectionVerified: Boolean = false)
-@Serializable private data class ChatsRoute(val bot: String)
-@Serializable private data class NewChatRoute(val bot: String)
+@Serializable private data class ChatsRoute(val bot: String, val shareId: String = "")
+@Serializable private data class NewChatRoute(val bot: String, val shareId: String = "")
 @Serializable private data class ConversationRoute(val bot: String, val chatId: String, val title: String)
 @Serializable private object ItemsRoute
 @Serializable private data class ItemRoute(val bot: String, val number: Long)
+@Serializable private data class QuickMemoRoute(val voice: Boolean = false)
+@Serializable private object ShareRoute
 @Serializable private object SummaryRoute
 
 private const val RefreshCounts = "refreshCounts"
@@ -141,25 +139,29 @@ private const val RefreshItems = "refreshItems"
 private const val Answered = "answered"
 
 @Composable
-private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String): SendModel<String> {
+private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String, meta: ChatMetaStore): SendModel<String> {
     val resolver = LocalContext.current.applicationContext.contentResolver
     return viewModel(viewModelStoreOwner = entry) {
         val state = createSavedStateHandle()
         val chat = ChatDraft(state, AttachmentLimits.NewChat)
-        SendModel(state, chat) { api.startChat(bot, it, chat.inline { file -> file.open(resolver) }) }
+        SendModel(state, chat) {
+            api.startChat(bot, it, chat.inline { file -> file.open(resolver) }).also { id -> meta.markRead(bot, id) }
+        }
     }
 }
 
 @Composable
 private fun RemoteApp(
-    notificationTarget: NotificationOpen?,
+    incoming: ExternalOpen?,
     store: ConnectionStore = viewModel(),
-    consumeNotification: () -> Unit,
+    consumeIncoming: () -> Unit,
 ) {
     val nav = rememberNavController()
     val currentEntry by nav.currentBackStackEntryAsState()
     val settingsFirst = rememberSaveable { store.connection == null }
     val connection = store.connection
+    val context = LocalContext.current.applicationContext
+    val meta = remember(connection) { context.chatMetaStore(connection?.url?.toString().orEmpty()) }
     val api = remember(connection) { connection?.let { OrcaApi(it) } }
     val openSettings = { nav.navigate(SettingsRoute) { launchSingleTop = true } }
     val back: () -> Unit = { nav.navigateUp() }
@@ -190,7 +192,7 @@ private fun RemoteApp(
                 RequestNotificationPermission(store)
                 HomeScreen(
                     api,
-                    showSuccess,
+                    meta, showSuccess,
                     { showSuccess = false },
                     refreshCounts,
                     { entry.savedStateHandle[RefreshCounts] = false },
@@ -202,23 +204,38 @@ private fun RemoteApp(
                 )
             }
         }
+        composable<QuickMemoRoute> { entry ->
+            if (api != null) QuickMemoScreen(api, meta, entry.savedStateHandle, entry.toRoute<QuickMemoRoute>().voice, back, openSettings) { bot, chatId ->
+                nav.navigate(ConversationRoute(bot, chatId, bot)) { popUpTo<QuickMemoRoute> { inclusive = true } }
+            }
+        }
+        composable<ShareRoute> { entry ->
+            if (api != null) ShareScreen(api, back, openSettings) { bot, chat ->
+                val draft = entry.savedStateHandle.get<String>(SharedDraftKey)
+                nav.navigate(ChatsRoute(bot, entry.id)) { popUpTo<ShareRoute> { inclusive = true } }
+                if (chat == null) nav.navigate(NewChatRoute(bot, entry.id))
+                else openConversation(bot, chat.id, chat.displayTitle)
+                nav.currentBackStackEntry?.savedStateHandle?.set(SharedDraftKey, draft)
+            }
+        }
         composable<ChatsRoute> { entry ->
-            val (bot) = entry.toRoute<ChatsRoute>()
+            val (bot, shareId) = entry.toRoute<ChatsRoute>()
             val refreshChats by entry.savedStateHandle.getStateFlow(RefreshChats, false).collectAsState()
             if (api != null) {
                 ChatsScreen(
-                    api, bot, back, openSettings, refreshChats,
+                    api, meta, bot, back, openSettings, refreshChats,
                     { entry.savedStateHandle[RefreshChats] = false },
-                    { nav.navigate(NewChatRoute(bot)) },
+                    { nav.navigate(NewChatRoute(bot, shareId)) },
                     { openConversation(bot, it.id, it.displayTitle) },
                 )
             }
         }
         composable<NewChatRoute> { entry ->
-            val (bot) = entry.toRoute<NewChatRoute>()
-            val chatsEntry = remember(entry) { nav.getBackStackEntry<ChatsRoute>() }
+            val (bot, shareId) = entry.toRoute<NewChatRoute>()
+            val chatsEntry = remember(entry) { nav.getBackStackEntry(ChatsRoute(bot, shareId)) }
             if (api != null) {
-                val sender = newChatSender(chatsEntry, api, bot)
+                val sender = newChatSender(chatsEntry, api, bot, meta)
+                ApplySharedDraft(entry.savedStateHandle, sender)
                 NewChatScreen(
                     sender, bot, back, openSettings,
                     checkChats = {
@@ -230,7 +247,7 @@ private fun RemoteApp(
         }
         composable<ConversationRoute> { entry ->
             val (bot, chatId, title) = entry.toRoute<ConversationRoute>()
-            if (api != null) ConversationScreen(api, bot, chatId, title, back, openSettings)
+            if (api != null) ConversationScreen(api, meta, bot, chatId, title, entry.savedStateHandle, back, openSettings)
         }
         composable<ItemsRoute> { entry ->
             val answered by entry.savedStateHandle.getStateFlow(Answered, false).collectAsState()
@@ -267,9 +284,9 @@ private fun RemoteApp(
     // Consume chat results even while a notification covers the form.
     val newChatEntry = remember(currentEntry) { runCatching { nav.getBackStackEntry<NewChatRoute>() }.getOrNull() }
     if (api != null && newChatEntry != null) {
-        val (bot) = newChatEntry.toRoute<NewChatRoute>()
-        val chatsEntry = remember(newChatEntry) { nav.getBackStackEntry<ChatsRoute>() }
-        val sender = newChatSender(chatsEntry, api, bot)
+        val (bot, shareId) = newChatEntry.toRoute<NewChatRoute>()
+        val chatsEntry = remember(newChatEntry) { nav.getBackStackEntry(ChatsRoute(bot, shareId)) }
+        val sender = newChatSender(chatsEntry, api, bot, meta)
         val result = sender.result
         LaunchedEffect(newChatEntry, result) {
             if (result != null) {
@@ -284,12 +301,26 @@ private fun RemoteApp(
         }
     }
 
-    LaunchedEffect(notificationTarget, api) {
-        if (notificationTarget == null) return@LaunchedEffect
-        consumeNotification()
-        if (api == null) return@LaunchedEffect
-        val screen = notificationTarget.uri.authority
-        val (bot, number) = notificationTarget.uri.pathSegments.let {
+    LaunchedEffect(incoming, api) {
+        if (incoming == null) return@LaunchedEffect
+        if (api == null) {
+            if (incoming.link?.startsWith("$NotificationScheme:") == true) consumeIncoming()
+            openSettings()
+            return@LaunchedEffect
+        }
+        consumeIncoming()
+        incoming.share?.let { draft ->
+            nav.navigate(ShareRoute)
+            nav.currentBackStackEntry?.savedStateHandle?.set(SharedDraftKey, apiJson.encodeToString(draft))
+            return@LaunchedEffect
+        }
+        val uri = incoming.link?.let(Uri::parse) ?: return@LaunchedEffect
+        memoVoice(uri.toString())?.let { voice ->
+            nav.navigate(QuickMemoRoute(voice))
+            return@LaunchedEffect
+        }
+        val screen = uri.authority
+        val (bot, number) = uri.pathSegments.let {
             it.getOrNull(0).orEmpty() to it.getOrNull(1)?.toLongOrNull()
         }
         when (screen) {
@@ -300,7 +331,7 @@ private fun RemoteApp(
                 if (runCatching { nav.getBackStackEntry(route) }.isSuccess) {
                     nav.popBackStack(route, inclusive = false)
                 } else {
-                    if (notificationTarget.coldStart) nav.navigate(ItemsRoute) { launchSingleTop = true }
+                    if (incoming.coldStart) nav.navigate(ItemsRoute) { launchSingleTop = true }
                     nav.navigate(route)
                 }
             }

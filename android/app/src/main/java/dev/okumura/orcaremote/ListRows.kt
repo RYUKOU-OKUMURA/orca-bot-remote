@@ -14,16 +14,22 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,7 +43,7 @@ internal fun OrcaIcon(
 ) = Icon(painterResource(id), description, modifier, tint)
 
 @Composable
-internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () -> Unit) {
+internal fun BotRow(bot: Bot, unread: Boolean, expanded: Boolean, open: () -> Unit, toggle: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val shape = MaterialTheme.shapes.small
     val pausedWithPendingItems = bot.paused && bot.needsYou > 0
@@ -50,6 +56,8 @@ internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () ->
     ) {
         ListRow(
             title = bot.name,
+            unread = unread,
+            work = if (bot.working) listOfNotNull("作業中", bot.activeWork?.takeIf(String::isNotBlank)).joinToString(" · ") else null,
             onClick = open,
             modifier = Modifier.weight(1f),
             leading = { Mascot(bot) },
@@ -75,17 +83,27 @@ internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () ->
 }
 
 @Composable
-internal fun ChatRow(chat: Chat, modifier: Modifier = Modifier, showPreview: Boolean = true, open: () -> Unit) {
-    ListRow(
-        title = chat.displayTitle,
-        onClick = open,
-        modifier = modifier,
-        leading = { OrcaIcon(if (chat.home) R.drawable.ic_home else R.drawable.ic_chat) },
-        titleMaxLines = if (showPreview) 2 else 1,
-        subtitle = if (showPreview) markdownPreview(chat.lastSaid) ?: markdownPreview(chat.lastAsked) else null,
-        caption = relativeTime(chat.lastActivityAt, compact = true),
-        showChevron = showPreview,
-    )
+internal fun ChatRow(chat: Chat, bot: String, meta: ChatMetaStore, modifier: Modifier = Modifier, showPreview: Boolean = true, open: () -> Unit) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        ListRow(
+            title = chat.displayTitle,
+            onClick = open,
+            modifier = Modifier.weight(1f),
+            unread = meta.unread(bot, chat),
+            work = if (chat.working) "作業中" else null,
+            leading = { OrcaIcon(if (chat.home) R.drawable.ic_home else R.drawable.ic_chat) },
+            titleMaxLines = if (showPreview) 2 else 1,
+            subtitle = if (showPreview) markdownPreview(chat.lastSaid) ?: markdownPreview(chat.lastAsked) else null,
+            caption = relativeTime(chat.lastActivityAt, compact = true),
+            showChevron = false,
+        )
+        val pinned = meta.pinned(bot, chat.id)
+        IconToggleButton(checked = pinned, onCheckedChange = { meta.togglePin(bot, chat.id) }) {
+            OrcaIcon(if (pinned) R.drawable.ic_pin_filled else R.drawable.ic_pin,
+                if (pinned) "${chat.displayTitle}のピン留めを解除" else "${chat.displayTitle}をピン留め",
+                tint = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
+        }
+    }
 }
 
 @Composable
@@ -98,6 +116,8 @@ internal fun ListRow(
     @DrawableRes subtitleIcon: Int? = null,
     subtitleColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     caption: String? = null,
+    unread: Boolean = false,
+    work: String? = null,
     showChevron: Boolean = true,
     titleMaxLines: Int = 1,
     subtitleMaxLines: Int = 1,
@@ -116,9 +136,12 @@ internal fun ListRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (unread) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape)
+                    .semantics { contentDescription = "未読" })
                 Text(
                     title,
-                    Modifier.weight(1f),
+                    fontWeight = if (unread) FontWeight.Bold else null,
+                    modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = titleMaxLines,
                     overflow = TextOverflow.Ellipsis,
@@ -127,6 +150,7 @@ internal fun ListRow(
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            work?.let { WorkingBadge(it) }
             subtitle?.let {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     subtitleIcon?.let { id -> OrcaIcon(id, modifier = Modifier.size(16.dp), tint = subtitleColor) }
@@ -141,6 +165,15 @@ internal fun ListRow(
             }
         }
         if (showChevron) OrcaIcon(R.drawable.ic_chevron, modifier = Modifier.size(18.dp))
+    }
+}
+
+@Composable
+internal fun WorkingBadge(label: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = orcaAccentText,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

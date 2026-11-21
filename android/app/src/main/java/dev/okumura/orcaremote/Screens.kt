@@ -119,16 +119,16 @@ internal fun Page(
 }
 
 @Composable
-private fun <T> screenModel(key: String? = null, fetch: suspend () -> T): ScreenModel<T> {
+internal fun <T> screenModel(key: String? = null, refreshOnEnter: Boolean = false, fetch: suspend () -> T): ScreenModel<T> {
     val model: ScreenModel<T> = viewModel(key = key) { ScreenModel(fetch) }
     LaunchedEffect(model) {
-        if (model.data == null && model.error == null) model.refresh()
+        if (refreshOnEnter || (model.data == null && model.error == null)) model.refresh()
     }
     return model
 }
 
 @Composable
-private fun <T> DataContent(
+internal fun <T> DataContent(
     modifier: Modifier,
     model: ScreenModel<T>,
     settings: () -> Unit,
@@ -196,6 +196,7 @@ private fun LoadError(
 @Composable
 internal fun HomeScreen(
     api: OrcaApi,
+    meta: ChatMetaStore,
     showSuccess: Boolean,
     successShown: () -> Unit,
     refreshCounts: Boolean,
@@ -206,11 +207,17 @@ internal fun HomeScreen(
     openSummary: () -> Unit,
     openChat: (String, String, String) -> Unit,
 ) {
-    val bots = screenModel("bots") { api.bots().bots }
+    val context = LocalContext.current.applicationContext
+    val bots = screenModel("bots", refreshOnEnter = true) {
+        api.bots().bots.also { list ->
+            meta.observeBots(list)
+            QuickMemoWidgetProvider.updateCount(context, list.sumOf { it.needsYou })
+        }
+    }
     val summary = screenModel("summary") { api.summary() }
     var expandedBot by rememberSaveable { mutableStateOf<String?>(null) }
     val inlineChats = expandedBot?.let { bot ->
-        viewModel<ScreenModel<Chats>>(key = "inline chats: $bot") { ScreenModel { api.chats(bot) } }
+        viewModel<ScreenModel<Chats>>(key = "inline chats: $bot") { ScreenModel { api.chats(bot).also { meta.observeChats(bot, it.chats) } } }
     }
     LaunchedEffect(inlineChats) {
         inlineChats?.load()
@@ -270,7 +277,7 @@ internal fun HomeScreen(
                         val expanded = expandedBot == bot.name
                         item(key = "bot/${bot.id}") {
                             BotRow(
-                                bot,
+                                bot, unread = meta.unread(bot),
                                 expanded = expanded,
                                 open = { openBot(bot.name) },
                                 toggle = { expandedBot = if (expanded) null else bot.name },
@@ -298,10 +305,10 @@ internal fun HomeScreen(
                         }
                         if (expanded && inlineChats?.error == null) {
                             items(
-                                inlineChats?.data?.chats.orEmpty().sortedByDescending { it.home },
+                                meta.sorted(bot.name, inlineChats?.data?.chats.orEmpty()),
                                 key = { "chat/${bot.id}/${it.id}" },
                             ) { chat ->
-                                ChatRow(chat, Modifier.padding(start = 40.dp), showPreview = false) {
+                                ChatRow(chat, bot.name, meta, Modifier.padding(start = 40.dp), showPreview = false) {
                                     openChat(bot.name, chat.id, chat.displayTitle)
                                 }
                             }
@@ -347,6 +354,7 @@ internal val Chat.displayTitle: String
 @Composable
 internal fun ChatsScreen(
     api: OrcaApi,
+    meta: ChatMetaStore,
     bot: String,
     back: () -> Unit,
     settings: () -> Unit,
@@ -355,7 +363,7 @@ internal fun ChatsScreen(
     openNewChat: () -> Unit,
     openChat: (Chat) -> Unit,
 ) {
-    val model = screenModel { api.chats(bot) }
+    val model = screenModel(refreshOnEnter = true) { api.chats(bot).also { meta.observeChats(bot, it.chats) } }
     LaunchedEffect(refreshChats) {
         if (refreshChats) {
             model.load(afterCurrent = true)
@@ -372,8 +380,8 @@ internal fun ChatsScreen(
             )
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings) { result ->
                 EntryList(empty = result.chats.isEmpty(), emptyText = "チャットはまだありません") {
-                    items(result.chats.sortedByDescending { it.home }, key = { it.id }) { chat ->
-                        ChatRow(chat) { openChat(chat) }
+                    items(meta.sorted(bot, result.chats), key = { it.id }) { chat ->
+                        ChatRow(chat, bot, meta) { openChat(chat) }
                     }
                 }
             }
@@ -398,6 +406,7 @@ internal fun NewChatScreen(
             AttachmentPreview(chat, enabled)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AttachmentPicker(chat, enabled)
+                VoiceInput(sender, enabled)
                 DraftField(sender, "Bot に頼みたいこと", Modifier.weight(1f), minLines = 5)
             }
             SendButton(sender, Modifier.fillMaxWidth())
@@ -419,12 +428,16 @@ internal fun NewChatScreen(
     }
 }
 
+private data class ConversationSnapshot(val messages: Messages, val requestedAt: Long)
+
 @Composable
 internal fun ConversationScreen(
     api: OrcaApi,
+    meta: ChatMetaStore,
     bot: String,
     chatId: String,
     title: String,
+    destination: androidx.lifecycle.SavedStateHandle,
     back: () -> Unit,
     settings: () -> Unit,
 ) {
@@ -434,10 +447,22 @@ internal fun ConversationScreen(
         val chat = ChatDraft(state, AttachmentLimits.Conversation)
         SendModel(state, chat, showPendingMessage = true) { text ->
             chat.sendMessage(api, bot, chatId, text) { it.open(resolver) }
+            meta.markRead(bot, chatId)
             ""
         }
     }
-    val model = screenModel { sender.loadHistory { api.messages(bot, chatId) } }
+    ApplySharedDraft(destination, sender)
+    val model = screenModel(refreshOnEnter = true) {
+        val requestedAt = System.currentTimeMillis()
+        ConversationSnapshot(sender.loadHistory { api.messages(bot, chatId) }, requestedAt)
+    }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val snapshot = model.data
+    LaunchedEffect(snapshot, lifecycle) {
+        if (snapshot != null) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            meta.markRead(bot, chatId, snapshot.requestedAt)
+        }
+    }
     val commands: ScreenModel<ChatCommands> = viewModel(key = "commands") { ScreenModel { api.commands(bot, chatId) } }
     val ready = model.data != null
     LaunchedEffect(ready) { if (ready) commands.refresh() }
@@ -466,13 +491,16 @@ internal fun ConversationScreen(
         }
     }
     BackHandler(sender.sending) {}
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val polling = shouldPoll(model.data?.state, model.error)
+    fun shouldPollNow(): Boolean {
+        val messages = model.data?.messages ?: return false
+        return shouldPoll(messages.state, model.error, messages.activeWorkers)
+    }
+    val polling = shouldPollNow()
     LaunchedEffect(lifecycle, model, polling) {
         if (polling) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 delay(5_000)
-                if (!shouldPoll(model.data?.state, model.error)) break
+                if (!shouldPollNow()) break
                 model.load()
             }
         }
@@ -484,7 +512,7 @@ internal fun ConversationScreen(
         }, enabled = !model.loading) { Text("更新") }
     }) { modifier ->
         Column(modifier.imePadding()) {
-            DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { result ->
+            DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { (result, _) ->
                 if (result.entries.isEmpty() && sender.sentMessages.isEmpty() && pending == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("メッセージはまだありません")
@@ -534,6 +562,13 @@ internal fun ConversationScreen(
                 Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(ListPadding),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                model.data?.messages?.let { data ->
+                    if (data.activeWorkers.isNotEmpty()) {
+                        WorkingBadge("作業中 · " + data.activeWorkers.joinToString("、") { it.title })
+                    } else if (data.state == "working" || data.state == "running") {
+                        WorkingBadge("応答を作成中…")
+                    }
+                }
                 if (model.data != null) {
                     ConversationInput(sender, catalog) { cmd, confirmed ->
                         sender.submit(sender.draft, confirmed) {
@@ -631,7 +666,8 @@ internal fun ItemsScreen(
     openChat: (String, String, String) -> Unit,
     openItem: (PendingItem) -> Unit,
 ) {
-    val model = screenModel { api.items() }
+    val context = LocalContext.current.applicationContext
+    val model = screenModel { api.items().also { QuickMemoWidgetProvider.updateCount(context, it.items.count { item -> item.status == "needs_you" }) } }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(refreshItems) {
         if (refreshItems) {
@@ -812,7 +848,7 @@ internal fun SummaryScreen(
 }
 
 @Composable
-private fun DetailContent(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+internal fun DetailContent(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(
         modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(OrcaInset),
         verticalArrangement = Arrangement.spacedBy(OrcaInset),
@@ -891,7 +927,7 @@ internal fun ResendDialog(cancel: () -> Unit, confirm: () -> Unit) {
 }
 
 @Composable
-private fun SendStatus(
+internal fun SendStatus(
     sender: SendModel<*>,
     settings: () -> Unit,
     conflict: String = ApiError.CONFLICT.text,

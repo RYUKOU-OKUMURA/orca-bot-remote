@@ -70,6 +70,7 @@ class NotificationWorker(context: Context, parameters: WorkerParameters) : Corou
 
     private fun publishChanges(preferences: SharedPreferences, items: List<PendingItem>?, summary: LatestSummary?) {
         val context = applicationContext
+        if (items != null) QuickMemoWidgetProvider.updateCount(context, items.count { it.status == "needs_you" })
         val notifiedItems = preferences.getStringSet(NotifiedItems, null)
         val runAt = preferences.getLong(NotifiedSummary, 0).takeIf { preferences.contains(NotifiedSummary) }
         // Older installations initialized both endpoints together and always stored the item set.
