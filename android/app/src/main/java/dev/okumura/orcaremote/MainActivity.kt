@@ -145,7 +145,7 @@ internal fun SharedPreferences.savedConnection(): Connection? =
 @Serializable private data class ConversationRoute(val bot: String, val chatId: String, val title: String)
 @Serializable private object ItemsRoute
 @Serializable private data class ItemRoute(val bot: String, val number: Long)
-@Serializable private data class QuickMemoRoute(val voice: Boolean = false)
+
 @Serializable private object ShareRoute
 @Serializable private object SummaryRoute
 
@@ -223,7 +223,7 @@ private fun RemoteApp(
             }
         }
         composable<QuickMemoRoute> { entry ->
-            if (api != null) QuickMemoScreen(api, meta, entry.savedStateHandle, entry.toRoute<QuickMemoRoute>().voice, back, openSettings) { bot, chatId ->
+            if (api != null) QuickMemoScreen(api, meta, entry.savedStateHandle, entry.toRoute<QuickMemoRoute>(), back, openSettings) { bot, chatId ->
                 nav.navigate(ConversationRoute(bot, chatId, bot)) { popUpTo<QuickMemoRoute> { inclusive = true } }
             }
         }
@@ -338,8 +338,8 @@ private fun RemoteApp(
             return@LaunchedEffect
         }
         val uri = incoming.link?.let(Uri::parse) ?: return@LaunchedEffect
-        memoVoice(uri.toString())?.let { voice ->
-            nav.navigate(QuickMemoRoute(voice))
+        quickMemoLink(uri.toString())?.let { route ->
+            nav.navigate(route)
             return@LaunchedEffect
         }
         val screen = uri.authority

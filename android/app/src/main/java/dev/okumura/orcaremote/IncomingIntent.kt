@@ -35,10 +35,14 @@ internal fun sharedDraft(action: String?, subject: String?, text: String?, strea
     return SharedDraft(bounded, uris, truncated)
 }
 
-internal fun memoVoice(link: String): Boolean? {
+@Serializable
+internal data class QuickMemoRoute(val voice: Boolean = false, val inbox: Boolean = false)
+
+internal fun quickMemoLink(link: String): QuickMemoRoute? {
     val uri = runCatching { URI(link) }.getOrNull() ?: return null
     if (uri.scheme != "orcaremote" || uri.rawAuthority != "quick-memo" || !uri.path.isNullOrEmpty()) return null
-    return uri.rawQuery.orEmpty().split('&').contains("voice=1")
+    val flags = uri.rawQuery.orEmpty().split('&')
+    return QuickMemoRoute(voice = "voice=1" in flags, inbox = "inbox=1" in flags)
 }
 
 internal fun Intent.externalOpen(coldStart: Boolean): ExternalOpen? {
@@ -60,5 +64,5 @@ internal fun Intent.externalOpen(coldStart: Boolean): ExternalOpen? {
             null
         }
     }
-    return data?.takeIf { it.scheme == NotificationScheme || (it.scheme == "orcaremote" && (memoVoice(it.toString()) != null || it.authority == "items")) }?.let { ExternalOpen(link = it.toString(), coldStart = coldStart) }
+    return data?.takeIf { it.scheme == NotificationScheme || (it.scheme == "orcaremote" && (quickMemoLink(it.toString()) != null || it.authority == "items")) }?.let { ExternalOpen(link = it.toString(), coldStart = coldStart) }
 }
