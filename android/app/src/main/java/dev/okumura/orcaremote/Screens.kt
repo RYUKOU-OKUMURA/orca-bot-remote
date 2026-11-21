@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -295,7 +296,7 @@ internal fun ChatsScreen(
     back: () -> Unit,
     settings: () -> Unit,
     refreshChats: Boolean,
-    chatsRefreshFinished: (Boolean) -> Unit,
+    chatsRefreshFinished: () -> Unit,
     openNewChat: () -> Unit,
     openChat: (Chat) -> Unit,
 ) {
@@ -303,7 +304,7 @@ internal fun ChatsScreen(
     LaunchedEffect(refreshChats) {
         if (refreshChats) {
             model.load(afterCurrent = true)
-            chatsRefreshFinished(model.error == null)
+            chatsRefreshFinished()
         }
     }
     Page(bot, back, action = { RefreshAction(model) }) { modifier ->
@@ -349,13 +350,13 @@ internal fun NewChatScreen(
         DetailContent(modifier.imePadding()) {
             Text(bot, style = MaterialTheme.typography.titleMedium)
             DraftField(sender, "Bot に頼みたいこと", Modifier.fillMaxWidth(), minLines = 5)
-            SendButton(sender, Modifier.fillMaxWidth(), enabled = !sender.needsChatListRefresh)
-            WriteError(
-                sender.error, settings,
+            SendButton(sender, Modifier.fillMaxWidth())
+            SendStatus(
+                sender, settings,
                 unknown = "送れたか確認できませんでした。チャット一覧を更新して、新しいチャットができていないか確かめてください",
             )
-            if (sender.error == ApiError.UNKNOWN_RESULT) {
-                OutlinedButton(onClick = checkChats, modifier = Modifier.fillMaxWidth()) {
+            if (sender.deliveryUncertain) {
+                OutlinedButton(onClick = checkChats, enabled = !sender.sending, modifier = Modifier.fillMaxWidth()) {
                     Text("チャット一覧で確かめる")
                 }
             }
@@ -438,7 +439,7 @@ internal fun ConversationScreen(
                         SendButton(sender, Modifier.widthIn(min = 80.dp))
                     }
                 }
-                WriteError(sender.error, settings, conflict = "このチャットは閉じているため送れません")
+                SendStatus(sender, settings, conflict = "このチャットは閉じているため送れません")
             }
         }
     }
@@ -558,22 +559,37 @@ internal fun ItemScreen(
     val canAnswer = model.data?.status == "needs_you" && model.error == null
     val focus = LocalFocusManager.current
     if (canAnswer) choice?.let { label ->
-        AlertDialog(
-            onDismissRequest = { choice = null },
-            text = { Text("『${label}』と答えますか？", style = MaterialTheme.typography.bodyLarge) },
-            confirmButton = {
-                TextButton(onClick = {
-                    choice = null
-                    sender.submit(label)
-                }) { Text("はい") }
-            },
-            dismissButton = { TextButton(onClick = { choice = null }) { Text("キャンセル") } },
-        )
+        if (sender.deliveryUncertain) {
+            ResendDialog({ choice = null }) {
+                choice = null
+                sender.submit(label, resendConfirmed = true)
+            }
+        } else {
+            AlertDialog(
+                onDismissRequest = { choice = null },
+                text = { Text("『${label}』と答えますか？", style = MaterialTheme.typography.bodyLarge) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        choice = null
+                        sender.submit(label)
+                    }) { Text("はい") }
+                },
+                dismissButton = { TextButton(onClick = { choice = null }) { Text("キャンセル") } },
+            )
+        }
     }
     BackHandler(sender.sending) {}
     Page("判断待ちの詳細", back = { if (!sender.sending) back() }, action = { RefreshAction(model) }) { modifier ->
-        DataContent(modifier.imePadding(), model, settings, keepDataOnError = true) { item ->
-            DetailContent {
+        DetailContent(modifier.imePadding()) {
+            val item = model.data
+            val error = model.error
+            if (error != null) {
+                LoadError(model, error, settings, Modifier.align(Alignment.CenterHorizontally))
+            }
+            if (model.loading || (item == null && error == null)) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            if (item != null) {
                 Text(bot, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                 Text(item.title, style = MaterialTheme.typography.headlineSmall)
                 val question = item.question
@@ -594,15 +610,17 @@ internal fun ItemScreen(
                         }
                     }
                 }
-                if (canAnswer || sender.draft.isNotEmpty()) {
-                    DraftField(sender, "自分の言葉で答える", Modifier.fillMaxWidth(), enabled = canAnswer)
-                    if (canAnswer) SendButton(sender, Modifier.fillMaxWidth())
-                }
-                WriteError(
-                    sender.error, settings,
-                    conflict = "この項目はもう答え済みか、状態が変わりました",
-                    badRequest = "1〜8,000文字で入力してください（空白を含め、絵文字などはUTF-16コード単位で数えます）",
-                )
+            }
+            if (canAnswer || sender.draft.isNotEmpty()) {
+                DraftField(sender, "自分の言葉で答える", Modifier.fillMaxWidth(), enabled = canAnswer)
+                SendButton(sender, Modifier.fillMaxWidth(), enabled = canAnswer)
+            }
+            SendStatus(
+                sender, settings,
+                conflict = "この項目はもう答え済みか、状態が変わりました",
+                badRequest = "1〜8,000文字で入力してください（空白を含め、絵文字などはUTF-16コード単位で数えます）",
+            )
+            if (item != null) {
                 item.chatId?.let { chatId ->
                     TextButton(
                         onClick = { openChat(item.bot, chatId, item.title) },
@@ -643,11 +661,12 @@ internal fun SummaryScreen(
 }
 
 @Composable
-private fun DetailContent(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun DetailContent(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(
         modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) { content() }
+        content = content,
+    )
 }
 
 @Composable
@@ -673,10 +692,17 @@ private fun DraftField(
 @Composable
 private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val focus = LocalFocusManager.current
+    var resendText by remember { mutableStateOf<String?>(null) }
+    if (enabled) resendText?.let { text ->
+        ResendDialog({ resendText = null }) {
+            resendText = null
+            sender.submit(text, resendConfirmed = true)
+        }
+    }
     Button(
         onClick = {
             focus.clearFocus()
-            sender.submit(sender.draft)
+            if (sender.deliveryUncertain) resendText = sender.draft else sender.submit(sender.draft)
         },
         enabled = enabled && sender.draft.isNotBlank() && !sender.sending && sender.result == null,
         modifier = modifier,
@@ -693,25 +719,45 @@ private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier, enab
 }
 
 @Composable
-private fun WriteError(
-    error: ApiError?,
+private fun ResendDialog(cancel: () -> Unit, confirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = cancel,
+        text = { Text("前の送信が届いているかもしれません。もう一度送りますか？", style = MaterialTheme.typography.bodyLarge) },
+        confirmButton = { TextButton(onClick = confirm) { Text("もう一度送る") } },
+        dismissButton = { TextButton(onClick = cancel) { Text("やめる") } },
+    )
+}
+
+@Composable
+private fun SendStatus(
+    sender: SendModel<*>,
     settings: () -> Unit,
     conflict: String = ApiError.CONFLICT.text,
     badRequest: String = ApiError.BAD_REQUEST.text,
     unknown: String = ApiError.UNKNOWN_RESULT.text,
 ) {
+    val error = sender.error
     if (error != null) {
         Text(
             when (error) {
                 ApiError.CONFLICT -> conflict
                 ApiError.BAD_REQUEST -> badRequest
-                ApiError.UNKNOWN_RESULT -> unknown
                 else -> error.text
             },
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.error,
         )
         if (error == ApiError.UNAUTHORIZED) TextButton(onClick = settings) { Text("設定を開く") }
+    }
+    if (sender.deliveryUncertain) {
+        Text(
+            unknown,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            color = MaterialTheme.colorScheme.error,
+        )
+        TextButton(onClick = sender::markAsSent, enabled = !sender.sending) {
+            Text("送信済みとして閉じる")
+        }
     }
 }
 

@@ -156,13 +156,9 @@ private fun RemoteApp(store: ConnectionStore = viewModel()) {
             val (bot) = entry.toRoute<ChatsRoute>()
             val refreshChats by entry.savedStateHandle.getStateFlow(RefreshChats, false).collectAsState()
             if (api != null) {
-                val sender = newChatSender(entry, api, bot)
                 ChatsScreen(
                     api, bot, back, openSettings, refreshChats,
-                    { refreshed ->
-                        if (refreshed && sender.needsChatListRefresh) sender.markChatListRefreshed()
-                        entry.savedStateHandle[RefreshChats] = false
-                    },
+                    { entry.savedStateHandle[RefreshChats] = false },
                     { nav.navigate(NewChatRoute(bot)) },
                     { openConversation(bot, it.id, it.displayTitle) },
                 )
