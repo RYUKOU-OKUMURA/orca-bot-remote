@@ -7,6 +7,7 @@ Mac mini と Android を同じ tailnet に接続します。Mac mini では Orca
 リポジトリのルートで実行します。
 
 ```sh
+(cd server && npm ci --omit=dev)
 server/launchd/install.sh --dry-run
 server/launchd/install.sh
 ```
