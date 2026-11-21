@@ -7,6 +7,7 @@ case "$*" in
         result='{"bots":[{"id":"main","name":"メインBot","specialty":"総合","paused":false,"agent":"codex"},{"id":"other","name":"専門Bot","paused":true}]}'
         ;;
     'bot chats --bot=メインBot --json')
+        if [ -f "$0.fail-chats" ]; then exit 1; fi
         result='{"chats":[{"id":"old","home":false,"lastActivityAt":100},{"id":"closed","closed":true,"lastActivityAt":400},{"id":"new","title":"会話","home":true,"lastActivityAt":300,"lastAsked":"質問","lastSaid":"回答","self":true},{"id":"no-time","home":false}]}'
         ;;
     'bot chats --bot=メインBot --all --json')

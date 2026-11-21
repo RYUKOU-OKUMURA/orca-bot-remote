@@ -112,7 +112,7 @@ async function assertProcessesStopped(pids: number[]) {
   }
 }
 
-test('Bot 一覧は判断待ちの全ページを集計する', async t => {
+test('Bot 一覧は判断待ちの全ページ、ID が一致するマスコット、最新の開いたチャットを返す', async t => {
   const testHome = mkdtempSync(join(tokenDir, 'home-'));
   const home = process.env.HOME;
   process.env.HOME = testHome;
@@ -139,6 +139,18 @@ test('Bot 一覧は判断待ちの全ページを集計する', async t => {
   }
   expected.bots[0].avatar = 'mascot:A1';
   assert.deepEqual(await get('/api/bots'), expected);
+});
+
+test('最新のチャットを取得できなくても Bot と判断待ちの件数は返す', async t => {
+  const { bin } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.fail-chats`, '');
+  const get = await openApi(t, undefined, bin);
+  const { bots: [main] } = await get('/api/bots');
+  assert.equal(main.id, 'main');
+  assert.equal(main.needsYou, 2);
+  assert.equal(main.lastActivityAt, null);
+  assert.equal(main.lastSaid, null);
+  await get(chats, 502);
 });
 
 test('チャット一覧は閉じたチャットを除き新しい順で返す', async t => {
