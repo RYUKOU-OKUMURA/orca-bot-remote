@@ -1,5 +1,6 @@
 package dev.okumura.orcaremote
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -343,27 +344,33 @@ internal fun ConversationScreen(
 
 @Composable
 private fun MessageBubble(message: Entry.Message) {
-    val user = message.role == "user"
+    val presentation = remember(message) { presentMessage(message.role, message.text) }
+    val owner = presentation.kind == MessageKind.OWNER
     val colors = MaterialTheme.colorScheme
     Box(Modifier.fillMaxWidth()) {
         Surface(
-            modifier = Modifier.align(if (user) Alignment.CenterEnd else Alignment.CenterStart)
+            modifier = Modifier.align(if (owner) Alignment.CenterEnd else Alignment.CenterStart)
                 .fillMaxWidth(0.88f),
             shape = MaterialTheme.shapes.large,
-            color = if (user) colors.primaryContainer else colors.surfaceContainer,
-            contentColor = if (user) colors.onPrimaryContainer else colors.onSurface,
+            color = when (presentation.kind) {
+                MessageKind.OWNER -> colors.primaryContainer
+                MessageKind.MAIL -> colors.surface
+                MessageKind.OTHER -> colors.surfaceContainer
+            },
+            contentColor = if (owner) colors.onPrimaryContainer else colors.onSurface,
+            border = if (presentation.kind == MessageKind.MAIL) BorderStroke(1.dp, colors.outlineVariant) else null,
         ) {
             Column(
                 Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                val speaker = when (message.role) {
-                    "user" -> "あなた"
-                    "assistant" -> "Bot"
-                    else -> message.role
+                Text(presentation.heading, style = MaterialTheme.typography.labelLarge)
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        presentation.subject?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+                        Text(presentation.body)
+                    }
                 }
-                Text(speaker, style = MaterialTheme.typography.labelLarge)
-                SelectionContainer { Text(message.text) }
             }
         }
     }
