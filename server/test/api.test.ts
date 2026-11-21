@@ -175,6 +175,22 @@ test('最新チャットの応答形式が不正なら Bot 一覧のプレビュ
   await get(chats, 502);
 });
 
+test('安全な整数でない時刻は Bot 一覧のプレビューだけを空にする', async t => {
+  const { bin } = recordOrcaCalls(t);
+  const get = await openApi(t, undefined, bin);
+  for (const lastActivityAt of [1700000000123.5, 1e20]) {
+    const latest = { id: 'new', home: true, lastActivityAt, lastSaid: '回答' };
+    writeFileSync(`${bin}.chats-result`, JSON.stringify({ chats: [latest] }));
+    const { bots: [main] } = await get('/api/bots');
+    assert.equal(main.id, 'main');
+    assert.equal(main.lastActivityAt, null);
+    assert.equal(main.lastSaid, null);
+    const { chats: [chat] } = await get(chats);
+    assert.equal(chat.lastActivityAt, lastActivityAt);
+    assert.equal(chat.lastSaid, latest.lastSaid);
+  }
+});
+
 test('チャット一覧は閉じたチャットを除き新しい順で返す', async t => {
   const get = await openApi(t);
   assert.deepEqual(await get(`/api/bots/${bot}/chats`), { chats: [

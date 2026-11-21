@@ -162,7 +162,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     if (!Array.isArray(chats) || !chats.every(chat =>
       chat && typeof chat === 'object' && !Array.isArray(chat) &&
       (chat.closed == null || typeof chat.closed === 'boolean') &&
-      (chat.lastActivityAt == null || Number.isFinite(chat.lastActivityAt)) &&
+      (chat.lastActivityAt == null || Number.isSafeInteger(chat.lastActivityAt)) &&
       (chat.lastSaid == null || typeof chat.lastSaid === 'string')
     )) return null;
     return openChats(chats)[0];
