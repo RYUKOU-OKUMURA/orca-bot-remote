@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { linkSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -29,9 +29,9 @@ async function pairingAddress() {
   return ip;
 }
 
-async function pair() {
+async function pair(force: boolean) {
   const dir = dirname(DEVICE_FILE);
-  if (lstatSync(DEVICE_FILE, { throwIfNoEntry: false })) {
+  if (!force && lstatSync(DEVICE_FILE, { throwIfNoEntry: false })) {
     console.log('Orca の端末資格情報は保存済みです。');
     return;
   }
@@ -40,7 +40,7 @@ async function pair() {
   mkdirSync(lock, { mode: 0o700 });
   let stage = '接続先を確認';
   try {
-    if (lstatSync(DEVICE_FILE, { throwIfNoEntry: false })) return;
+    if (!force && lstatSync(DEVICE_FILE, { throwIfNoEntry: false })) return;
     const address = await pairingAddress();
     stage = '招待を発行';
     const reply = JSON.parse(execFileSync(DEFAULT_ORCA_BIN, [
@@ -67,14 +67,15 @@ async function pair() {
     const device = { endpoint: invite.endpoint, publicKeyB64: invite.publicKeyB64, deviceToken };
 
     stage = '端末資格情報を保存';
-    const temporary = mkdtempSync(join(lock, 'save-'));
-    const file = join(temporary, 'device.json');
+    const file = join(lock, 'device.json');
     writeFileSync(file, JSON.stringify(device) + '\n', { flag: 'wx', mode: 0o600 });
-    linkSync(file, DEVICE_FILE);
 
     // First sign-in with the replacement retires the invitation.
     stage = '交換後の端末トークンで認証';
     await withOrcaDevice(device, AbortSignal.timeout(15_000), call => call('status.get'));
+    stage = '端末資格情報を保存';
+    if (force) renameSync(file, DEVICE_FILE);
+    else linkSync(file, DEVICE_FILE);
     console.log(`Orca の端末資格情報を保存しました（${address === '127.0.0.1' ? 'loopback' : 'Tailscale'}）。`);
   } catch {
     throw new Error(stage);
@@ -84,7 +85,13 @@ async function pair() {
 }
 
 try {
-  await pair();
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== '--force')) {
+    console.error('使い方  node server/src/pair.ts [--force]');
+    process.exitCode = 1;
+  } else {
+    await pair(args[0] === '--force');
+  }
 } catch (error) {
   // Use only stage names; subprocess errors and JSON parse errors can include secrets.
   const stages = ['接続先を確認', '招待を発行', '招待を確認', '端末トークンに交換',
