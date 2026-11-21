@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -463,7 +462,7 @@ internal fun ConversationScreen(
                         contentPadding = ListPadding,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        itemsIndexed(result.entries.asReversed(), key = { idx, _ -> result.entries.lastIndex - idx }) { _, entry ->
+                        items(result.entries.asReversed()) { entry ->
                             when (entry) {
                                 is Entry.Message -> MessageBubble(entry)
                                 is Entry.Tool -> Row(
