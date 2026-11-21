@@ -3,12 +3,15 @@ package dev.okumura.orcaremote
 import android.content.Intent
 import android.net.Uri
 import android.os.BadParcelableException
-import android.os.Build
+import androidx.core.content.IntentCompat
 import kotlinx.serialization.Serializable
 import java.net.URI
 
+// The server accepts up to 10,000 Unicode code points per message.
+internal const val MaxSharedText = 10_000
+
 @Serializable
-internal data class SharedDraft(val text: String, val uris: List<String>)
+internal data class SharedDraft(val text: String, val uris: List<String>, val textTruncated: Boolean = false)
 
 @Serializable
 internal data class ExternalOpen(val link: String? = null, val share: SharedDraft? = null, val coldStart: Boolean)
@@ -25,7 +28,11 @@ internal fun sharedDraft(action: String?, subject: String?, text: String?, strea
         title.isEmpty() || includesTitle -> body
         else -> "$title\n$body"
     }
-    return SharedDraft(combined, (streams + clips).distinct()).takeIf { it.text.isNotBlank() || it.uris.isNotEmpty() }
+    val truncated = combined.codePointCount(0, combined.length) > MaxSharedText
+    val bounded = if (truncated) combined.substring(0, combined.offsetByCodePoints(0, MaxSharedText)) else combined
+    val uris = (streams + clips).distinct()
+    if (combined.isBlank() && uris.isEmpty()) return null
+    return SharedDraft(bounded, uris, truncated)
 }
 
 internal fun memoVoice(link: String): Boolean? {
@@ -34,16 +41,13 @@ internal fun memoVoice(link: String): Boolean? {
     return uri.rawQuery.orEmpty().split('&').contains("voice=1")
 }
 
-@Suppress("DEPRECATION")
 internal fun Intent.externalOpen(coldStart: Boolean): ExternalOpen? {
     if (action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE) {
         return try {
             val streams = if (action == Intent.ACTION_SEND_MULTIPLE) {
-                if (Build.VERSION.SDK_INT >= 33) getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                else getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                IntentCompat.getParcelableArrayListExtra(this, Intent.EXTRA_STREAM, Uri::class.java)
             } else listOfNotNull(
-                if (Build.VERSION.SDK_INT >= 33) getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                else getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                IntentCompat.getParcelableExtra(this, Intent.EXTRA_STREAM, Uri::class.java)
             )
             val clips = clipData?.let { clip ->
                 (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri?.toString() }

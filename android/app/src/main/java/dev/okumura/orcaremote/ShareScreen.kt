@@ -21,6 +21,9 @@ internal fun ApplySharedDraft(destination: SavedStateHandle, sender: SendModel<S
         val shared = apiJson.decodeFromString<SharedDraft>(encoded)
         sender.chat?.add(resolver, shared.uris.map(Uri::parse))
         if (shared.text.isNotBlank()) sender.draft = listOf(sender.draft, shared.text).filter(String::isNotBlank).joinToString("\n")
+        if (shared.textTruncated) sender.chat?.let { chat ->
+            chat.notice = listOfNotNull(chat.notice, "共有した文章は先頭の10,000文字まで取り込みました。送信前に内容を確認してください").joinToString("\n")
+        }
         destination.remove<String>(SharedDraftKey)
     }
 }
