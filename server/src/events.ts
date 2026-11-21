@@ -12,6 +12,10 @@ function event(name: string, data: object) {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+function writeFrame(client: ServerResponse, frame: string) {
+  if (!client.write(frame)) client.destroy(); // Bound queued data for a stalled reader.
+}
+
 export function createEvents(orcaBin: string, summaryId: string | undefined, readTimeoutMs: number,
   pollIntervalMs = 10_000, keepaliveIntervalMs = 25_000) {
   const clients = new Set<ServerResponse>();
@@ -29,9 +33,7 @@ export function createEvents(orcaBin: string, summaryId: string | undefined, rea
   }
 
   function broadcast(frame: string) {
-    for (const client of clients) {
-      if (!client.write(frame)) client.destroy(); // Bound queued data for a stalled reader.
-    }
+    for (const client of clients) writeFrame(client, frame);
   }
 
   async function poll(previous: Snapshot) {
@@ -63,11 +65,6 @@ export function createEvents(orcaBin: string, summaryId: string | undefined, rea
   return {
     subscribe(response: ServerResponse) {
       if (clients.size >= 8) return false;
-      clients.add(response);
-      response.once('close', () => {
-        clients.delete(response);
-        if (!clients.size) stop();
-      });
       response.setTimeout(0);
       response.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
@@ -75,7 +72,13 @@ export function createEvents(orcaBin: string, summaryId: string | undefined, rea
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no'
       });
-      response.write(event('ready', { at: Date.now() }));
+      writeFrame(response, event('ready', { at: Date.now() }));
+      if (response.destroyed) return true;
+      clients.add(response);
+      response.once('close', () => {
+        clients.delete(response);
+        if (!clients.size) stop();
+      });
       if (clients.size === 1) {
         ping = setInterval(broadcast, keepaliveIntervalMs, ': ping\n\n');
         void poll({});

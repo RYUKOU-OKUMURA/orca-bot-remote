@@ -333,17 +333,24 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     showItem,
     async notificationRows() {
       const bots = await listBots();
-      // The same item pages supply both the item digest and each bot's needsYou count.
-      const [lists, details] = await Promise.all([
-        Promise.all(bots.map(needsYou)),
-        Promise.all([Promise.all(bots.map(bot => latestChat(bot, true))), activeWorkByBot(true)]).catch(() => null)
-      ]);
+      // Two serial reads across the bots leave room for foreground requests even while summary uses a third slot.
+      async function readEachBot<T>(readBot: (bot: Bot) => Promise<T>) {
+        const results: T[] = [];
+        for (const bot of bots) results.push(await readBot(bot));
+        return results;
+      }
+      async function detailsByBot() {
+        const activity = await activeWorkByBot(true);
+        const chats = await readEachBot(bot => latestChat(bot, true));
+        return { activity, chats };
+      }
+      const [lists, details] = await Promise.all([readEachBot(needsYou), detailsByBot().catch(() => null)]);
       return {
         items: lists.flatMap((items, i) => items.map(item =>
           [bots[i].name, item.number, item.status, item.lastActivityAt ?? null])),
         bots: details && bots.map((bot, i) => {
-          const chat = details[0][i];
-          const work = details[1].get(bot.name);
+          const chat = details.chats[i];
+          const work = details.activity.get(bot.name);
           return [bot.id, chat?.lastActivityAt ?? null, chat?.lastSaid ?? null, lists[i].length,
             !!(work?.chatIds.size || work?.workers.length)];
         })

@@ -84,6 +84,49 @@ test('ready and ping use SSE framing and outlive the ordinary request deadline',
   assert.ok(frames.slice(1).every(frame => frame === ': ping'));
 });
 
+test('a six-bot poll uses at most three CLI slots and a foreground item read can still finish', async t => {
+  const { connect, bin, calls, url } = await fixture(t);
+  const bots = Array.from({ length: 6 }, (_, i) => ({ id: String(i), name: `bot${i}` }));
+  writeFileSync(bin, `#!/bin/sh
+printf '+ %s\\n' "$*" >> "$0.calls"
+trap 'printf "%s\\n" "- $*" >> "$0.calls"' 0
+case "$*" in
+  'bot list --json') result='${JSON.stringify({ bots })}' ;;
+  'worktree ps --json') result='{"worktrees":[]}' ;;
+  *' --all '*) result='{"items":[{"uid":"item","number":7}]}' ;;
+  'bot item show --id=item --json') result='{"item":{"number":7,"title":"fixture","owner":{"botId":"0"}}}' ;;
+  *)
+    while [ ! -f "$0.release" ]; do sleep 0.02; done
+    case "$1 $2" in
+      'bot item') result='{"items":[]}' ;;
+      'bot chats') result='{"chats":[]}' ;;
+      'automations runs') result='{"runs":[]}' ;;
+      *) exit 1 ;;
+    esac ;;
+esac
+printf '{"ok":true,"result":%s}\\n' "$result"
+`);
+  await connect();
+  await until(() => calls().includes('+ bot item list'));
+  const response = await fetch(new URL('/api/items/bot0/7', url), { headers, signal: AbortSignal.timeout(2000) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).title, 'fixture');
+  writeFileSync(bin + '.release', '');
+  await until(() => calls().split('+ automations runs').length > 2);
+
+  const log = calls();
+  for (const bot of bots) {
+    assert.ok(log.includes(`- bot item list --bot=${bot.name} --status`));
+    assert.ok(log.includes(`- bot chats --bot=${bot.name} --json`));
+  }
+  let active = 0;
+  for (const line of log.trimEnd().split('\n')) {
+    if (line.includes(' --all ') || line.includes('bot item show')) continue; // Foreground item read.
+    active += line.startsWith('+') ? 1 : -1;
+    assert.ok(active <= 3, `poll occupied ${active} CLI slots at ${line}`);
+  }
+});
+
 test('one poller broadcasts only changed fields and retains good values across CLI failures', async t => {
   const { connect, bin, calls } = await fixture(t);
   const first = await connect();
