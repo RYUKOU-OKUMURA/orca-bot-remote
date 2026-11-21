@@ -1,8 +1,10 @@
-# Orca Bot Remote API v1
+# Orca Bot Remote API
 
-Phase 1 は読み取り専用です。ベース URL は `http://<Mac mini の Tailscale IP または MagicDNS 名 mac-mini>:8787` です。IPv6 のアドレスを URL に直接書く場合は角括弧で囲みます。
+ベース URL は `http://<Mac mini の Tailscale IP または MagicDNS 名 mac-mini>:8787` です。IPv6 のアドレスを URL に直接書く場合は角括弧で囲みます。
 
 全エンドポイントで `Authorization: Bearer <token>` を送ります。応答の Content-Type は `application/json; charset=utf-8` です。以下の `?` は JSON の `null` を許す値を表します。時刻は Unix epoch ミリ秒の数値です。
+
+## v1 読み取り
 
 | メソッドとパス | 応答 |
 | --- | --- |
@@ -25,8 +27,30 @@ Phase 1 は読み取り専用です。ベース URL は `http://<Mac mini の Ta
 | --- | --- | --- |
 | 401 | `{"error":"unauthorized"}` | Bearer トークンが無い、または一致しない |
 | 404 | `{"error":"not_found","message":"対象が見つかりません。"}` | 未知のパス、存在しないリソース、または形式が不正なパス引数 |
-| 405 | `{"error":"bad_request","message":"GET のみ使用できます。"}` | 既知のパスに GET 以外を送った場合。`Allow: GET` が付きます |
+| 405 | `{"error":"bad_request","message":"…"}` | 既知のパスに許可されていないメソッドを送った場合。`Allow` で使用できるメソッドを返します |
 | 502 | `{"error":"orca_failed","message":"Orca の読み取りに失敗しました。"}` | Orca の起動失敗、個別の CLI 呼び出しのタイムアウト、無効な応答、その他の CLI エラー |
 | 502 | `{"error":"orca_failed","message":"Orca の読み取りが制限時間内に終わりませんでした。"}` | リクエスト全体の処理が55秒の期限に達した場合。実行中の CLI を停止します |
 
 認証はパスとメソッドの判定より先に行います。
+
+## v2 書き込み
+
+Bearer トークンに加え、`Content-Type: application/json` を指定します。本文は最大 64 KiB です。チャットの `text` は前後の空白を除いて 1〜10000 文字です。判断待ちへの回答は空白以外の文字を含み、前後の空白も含めて最大 8000 UTF-16 コード単位です。Orca には入力された文字列を渡します。
+
+| メソッドとパス | 本文 | 成功応答 |
+| --- | --- | --- |
+| `POST /api/bots/{botName}/chats` | `{"text":string}` | `201 {"chatId":string}`。新規チャットを開いて本人として入力します。Orca が開いている空のチャットを再利用する場合があります |
+| `POST /api/bots/{botName}/chats/{chatId}/messages` | `{"text":string}` | `202 {"ok":true}`。指定した Bot のチャットに本人として入力します |
+| `POST /api/items/{botName}/{number}/answer` | `{"text":string}` | `200 {"ok":true}`。判断待ちに本人として回答します。選択肢ボタンの場合はラベルをそのまま指定します |
+
+| HTTP | JSON | 条件 |
+| --- | --- | --- |
+| 400 | `{"error":"bad_request","message":"…"}` | Content-Type、本文のサイズ、JSON、または `text` が無効 |
+| 409 | `{"error":"conflict","message":"…"}` | チャットが閉じている、または項目が判断待ちではない |
+| 502 | `{"error":"orca_failed","message":"…"}` | 接続できない、Orca が拒否したなど、送信に失敗したことが確認できる |
+| 502 | `{"error":"unknown_result","message":"送れたか確認できませんでした。会話を更新して確かめてください。"}` | 送信後に応答が来ない、接続が切れたなど、結果を確認できない |
+| 503 | `{"error":"write_unavailable","message":"Mac mini の書き込み設定が済んでいません。"}` | ペアリング資格情報が無い、または無効 |
+
+チャット一覧とメッセージのパスは `Allow: GET, POST`、回答のパスは `Allow: POST`、それ以外の既存パスは `Allow: GET` です。Bot、チャット、項目の照合は v1 と同じです。
+
+サーバーとアプリは書き込みを自動で再送しません。`unknown_result` のときはアプリで応答の文言を表示し、会話を更新して結果を確認します。

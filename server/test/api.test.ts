@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.ts';
 import { createApi } from '../src/http.ts';
 import { createOrca, OrcaError } from '../src/orca.ts';
+import { createOrcaWrite, OrcaWriteError, type OrcaWrite } from '../src/orca-write.ts';
 
 const orcaBin = fileURLToPath(new URL('./fixtures/orca', import.meta.url));
 const token = 'test-token';
@@ -22,6 +23,10 @@ const other = encodeURIComponent('専門Bot');
 const chat = '12345678-abcd-1234-abcd-123456789abc';
 const unrelatedChat = '00000000-0000-0000-0000-000000000000';
 const messages = `/api/bots/${bot}/chats/${chat}/messages`;
+const chats = `/api/bots/${bot}/chats`;
+const openChat = 'abcdef00-abcd-1234-abcd-123456789abc';
+const openMessages = `/api/bots/${other}/chats/${openChat}/messages`;
+const answer = `/api/items/${bot}/7/answer`;
 
 let tokenDir: string;
 before(() => {
@@ -39,11 +44,12 @@ function recordOrcaCalls(t: TestContext) {
   return { bin, calls: () => readFileSync(`${bin}.calls`, 'utf8').trim().split('\n') };
 }
 
-async function listenApi(t: TestContext, summaryId?: string, bin = orcaBin, requestTimeoutMs?: number) {
-  const server = createApi(readConfig({
+async function listenApi(t: TestContext, summaryId?: string, bin = orcaBin, requestTimeoutMs?: number, write?: OrcaWrite) {
+  const config = readConfig({
     HOST: '100.113.115.59', TOKEN_FILE: join(tokenDir, 'token'),
     ORCA_BIN: bin, SUMMARY_AUTOMATION_ID: summaryId
-  }), requestTimeoutMs);
+  });
+  const server = createApi({ ...config, write }, requestTimeoutMs);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
@@ -389,4 +395,180 @@ test('Orca CLI の失敗時は CLI の出力をレスポンス本文にもログ
   for (const call of [...log.mock.calls, ...error.mock.calls]) {
     assert.doesNotMatch(call.arguments.map(String).join(' '), /LEAK-CANARY/);
   }
+});
+
+function fakeWrite(calls: string[][], failure?: OrcaWriteError['code']): OrcaWrite {
+  async function record(method: string, id: string, text: string) {
+    calls.push([method, id, text]);
+    if (failure) throw new OrcaWriteError(failure);
+  }
+  return {
+    async start(id, text) {
+      await record('start', id, text);
+      return openChat;
+    },
+    send: (id, text) => record('send', id, text),
+    answer: (uid, text) => record('answer', uid, text)
+  };
+}
+
+async function writeApi(t: TestContext, write: OrcaWrite, bin = orcaBin, timeout?: number) {
+  const server = await listenApi(t, undefined, bin, timeout, write);
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return (path: string, body: BodyInit | null = '{"text":"進める"}', method = 'POST', contentType = 'application/json', authenticated = true) =>
+    fetch(base + path, {
+      method, body, headers: {
+        'Content-Type': contentType, ...(authenticated ? { Authorization: `Bearer ${token}` } : {})
+      }
+    });
+}
+
+test('書き込みは Bot ID、開いているチャット ID、対象項目の UID で実行する', async t => {
+  const calls: string[][] = [];
+  const log = t.mock.method(console, 'log', () => {});
+  const { bin, calls: cliCalls } = recordOrcaCalls(t);
+  const post = await writeApi(t, fakeWrite(calls), bin);
+  const created = await post(chats, '{"text":"書き込み本文-canary"}');
+  const sent = await post(openMessages, '{"text":"  つづき  "}');
+  const answered = await post(answer);
+  assert.deepEqual([created.status, sent.status, answered.status], [201, 202, 200]);
+  assert.deepEqual(await created.json(), { chatId: openChat });
+  assert.deepEqual(await sent.json(), { ok: true });
+  assert.deepEqual(await answered.json(), { ok: true });
+  assert.deepEqual(calls, [
+    ['start', 'main', '書き込み本文-canary'], ['send', openChat, '  つづき  '], ['answer', 'uid-7', '進める']
+  ]);
+  assert.deepEqual(cliCalls().slice(-4), [
+    'bot list --json', 'bot item list --bot=メインBot --all --limit 100 --json',
+    'bot item list --bot=メインBot --all --limit 100 --cursor 400:1 --json', 'bot item show --id=uid-7 --json'
+  ]);
+  assert.deepEqual(log.mock.calls.map(call => call.arguments[0].replace(/ \d+ms$/, '')), [
+    '"/api/bots/:bot/chats" 201', '"/api/bots/:bot/chats/:chat/messages" 202', '"/api/items/:bot/:number/answer" 200'
+  ]);
+});
+
+test('書き込み本文は JSON で、最大 64 KiB、空白を除いて 1〜10000 文字', async t => {
+  const calls: string[][] = [];
+  const post = await writeApi(t, fakeWrite(calls));
+  for (const body of [
+    'invalid', 'null', '{}', '{"text":1}', '{"text":"  "}', JSON.stringify({ text: '界'.repeat(10_001) }),
+    JSON.stringify({ text: 'x', padding: ' '.repeat(64 * 1024) }),
+    new Blob([new Uint8Array([123, 0xff, 125])])
+  ]) {
+    const response = await post(chats, body);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'bad_request');
+  }
+  const wrongType = await post(chats, '{"text":"入力"}', 'POST', 'text/plain');
+  assert.equal(wrongType.status, 400);
+  const text = '😀'.repeat(10_000);
+  const prefix = JSON.stringify({ text });
+  const response = await post(chats, prefix + ' '.repeat(65536 - Buffer.byteLength(prefix)), 'POST', 'application/json; charset=utf-8');
+  assert.equal(response.status, 201);
+  assert.deepEqual(calls, [['start', 'main', text]]);
+});
+
+test('chunked の本文も 64 KiB を超えた時点で 400 を返す', async t => {
+  const calls: string[][] = [];
+  const server = await listenApi(t, undefined, orcaBin, undefined, fakeWrite(calls));
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    const client = request({
+      hostname: '127.0.0.1', port: (server.address() as AddressInfo).port,
+      method: 'POST', path: chats, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+    }, response => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    client.on('error', reject);
+    client.write(' '.repeat(32768));
+    client.write(' '.repeat(32769));
+    client.end();
+  });
+  assert.equal(status, 400);
+  assert.deepEqual(calls, []);
+});
+
+test('判断待ちへの回答は前後の空白を含めて最大8000 UTF-16コード単位', async t => {
+  const calls: string[][] = [];
+  const post = await writeApi(t, fakeWrite(calls));
+  const text = '😀'.repeat(4000);
+  const response = await post(answer, JSON.stringify({ text: ` ${text}` }));
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, 'bad_request');
+  assert.equal((await post(answer, JSON.stringify({ text }))).status, 200);
+  assert.deepEqual(calls, [['answer', 'uid-7', text]]);
+});
+
+test('書き込みも認証を先に確認し、未知の対象、閉じたチャット、回答済み項目を拒否する', async t => {
+  const calls: string[][] = [];
+  const post = await writeApi(t, fakeWrite(calls));
+  assert.equal((await post(chats, null, 'POST', 'application/json', false)).status, 401);
+  for (const path of ['/api/bots/unknown/chats', messages.replace(bot, other), `/api/items/${other}/7/answer`,
+    `/api/items/${bot}/0/answer`]) {
+    const response = await post(path);
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).error, 'not_found');
+  }
+  for (const path of [messages, `/api/items/${bot}/1/answer`]) {
+    const response = await post(path);
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error, 'conflict');
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('書き込みを追加したルートの 405 は使用できるメソッドを返す', async t => {
+  const calls: string[][] = [];
+  const post = await writeApi(t, fakeWrite(calls));
+  for (const [path, method, allow] of [
+    [answer, 'GET', 'POST'], [chats, 'PATCH', 'GET, POST'], [openMessages, 'PUT', 'GET, POST'],
+    ['/api/summary', 'POST', 'GET']
+  ]) {
+    const response = await post(path, null, method);
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get('allow'), allow);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('ペアリング資格情報がない環境でも読み取れ、書き込みは 503', async t => {
+  const post = await writeApi(t, createOrcaWrite(join(tokenDir, 'missing-device')));
+  assert.equal((await post(chats, null, 'GET')).status, 200);
+  const response = await post(chats);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    error: 'write_unavailable', message: 'Mac mini の書き込み設定が済んでいません。'
+  });
+});
+
+test('書き込みの拒否と送信結果が不明な場合を区別して再送しない', async t => {
+  for (const code of ['orca_failed', 'unknown_result'] as const) {
+    const calls: string[][] = [];
+    const post = await writeApi(t, fakeWrite(calls, code));
+    const response = await post(openMessages);
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.error, code);
+    if (code === 'unknown_result') {
+      assert.equal(body.message, '送れたか確認できませんでした。会話を更新して確かめてください。');
+    }
+    assert.deepEqual(calls, [['send', openChat, '進める']]);
+  }
+});
+
+test('HTTP の期限で送信後の結果不明を読み取りタイムアウトに置き換えない', async t => {
+  const calls: string[][] = [];
+  const write: OrcaWrite = {
+    ...fakeWrite(calls),
+    async start(id, text, signal) {
+      calls.push(['start', id, text]);
+      if (!signal.aborted) await once(signal, 'abort');
+      throw new OrcaWriteError('unknown_result');
+    }
+  };
+  const post = await writeApi(t, write, orcaBin, 250);
+  const response = await post(chats);
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error, 'unknown_result');
+  assert.deepEqual(calls, [['start', 'main', '進める']]);
 });
