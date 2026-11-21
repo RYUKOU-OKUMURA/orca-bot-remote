@@ -21,14 +21,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
-import okio.ByteString.Companion.encodeUtf8
 
 private const val RefreshBoard = "dev.okumura.orcaremote.REFRESH_BOARD"
 
 private fun Context.boardIds() = AppWidgetManager.getInstance(this)
     .getAppWidgetIds(ComponentName(this, SecretaryBoardWidgetProvider::class.java))
 
-internal fun Connection.boardCacheKey() = "board:" + ("${url}\n$token").encodeUtf8().sha256().hex()
+// Widget removal can arrive while a fetch is in flight. Check placement again at the write.
+@Synchronized
+private fun Context.replaceBoardCache(source: Connection?, json: String?) {
+    val prefs = connectionPreferences()
+    if (source != null && !source.matches(prefs.savedConnection())) return
+    val keep = if (json != null && boardIds().isNotEmpty()) source?.boardCacheKey() else null
+    val editor = prefs.edit()
+    staleBoardKeys(prefs.all.keys, keep).forEach(editor::remove)
+    if (keep != null) editor.putString(keep, json)
+    editor.apply()
+}
 
 internal fun Context.boardSnapshot(connection: Connection?): BoardSnapshot? =
     connection?.let { cachedBoard(connectionPreferences().getString(it.boardCacheKey(), null)) }
@@ -39,6 +48,8 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
     }
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = update(context)
+
+    override fun onDisabled(context: Context) = context.replaceBoardCache(null, null)
 
     private fun update(context: Context) {
         val pending = goAsync()
@@ -67,15 +78,13 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
 
         internal suspend fun refresh(context: Context) = refreshMutex.withLock {
             if (context.boardIds().isEmpty()) return@withLock
-            val prefs = context.connectionPreferences()
-            val connection = prefs.savedConnection()
+            val connection = context.connectionPreferences().savedConnection()
             if (connection != null) {
-                val key = connection.boardCacheKey()
                 try {
                     val snapshot = OrcaApi(connection).board()
-                    prefs.edit().putString(key, snapshot?.let { apiJson.encodeToString(it) }).apply()
+                    context.replaceBoardCache(connection, snapshot?.let { apiJson.encodeToString(it) })
                 } catch (failure: ApiFailure) {
-                    if (failure.error == ApiError.UNAUTHORIZED) prefs.edit().remove(key).apply()
+                    if (failure.error == ApiError.UNAUTHORIZED) context.replaceBoardCache(connection, null)
                 }
             }
             renderCached(context)

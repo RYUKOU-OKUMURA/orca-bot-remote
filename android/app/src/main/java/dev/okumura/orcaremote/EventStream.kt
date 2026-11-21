@@ -32,13 +32,22 @@ internal suspend fun readEvents(reader: BufferedReader, receive: suspend (Stream
 @Serializable private data class ReadyEvent(val at: Long)
 @Serializable private data class ChangeEvent(val items: Boolean, val summary: Boolean, val bots: Boolean, val at: Long, val board: Boolean = false)
 
-internal fun StreamEvent.triggersSync(): Boolean = try {
+internal enum class SyncTarget { NOTIFICATIONS, BOARD, BOTH }
+
+internal fun StreamEvent.syncTarget(): SyncTarget? = try {
     when (event) {
-        "ready" -> { apiJson.decodeFromString<ReadyEvent>(data); true }
-        "change" -> { apiJson.decodeFromString<ChangeEvent>(data); true }
-        else -> false
+        "ready" -> apiJson.decodeFromString<ReadyEvent>(data).let { SyncTarget.BOTH }
+        "change" -> with(apiJson.decodeFromString<ChangeEvent>(data)) {
+            when {
+                bots || (board && (items || summary)) -> SyncTarget.BOTH
+                board -> SyncTarget.BOARD
+                items || summary -> SyncTarget.NOTIFICATIONS
+                else -> null
+            }
+        }
+        else -> null
     }
-} catch (_: SerializationException) { false }
+} catch (_: SerializationException) { null }
 
 internal fun reconnectDelay(failures: Int) = when (failures) {
     0 -> 3_000L

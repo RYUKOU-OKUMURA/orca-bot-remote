@@ -18,19 +18,30 @@ class EventStreamTest {
         readEvents(stream.bufferedReader(), events::add)
         assertEquals(listOf("ready", "change"), events.map { it.event })
         assertTrue(events[1].data.contains('\n'))
-        assertTrue(events.all { it.triggersSync() })
+        assertEquals(listOf(SyncTarget.BOTH, SyncTarget.BOTH), events.map { it.syncTarget() })
     }
 
     @Test fun malformedAndUnknownEventsDoNotInterruptNextFrame() = runTest {
-        val sync = mutableListOf<Boolean>()
+        val sync = mutableListOf<SyncTarget?>()
         readEvents("event: change\ndata: not-json\n\nevent: change\ndata: {}\n\ndata: {}\n\nevent: ready\ndata: {\"at\":5}\n\n".reader().buffered()) {
-            sync += it.triggersSync()
+            sync += it.syncTarget()
         }
-        assertEquals(listOf(false, false, false, true), sync)
+        assertEquals(listOf(null, null, null, SyncTarget.BOTH), sync)
     }
 
-    @Test fun boardOnlyChangeTriggersSync() {
-        assertTrue(StreamEvent("change", """{"items":false,"summary":false,"bots":false,"board":true,"at":2}""").triggersSync())
+    @Test fun changeFlagsSelectOnlyAffectedSnapshots() {
+        fun change(items: Boolean = false, summary: Boolean = false, bots: Boolean = false, board: Boolean? = null): SyncTarget? {
+            val optionalBoard = board?.let { ""","board":$it""" }.orEmpty()
+            val data = """{"at":2,"items":$items,"summary":$summary,"bots":$bots$optionalBoard}"""
+            return StreamEvent("change", data).syncTarget()
+        }
+        assertEquals(SyncTarget.BOARD, change(board = true))
+        assertEquals(SyncTarget.NOTIFICATIONS, change(items = true, board = false))
+        assertEquals(SyncTarget.NOTIFICATIONS, change(summary = true))
+        assertEquals(SyncTarget.BOTH, change(bots = true))
+        assertEquals(SyncTarget.BOTH, change(items = true, board = true))
+        assertEquals(SyncTarget.BOTH, change(summary = true, board = true))
+        assertNull(change())
     }
 
     @Test fun reconnectBackoffIsCapped() {

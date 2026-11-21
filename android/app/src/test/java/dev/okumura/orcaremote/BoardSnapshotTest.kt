@@ -33,6 +33,12 @@ class BoardSnapshotTest {
         assertEquals(R.drawable.mascot_t1, rows[2].icon)
     }
 
+    @Test fun removesOnlyRetiredBoardKeysOrAllOnDisable() {
+        val keys = setOf("board:old", "board:current", "token", "url", "boardSettings")
+        assertEquals(listOf("board:old"), staleBoardKeys(keys, "board:current"))
+        assertEquals(listOf("board:old", "board:current"), staleBoardKeys(keys, null))
+    }
+
     @Test fun cacheKeysSeparateServerAndAccount() {
         fun key(server: String, token: String) = Connection.parse("https://$server", token)!!.boardCacheKey()
         assertNotEquals(key("a.test", "one"), key("b.test", "one"))

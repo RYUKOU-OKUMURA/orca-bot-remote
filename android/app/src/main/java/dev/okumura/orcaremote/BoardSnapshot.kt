@@ -2,6 +2,7 @@ package dev.okumura.orcaremote
 
 import java.net.URLEncoder
 import kotlinx.serialization.Serializable
+import okio.ByteString.Companion.encodeUtf8
 
 @Serializable
 internal data class BoardSnapshot(
@@ -62,6 +63,12 @@ internal fun BoardSnapshot.rows(): List<BoardRow> {
 }
 
 internal fun boardIcon(avatar: String?): Int = avatarDrawable(avatar) ?: R.drawable.mascot_a1
+
+private const val BoardKeyPrefix = "board:"
+
+internal fun Connection.boardCacheKey() = BoardKeyPrefix + ("${url}\n$token").encodeUtf8().sha256().hex()
+
+internal fun staleBoardKeys(keys: Set<String>, keep: String?) = keys.filter { it.startsWith(BoardKeyPrefix) && it != keep }
 
 internal fun cachedBoard(json: String?): BoardSnapshot? =
     json?.let { runCatching { apiJson.decodeFromString<BoardSnapshot>(it) }.getOrNull() }

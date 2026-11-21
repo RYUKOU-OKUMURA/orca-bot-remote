@@ -130,9 +130,9 @@ class RealtimeNotificationService : Service() {
                                 response.code == 401 || response.code == 404 -> End.STOP
                                 response.isSuccessful && response.body.contentType()?.subtype == "event-stream" -> {
                                     readEvents(response.body.charStream().buffered()) { event ->
-                                        if (event.triggersSync()) {
+                                        event.syncTarget()?.let { target ->
                                             failures = 0
-                                            NotificationSync.sync(this@RealtimeNotificationService)
+                                            NotificationSync.sync(this@RealtimeNotificationService, target)
                                         }
                                     }
                                     End.RETRY

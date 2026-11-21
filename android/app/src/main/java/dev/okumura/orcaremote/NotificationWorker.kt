@@ -60,18 +60,19 @@ internal object NotificationSync {
     // Serialize SSE and periodic snapshots without blocking settings changes during network I/O.
     private val syncMutex = Mutex()
 
-    suspend fun sync(context: Context) = withContext(Dispatchers.IO) {
-        syncMutex.withLock { checkChanges(context) }
+    suspend fun sync(context: Context, target: SyncTarget = SyncTarget.BOTH) = withContext(Dispatchers.IO) {
+        syncMutex.withLock { checkChanges(context, target) }
     }
 
-    private suspend fun checkChanges(context: Context) = coroutineScope {
+    private suspend fun checkChanges(context: Context, target: SyncTarget) = coroutineScope {
         val prefs = context.connectionPreferences()
         val (connection, connectionId) = notificationSettingsMutex.withLock {
             val saved = prefs.enabledConnection() ?: return@coroutineScope
             saved to prefs.getString(NotificationConnectionId, "")
         }
+        if (target != SyncTarget.NOTIFICATIONS) launch { SecretaryBoardWidgetProvider.refresh(context) }
+        if (target == SyncTarget.BOARD) return@coroutineScope
         createNotificationChannels(context)
-        launch { SecretaryBoardWidgetProvider.refresh(context) }
         val api = OrcaApi(connection)
         val itemsRequest = async { readOrNull { api.items().items } }
         val summaryRequest = async { readOrNull { api.summary() } }
