@@ -43,13 +43,13 @@ internal class ScreenModel<T>(private val fetch: suspend () -> T) : ViewModel() 
 @Serializable
 internal data class PendingMessage(val text: String, val attachments: List<String>)
 
-internal enum class PendingState { SENDING, FAILED, UNCERTAIN }
+internal enum class PendingState { SENDING, FAILED, UNCERTAIN, SENT }
 
-internal fun pendingState(sending: Boolean, error: Boolean, deliveryUncertain: Boolean, awaitingReload: Boolean): PendingState? = when {
-    sending || awaitingReload -> PendingState.SENDING
+internal fun pendingState(sending: Boolean, error: Boolean, deliveryUncertain: Boolean): PendingState = when {
+    sending -> PendingState.SENDING
     deliveryUncertain -> PendingState.UNCERTAIN
     error -> PendingState.FAILED
-    else -> null
+    else -> PendingState.SENT
 }
 
 internal class SendModel<T>(
@@ -83,6 +83,8 @@ internal class SendModel<T>(
         savedState.get<String>("pendingMessage")?.takeIf { showPendingMessage && deliveryUncertain }
             ?.let { apiJson.decodeFromString<PendingMessage>(it) }
     )
+        private set
+    var sentMessages by mutableStateOf(emptyList<PendingMessage>())
         private set
     var pendingAttachmentError by mutableStateOf<String?>(null)
         private set
@@ -119,6 +121,8 @@ internal class SendModel<T>(
         viewModelScope.launch {
             try {
                 result = (command ?: send)(text)
+                pendingMessage?.let { sentMessages = sentMessages + it }
+                pendingMessage = null
                 clearDraft()
             } catch (failure: AttachmentProblem) {
                 chat?.notice = failure.message
@@ -167,8 +171,13 @@ internal class SendModel<T>(
     }
 
     fun resultShown() {
-        pendingMessage = null
         result = null
+    }
+
+    suspend fun <History> loadHistory(fetch: suspend () -> History): History {
+        // A read already in progress may omit sends that succeeded after it began.
+        val confirmedCount = sentMessages.size
+        return fetch().also { sentMessages = sentMessages.drop(confirmedCount) }
     }
 }
 

@@ -3,7 +3,11 @@ package dev.okumura.orcaremote
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.SavedStateHandle
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -120,16 +124,15 @@ class SendModelTest {
     }
 
     @Test
-    fun pendingStatesDistinguishSendingFailedUncertainAndReloading() {
-        assertEquals(PendingState.SENDING, pendingState(true, false, true, false))
-        assertEquals(PendingState.FAILED, pendingState(false, true, false, false))
-        assertEquals(PendingState.UNCERTAIN, pendingState(false, true, true, false))
-        assertEquals(PendingState.SENDING, pendingState(false, false, false, true))
-        assertNull(pendingState(false, false, false, false))
+    fun pendingStatesDistinguishSendingFailedUncertainAndSent() {
+        assertEquals(PendingState.SENDING, pendingState(true, false, true))
+        assertEquals(PendingState.FAILED, pendingState(false, true, false))
+        assertEquals(PendingState.UNCERTAIN, pendingState(false, true, true))
+        assertEquals(PendingState.SENT, pendingState(false, false, false))
     }
 
     @Test
-    fun conversationKeepsSnapshotUntilTheSuccessfulReloadFinishes() {
+    fun sentSnapshotSurvivesFailedReloadAndClearsOnTheNextSuccess() = runBlocking {
         val sender = SendModel(state, chat, showPendingMessage = true) { "ok" }
         val snapshot = PendingMessage("確認", listOf(file.name))
         sender.submit(sender.draft)
@@ -138,9 +141,42 @@ class SendModelTest {
         main.scheduler.runCurrent()
         assertEquals("ok", sender.result)
         assertEquals("", sender.draft)
-        assertEquals(snapshot, sender.pendingMessage)
-        sender.resultShown()
         assertNull(sender.pendingMessage)
+        sender.resultShown()
+        assertNull(sender.result)
+        assertEquals(listOf(snapshot), sender.sentMessages)
+
+        var fail = true
+        val history = ScreenModel {
+            sender.loadHistory {
+                if (fail) throw ApiFailure(ApiError.CONNECTION)
+                "new history"
+            }
+        }
+        history.load()
+        assertEquals(ApiError.CONNECTION, history.error)
+        assertEquals(listOf(snapshot), sender.sentMessages)
+        fail = false
+        history.load()
+        assertEquals("new history", history.data)
+        assertTrue(sender.sentMessages.isEmpty())
+    }
+
+    @Test
+    fun historyReadDoesNotClearMessagesSentAfterItStarts() = runBlocking {
+        val sender = SendModel(state, chat, showPendingMessage = true) { "ok" }
+        sender.submit("先の送信")
+        main.scheduler.runCurrent()
+        sender.resultShown()
+
+        val response = CompletableDeferred<Unit>()
+        val read = launch(start = CoroutineStart.UNDISPATCHED) { sender.loadHistory { response.await() } }
+        sender.submit("次の送信")
+        main.scheduler.runCurrent()
+        sender.resultShown()
+        response.complete(Unit)
+        read.join()
+        assertEquals(listOf(PendingMessage("次の送信", emptyList())), sender.sentMessages)
     }
 
     @Test

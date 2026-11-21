@@ -428,7 +428,6 @@ internal fun ConversationScreen(
     back: () -> Unit,
     settings: () -> Unit,
 ) {
-    val model = screenModel { api.messages(bot, chatId) }
     val resolver = LocalContext.current.applicationContext.contentResolver
     val sender: SendModel<String> = viewModel {
         val state = createSavedStateHandle()
@@ -438,6 +437,7 @@ internal fun ConversationScreen(
             ""
         }
     }
+    val model = screenModel { sender.loadHistory { api.messages(bot, chatId) } }
     val commands: ScreenModel<ChatCommands> = viewModel(key = "commands") { ScreenModel { api.commands(bot, chatId) } }
     val ready = model.data != null
     LaunchedEffect(ready) { if (ready) commands.refresh() }
@@ -448,7 +448,7 @@ internal fun ConversationScreen(
     val pending = sender.pendingMessage
     val pendingStatus = pendingState(
         sender.sending, sender.error != null || sender.pendingAttachmentError != null,
-        sender.deliveryUncertain, sender.result != null,
+        sender.deliveryUncertain,
     )
     LaunchedEffect(pending, sender.sending) {
         if (pending != null && sender.sending) listState.requestScrollToItem(0)
@@ -460,9 +460,9 @@ internal fun ConversationScreen(
                 commands.refresh(afterCurrent = true)
                 scope.launch { snackbar.showSnackbar(result) }
             }
-            model.load(afterCurrent = true)
-            listState.requestScrollToItem(0)
             sender.resultShown()
+            model.refresh(afterCurrent = true)
+            listState.requestScrollToItem(0)
         }
     }
     BackHandler(sender.sending) {}
@@ -485,7 +485,7 @@ internal fun ConversationScreen(
     }) { modifier ->
         Column(modifier.imePadding()) {
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { result ->
-                if (result.entries.isEmpty() && (pending == null || pendingStatus == null)) {
+                if (result.entries.isEmpty() && sender.sentMessages.isEmpty() && pending == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("メッセージはまだありません")
                     }
@@ -497,20 +497,15 @@ internal fun ConversationScreen(
                         contentPadding = ListPadding,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        if (pending != null && pendingStatus != null) item(key = "pending-message") {
-                            val status = when (pendingStatus) {
-                                PendingState.SENDING -> "送信中…"
-                                PendingState.UNCERTAIN -> "送れたか確認できません"
-                                PendingState.FAILED -> "送れませんでした"
-                            }
+                        if (pending != null) item(key = "pending-message") {
                             val reason = if (pendingStatus == PendingState.FAILED) {
                                 sender.pendingAttachmentError ?: sender.error?.let(::conversationSendError)
                             } else null
-                            MessageBubble(
-                                MessagePresentation(MessageKind.OWNER, "あなた",
-                                    (listOf(pending.text).filter { it.isNotEmpty() } + pending.attachments).joinToString("\n")),
-                                status = listOfNotNull(status, reason).joinToString("\n"),
-                            )
+                            PendingBubble(pending, pendingStatus, reason)
+                        }
+                        items(sender.sentMessages.asReversed()) { message ->
+                            PendingBubble(message, PendingState.SENT,
+                                if (model.error != null) "会話の更新に失敗" else null)
                         }
                         items(result.entries.asReversed()) { entry ->
                             when (entry) {
@@ -558,6 +553,19 @@ internal fun ConversationScreen(
             }
         }
     }
+}
+
+@Composable
+private fun PendingBubble(message: PendingMessage, state: PendingState, reason: String?) {
+    val status = when (state) {
+        PendingState.SENDING -> "送信中…"
+        PendingState.UNCERTAIN -> "送れたか確認できません"
+        PendingState.FAILED -> "送れませんでした"
+        PendingState.SENT -> "送信済み"
+    }
+    val body = (listOf(message.text).filter { it.isNotEmpty() } + message.attachments).joinToString("\n")
+    MessageBubble(MessagePresentation(MessageKind.OWNER, "あなた", body),
+        status = listOfNotNull(status, reason).joinToString("\n"))
 }
 
 @Composable

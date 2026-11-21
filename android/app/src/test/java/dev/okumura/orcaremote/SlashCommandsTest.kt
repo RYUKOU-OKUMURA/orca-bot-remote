@@ -27,6 +27,16 @@ class SlashCommandsTest {
         }
     }
 
+    @Test fun textCommandMatchesFirstTokenEvenWithArguments() {
+        val catalog = ChatCommands(listOf(
+            SlashCommand("help", kind = "text"),
+            SlashCommand("model", kind = "option"),
+        ), emptyList())
+        for (text in listOf("/help", "/help foo", "/help\tfoo", "/help\nfoo")) assertTrue(catalog.isTextCommand(text))
+        for (text in listOf(" /help foo", "/helper foo", "/model foo", "see /help foo")) assertFalse(catalog.isTextCommand(text))
+        assertFalse((null as ChatCommands?).isTextCommand("/help foo"))
+    }
+
     @Test fun optionMatchesValueOrLabel() {
         val option = OptionDescriptor("gpt", listOf(OptionChoice("gpt", "GPT Example")))
         assertEquals("gpt", option.resolveValue("gpt"))

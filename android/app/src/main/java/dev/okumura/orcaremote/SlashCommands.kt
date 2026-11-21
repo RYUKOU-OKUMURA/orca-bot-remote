@@ -33,6 +33,11 @@ internal fun typedCommand(text: String): CommandInput? {
     }
 }
 
+internal fun ChatCommands?.isTextCommand(text: String): Boolean {
+    val token = text.takeWhile { !it.isWhitespace() }
+    return this?.commands.orEmpty().any { it.kind == "text" && token == "/" + it.name }
+}
+
 private fun ChatCommands?.option(name: String) = if (name == "model") this?.options?.model else this?.options?.effort
 
 internal fun OptionDescriptor?.resolveValue(argument: String): String? {
@@ -165,9 +170,7 @@ internal fun ColumnScope.ConversationInput(
             val standalone = chat.skills.isEmpty() && chat.attachments.isEmpty()
             val command = if (standalone || text == sender.lastCommand) typedCommand(text) else null
             if (command == null) {
-                val isTextCommand = standalone && catalog?.commands.orEmpty().any {
-                    it.kind == "text" && "/" + it.name == text.trimEnd()
-                }
+                val isTextCommand = standalone && catalog.isTextCommand(text)
                 guarded { sender.submit(text, it, showPending = !isTextCommand) }
             } else select(command)
         })
