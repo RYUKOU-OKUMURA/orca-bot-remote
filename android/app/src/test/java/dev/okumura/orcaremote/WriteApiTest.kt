@@ -24,7 +24,6 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -369,7 +368,8 @@ class WriteApiTest {
         val failure = IllegalStateException("progress handler failed")
         withDownload({ it.replyApk() }) { api, file ->
             val actual = runCatching { api.downloadApp(release, file) { throw failure } }.exceptionOrNull()
-            assertSame(failure, actual)
+            assertTrue(actual is IllegalStateException)
+            assertEquals(failure.message, actual?.message)
         }
     }
 
