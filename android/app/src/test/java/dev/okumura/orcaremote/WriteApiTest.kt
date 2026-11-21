@@ -1,5 +1,6 @@
 package dev.okumura.orcaremote
 
+import androidx.lifecycle.SavedStateHandle
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.EOFException
@@ -237,6 +238,40 @@ class WriteApiTest {
         }
         assertEquals(2, opens.get())
         assertEquals(2, calls.get())
+    }
+
+    @Test
+    fun onlyRejectedMessageDiscardsUploadReferencesForManualRetry() {
+        val uploads = AtomicInteger()
+        val messages = mutableListOf<String>()
+        val files = listOf(LocalAttachment("content://test/a", "a", null, 1))
+        val state = SavedStateHandle(mapOf("attachments" to apiJson.encodeToString(files)))
+        val draft = ChatDraft(state, AttachmentLimits.Conversation)
+        withServer({ exchange ->
+            val body = exchange.requestBody.bufferedReader().readText()
+            if (exchange.requestURI.path.endsWith("/attachments")) {
+                exchange.reply(201, """{"path":"/ref${uploads.incrementAndGet()}","kind":"file"}""")
+            } else {
+                messages += body
+                when (messages.size) {
+                    1 -> exchange.reply(503, "{}")
+                    2 -> exchange.reply(400, "{}")
+                    else -> exchange.reply(202, """{"ok":true}""")
+                }
+            }
+        }) { api ->
+            suspend fun send(chat: ChatDraft) = chat.sendMessage(api, "bot", "chat", "確認") { "a".byteInputStream() }
+            assertEquals(ApiError.WRITE_UNAVAILABLE, failureFrom { send(draft) })
+            assertEquals("/ref1", draft.attachments.single().uploaded?.path)
+            assertEquals(ApiError.BAD_REQUEST, failureFrom { send(draft) })
+            val restored = ChatDraft(state, AttachmentLimits.Conversation)
+            assertEquals(files, restored.attachments)
+            send(restored)
+        }
+        assertEquals(2, uploads.get())
+        assertEquals(3, messages.size)
+        assertEquals(messages[0], messages[1])
+        assertTrue(messages[2].contains("\"path\":\"/ref2\""))
     }
 
     private fun withServer(

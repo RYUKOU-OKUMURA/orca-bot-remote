@@ -434,10 +434,7 @@ internal fun ConversationScreen(
         val state = createSavedStateHandle()
         val chat = ChatDraft(state, AttachmentLimits.Conversation)
         SendModel(state, chat) { text ->
-            val refs = chat.uploadPending { file ->
-                api.uploadAttachment(bot, chatId, file.name, file.uploadType, file.size) { file.open(resolver) }
-            }
-            api.sendMessage(bot, chatId, text, chat.skills, refs)
+            chat.sendMessage(api, bot, chatId, text) { it.open(resolver) }
             ""
         }
     }

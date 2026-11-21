@@ -12,6 +12,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.util.Base64
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -45,6 +46,18 @@ internal data class LocalAttachment(
     val uri: String, val name: String, val mimeType: String?, val size: Long,
     val uploaded: AttachmentRef? = null,
 ) {
+    fun sanitized(): LocalAttachment {
+        val safeName = name.filterNot(Char::isISOControl).trim().ifEmpty { "添付ファイル" }
+        val safeMime = mimeType?.takeIf { it.length <= 256 && it.isNotBlank() && it.none(Char::isISOControl) }
+        if (safeName.length <= 256) return copy(name = safeName, mimeType = safeMime)
+
+        val dot = safeName.lastIndexOf('.')
+        val suffix = if (dot > 0 && safeName.length - dot in 2 until 256) safeName.substring(dot) else ""
+        val cut = 256 - suffix.length
+        val end = if (safeName[cut - 1].isHighSurrogate() && safeName[cut].isLowSurrogate()) cut - 1 else cut
+        return copy(name = safeName.take(end) + suffix, mimeType = safeMime)
+    }
+
     fun open(resolver: ContentResolver) = resolver.open(Uri.parse(uri))
     val uploadType get() = mimeType?.toMediaTypeOrNull()?.takeUnless { it.type == "multipart" }?.toString() ?: "application/octet-stream"
     val image get() = mimeType?.startsWith("image/", ignoreCase = true) == true ||
@@ -74,7 +87,9 @@ private suspend fun InputStream.copyLimited(limit: Long, chunk: (ByteArray, Int)
 }
 
 internal class ChatDraft(private val saved: SavedStateHandle, val limits: AttachmentLimits) {
-    var attachments by mutableStateOf(saved.get<String>("attachments")?.let { apiJson.decodeFromString<List<LocalAttachment>>(it) }.orEmpty())
+    var attachments by mutableStateOf(saved.get<String>("attachments")?.let {
+        apiJson.decodeFromString<List<LocalAttachment>>(it).map(LocalAttachment::sanitized)
+    }.orEmpty())
         private set
     var skills by mutableStateOf(saved.get<String>("skills")?.let { apiJson.decodeFromString<List<SkillRef>>(it) }.orEmpty())
         private set
@@ -134,8 +149,9 @@ internal class ChatDraft(private val saved: SavedStateHandle, val limits: Attach
                         }
                         val bytes = size ?: resolver.open(uri).use { it.copyLimited(minOf(limits.perFile, limits.total - total)) { _, _ -> } }
                         val displayName = name?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "添付ファイル"
-                        limits.error(attachments.size, total, bytes)?.let { throw AttachmentProblem("$displayName：$it") }
-                        LocalAttachment(uri.toString(), displayName, resolver.getType(uri), bytes)
+                        val item = LocalAttachment(uri.toString(), displayName, resolver.getType(uri), bytes).sanitized()
+                        limits.error(attachments.size, total, bytes)?.let { throw AttachmentProblem("${item.name}：$it") }
+                        item
                     }
                     update(attachments + file)
                 } catch (e: AttachmentProblem) {
@@ -168,6 +184,20 @@ internal class ChatDraft(private val saved: SavedStateHandle, val limits: Attach
         }
     }
 
+    suspend fun sendMessage(api: OrcaApi, bot: String, chatId: String, text: String, open: (LocalAttachment) -> InputStream) {
+        val refs = uploadPending { file ->
+            api.uploadAttachment(bot, chatId, file.name, file.uploadType, file.size) { open(file) }
+        }
+        try {
+            api.sendMessage(bot, chatId, text, skills, refs)
+        } catch (failure: ApiFailure) {
+            if (failure.error == ApiError.BAD_REQUEST && refs.isNotEmpty()) {
+                update(attachments.map { it.copy(uploaded = null) })
+            }
+            throw failure
+        }
+    }
+
     suspend fun inline(open: (LocalAttachment) -> InputStream): List<InlineAttachment> = withContext(Dispatchers.IO) {
         var total = 0L
         attachments.mapIndexed { index, file ->
@@ -189,8 +219,8 @@ internal class ChatDraft(private val saved: SavedStateHandle, val limits: Attach
 }
 
 internal suspend fun thumbnail(resolver: ContentResolver, file: LocalAttachment) = withContext(Dispatchers.IO) {
-    val uri = Uri.parse(file.uri)
     try {
+        val uri = Uri.parse(file.uri)
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true; inSampleSize = 1 }
         resolver.open(uri).use { BitmapFactory.decodeStream(it, null, options) }
         if (options.outWidth <= 0 || options.outHeight <= 0) return@withContext null
@@ -198,7 +228,9 @@ internal suspend fun thumbnail(resolver: ContentResolver, file: LocalAttachment)
         while (longest / options.inSampleSize > 256) options.inSampleSize *= 2
         options.inJustDecodeBounds = false
         resolver.open(uri).use { BitmapFactory.decodeStream(it, null, options) }
-    } catch (_: IOException) {
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
         null
     }
 }

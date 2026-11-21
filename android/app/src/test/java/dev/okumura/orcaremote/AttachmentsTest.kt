@@ -62,6 +62,26 @@ class AttachmentsTest {
         }
     }
 
+    @Test fun namesKeepExtensionAndWholeUtf16Characters() {
+        fun clean(name: String) = LocalAttachment("uri", name, null, 1).sanitized().name
+        assertEquals("図.png", clean(" 図\u0000\u0080.png "))
+        assertEquals("添付ファイル", clean("\u007f "))
+        assertEquals("a".repeat(252) + ".pdf", clean("a".repeat(254) + ".pdf"))
+        assertEquals("a".repeat(251) + ".png", clean("a".repeat(251) + "😀more.png"))
+        assertEquals("😀".repeat(128), clean("😀".repeat(129)))
+        assertEquals(256, clean("a." + "b".repeat(300)).length)
+    }
+
+    @Test fun inlineOmitsInvalidMimeTypesAndCleansRestoredNames() = runBlocking {
+        for (mime in listOf("text/plain", null, " ", "text/plain\n", "x".repeat(257))) {
+            val files = listOf(LocalAttachment("uri", "a\u0000.txt", mime, 1))
+            val state = SavedStateHandle(mapOf("attachments" to apiJson.encodeToString(files)))
+            val item = ChatDraft(state, AttachmentLimits.NewChat).inline { "a".byteInputStream() }.single()
+            assertEquals("a.txt", item.name)
+            assertEquals(mime.takeIf { it == "text/plain" }, item.mimeType)
+        }
+    }
+
     @Test fun sizesUseBinaryUnits() {
         assertEquals("1 B", fileSize(1))
         assertEquals("1023 B", fileSize(1023))
