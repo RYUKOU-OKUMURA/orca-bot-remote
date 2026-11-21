@@ -1,5 +1,6 @@
 package dev.okumura.orcaremote
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,21 +9,27 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -34,14 +41,22 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -137,7 +152,7 @@ private fun LoadError(
     error: ApiError,
     settings: () -> Unit,
     modifier: Modifier,
-    retry: () -> Unit = model::refresh,
+    retry: () -> Unit = { model.refresh() },
 ) {
     val retryWithPermission = withLocalNetworkPermission(onDenied = {}, onGranted = retry)
     Column(
@@ -162,6 +177,8 @@ internal fun HomeScreen(
     api: OrcaApi,
     showSuccess: Boolean,
     successShown: () -> Unit,
+    refreshCounts: Boolean,
+    countsRefreshStarted: () -> Unit,
     settings: () -> Unit,
     openBot: (String) -> Unit,
     openItems: () -> Unit,
@@ -176,6 +193,13 @@ internal fun HomeScreen(
         summary.refresh()
     }
     val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(refreshCounts) {
+        if (refreshCounts) {
+            bots.refresh(afterCurrent = true)
+            items.refresh(afterCurrent = true)
+            countsRefreshStarted()
+        }
+    }
     LaunchedEffect(showSuccess) {
         if (showSuccess) {
             snackbar.showSnackbar("接続できました。設定を保存しました")
@@ -269,22 +293,58 @@ internal fun ChatsScreen(
     bot: String,
     back: () -> Unit,
     settings: () -> Unit,
+    refreshChats: Boolean,
+    chatsRefreshStarted: () -> Unit,
+    openNewChat: () -> Unit,
     openChat: (Chat) -> Unit,
 ) {
     val model = screenModel { api.chats(bot) }
+    LaunchedEffect(refreshChats) {
+        if (refreshChats) {
+            model.refresh(afterCurrent = true)
+            chatsRefreshStarted()
+        }
+    }
     Page(bot, back, action = { RefreshAction(model) }) { modifier ->
-        DataContent(modifier, model, settings) { result ->
-            EntryList(empty = result.chats.isEmpty(), emptyText = "チャットはまだありません") {
-                items(result.chats.sortedByDescending { it.home }, key = { it.id }) { chat ->
-                    RowCard(
-                        title = chat.displayTitle,
-                        subtitle = chat.lastSaid?.takeIf { it.isNotBlank() } ?: chat.lastAsked,
-                        caption = relativeTime(chat.lastActivityAt),
-                        badge = "ホーム".takeIf { chat.home },
-                        onClick = { openChat(chat) },
-                    )
+        Column(modifier) {
+            Button(onClick = openNewChat, modifier = Modifier.fillMaxWidth().padding(ListPadding)) {
+                Text("新しく頼む")
+            }
+            DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings) { result ->
+                EntryList(empty = result.chats.isEmpty(), emptyText = "チャットはまだありません") {
+                    items(result.chats.sortedByDescending { it.home }, key = { it.id }) { chat ->
+                        RowCard(
+                            title = chat.displayTitle,
+                            subtitle = chat.lastSaid?.takeIf { it.isNotBlank() } ?: chat.lastAsked,
+                            caption = relativeTime(chat.lastActivityAt),
+                            badge = "ホーム".takeIf { chat.home },
+                            onClick = { openChat(chat) },
+                        )
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun NewChatScreen(
+    api: OrcaApi,
+    bot: String,
+    back: () -> Unit,
+    settings: () -> Unit,
+    openChat: (String) -> Unit,
+) {
+    val sender: SendModel<String> = viewModel { SendModel { api.startChat(bot, it) } }
+    val result = sender.result
+    LaunchedEffect(result) { if (result != null) openChat(result) }
+    BackHandler(sender.sending) {}
+    Page("新しく頼む", back = { if (!sender.sending) back() }) { modifier ->
+        DetailContent(modifier.imePadding()) {
+            Text(bot, style = MaterialTheme.typography.titleMedium)
+            DraftField(sender, "Bot に頼みたいこと", Modifier.fillMaxWidth(), minLines = 5)
+            SendButton(sender, Modifier.fillMaxWidth())
+            WriteError(sender.error, settings)
         }
     }
 }
@@ -299,6 +359,17 @@ internal fun ConversationScreen(
     settings: () -> Unit,
 ) {
     val model = screenModel { api.messages(bot, chatId) }
+    val sender: SendModel<Unit> = viewModel { SendModel { api.sendMessage(bot, chatId, it) } }
+    val listState = rememberLazyListState()
+    val result = sender.result
+    LaunchedEffect(result) {
+        if (result != null) {
+            model.load(afterCurrent = true)
+            listState.requestScrollToItem(0)
+            sender.resultShown()
+        }
+    }
+    BackHandler(sender.sending) {}
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val polling = shouldPoll(model.data?.state, model.error)
     LaunchedEffect(lifecycle, model, polling) {
@@ -310,33 +381,48 @@ internal fun ConversationScreen(
             }
         }
     }
-    Page(title, back, action = { RefreshAction(model) }) { modifier ->
-        DataContent(modifier, model, settings, keepDataOnError = true) { result ->
-            if (result.entries.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("メッセージはまだありません")
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    reverseLayout = true,
-                    contentPadding = ListPadding,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    items(result.entries.asReversed()) { entry ->
-                        when (entry) {
-                            is Entry.Message -> MessageBubble(entry)
-                            is Entry.Tool -> Text(
-                                "🔧 ${entry.name}",
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+    Page(title, back = { if (!sender.sending) back() }, action = { RefreshAction(model) }) { modifier ->
+        Column(modifier.imePadding()) {
+            DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { result ->
+                if (result.entries.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("メッセージはまだありません")
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        state = listState,
+                        reverseLayout = true,
+                        contentPadding = ListPadding,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        items(result.entries.asReversed()) { entry ->
+                            when (entry) {
+                                is Entry.Message -> MessageBubble(entry)
+                                is Entry.Tool -> Text(
+                                    "🔧 ${entry.name}",
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                     }
                 }
+            }
+            Column(Modifier.fillMaxWidth().padding(ListPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (model.data != null) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        DraftField(sender, "メッセージ", Modifier.weight(1f))
+                        SendButton(sender, Modifier.widthIn(min = 80.dp))
+                    }
+                }
+                WriteError(sender.error, settings, conflict = "このチャットは閉じているため送れません")
             }
         }
     }
@@ -381,11 +467,21 @@ internal fun ItemsScreen(
     api: OrcaApi,
     back: () -> Unit,
     settings: () -> Unit,
+    answered: Boolean,
+    answerShown: () -> Unit,
     openChat: (String, String, String) -> Unit,
     openItem: (PendingItem) -> Unit,
 ) {
     val model = screenModel { api.items() }
-    Page("判断待ち", back, action = { RefreshAction(model) }) { modifier ->
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(answered) {
+        if (answered) {
+            model.refresh(afterCurrent = true)
+            snackbar.showSnackbar("答えました")
+            answerShown()
+        }
+    }
+    Page("判断待ち", back, action = { RefreshAction(model) }, snackbar = snackbar) { modifier ->
         DataContent(modifier, model, settings) { result ->
             EntryList(empty = result.items.isEmpty(), emptyText = "判断待ちはありません") {
                 items(result.items, key = { "${it.bot}/${it.number}" }) { item ->
@@ -416,10 +512,35 @@ internal fun ItemScreen(
     back: () -> Unit,
     settings: () -> Unit,
     openChat: (String, String, String) -> Unit,
+    answered: () -> Unit,
 ) {
     val model = screenModel { api.item(bot, number) }
-    Page("判断待ちの詳細", back, action = { RefreshAction(model) }) { modifier ->
-        DataContent(modifier, model, settings) { item ->
+    val sender: SendModel<Unit> = viewModel {
+        SendModel(onFailure = {
+            if (it == ApiError.CONFLICT) model.load(afterCurrent = true)
+        }) { api.answer(bot, number, it) }
+    }
+    val result = sender.result
+    LaunchedEffect(result) { if (result != null) answered() }
+    var choice by rememberSaveable { mutableStateOf<String?>(null) }
+    val canAnswer = model.data?.status == "needs_you" && model.error == null
+    val focus = LocalFocusManager.current
+    if (canAnswer) choice?.let { label ->
+        AlertDialog(
+            onDismissRequest = { choice = null },
+            text = { Text("『${label}』と答えますか？", style = MaterialTheme.typography.bodyLarge) },
+            confirmButton = {
+                TextButton(onClick = {
+                    choice = null
+                    sender.submit(label)
+                }) { Text("はい") }
+            },
+            dismissButton = { TextButton(onClick = { choice = null }) { Text("キャンセル") } },
+        )
+    }
+    BackHandler(sender.sending) {}
+    Page("判断待ちの詳細", back = { if (!sender.sending) back() }, action = { RefreshAction(model) }) { modifier ->
+        DataContent(modifier.imePadding(), model, settings, keepDataOnError = true) { item ->
             DetailContent {
                 Text(bot, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                 Text(item.title, style = MaterialTheme.typography.headlineSmall)
@@ -427,15 +548,30 @@ internal fun ItemScreen(
                 if (question == null) {
                     Text("質問はありません")
                 } else {
-                    SelectionContainer {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text(question.text)
-                            question.options.forEach { Text("•  $it") }
+                    SelectionContainer { Text(question.text) }
+                    if (canAnswer) {
+                        question.options.forEach { label ->
+                            OutlinedButton(
+                                onClick = {
+                                    focus.clearFocus()
+                                    choice = label
+                                },
+                                enabled = !sender.sending && sender.result == null,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text(label) }
                         }
                     }
                 }
+                if (canAnswer || sender.draft.isNotEmpty()) {
+                    DraftField(sender, "自分の言葉で答える", Modifier.fillMaxWidth(), enabled = canAnswer)
+                    if (canAnswer) SendButton(sender, Modifier.fillMaxWidth())
+                }
+                WriteError(sender.error, settings, conflict = "この項目はもう答え済みか、状態が変わりました")
                 item.chatId?.let { chatId ->
-                    Button(onClick = { openChat(item.bot, chatId, item.title) }) { Text("このチャットを開く") }
+                    TextButton(
+                        onClick = { openChat(item.bot, chatId, item.title) },
+                        enabled = !sender.sending,
+                    ) { Text("このチャットを開く") }
                 }
             }
         }
@@ -471,11 +607,65 @@ internal fun SummaryScreen(
 }
 
 @Composable
-private fun DetailContent(content: @Composable () -> Unit) {
+private fun DetailContent(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Column(
-        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
+        modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) { content() }
+}
+
+@Composable
+private fun DraftField(
+    sender: SendModel<*>,
+    label: String,
+    modifier: Modifier,
+    minLines: Int = 1,
+    enabled: Boolean = true,
+) {
+    OutlinedTextField(
+        value = sender.draft,
+        onValueChange = { sender.draft = it },
+        label = { Text(label) },
+        minLines = minLines,
+        maxLines = 5,
+        readOnly = !enabled || sender.sending || sender.result != null,
+        modifier = modifier,
+        textStyle = MaterialTheme.typography.bodyLarge,
+    )
+}
+
+@Composable
+private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier) {
+    val focus = LocalFocusManager.current
+    Button(
+        onClick = {
+            focus.clearFocus()
+            sender.submit(sender.draft)
+        },
+        enabled = sender.draft.isNotBlank() && !sender.sending && sender.result == null,
+        modifier = modifier,
+    ) {
+        if (sender.sending) {
+            CircularProgressIndicator(
+                Modifier.size(20.dp).semantics { stateDescription = "送信中" },
+                strokeWidth = 2.dp,
+            )
+        } else {
+            Text("送信")
+        }
+    }
+}
+
+@Composable
+private fun WriteError(error: ApiError?, settings: () -> Unit, conflict: String = ApiError.CONFLICT.text) {
+    if (error != null) {
+        Text(
+            if (error == ApiError.CONFLICT) conflict else error.text,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            color = MaterialTheme.colorScheme.error,
+        )
+        if (error == ApiError.UNAUTHORIZED) TextButton(onClick = settings) { Text("設定を開く") }
+    }
 }
 
 @Composable
@@ -498,7 +688,7 @@ private fun EntryList(
 
 @Composable
 private fun RefreshAction(model: ScreenModel<*>) {
-    TextButton(onClick = model::refresh, enabled = !model.loading) { Text("更新") }
+    TextButton(onClick = { model.refresh() }, enabled = !model.loading) { Text("更新") }
 }
 
 @Composable
