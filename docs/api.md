@@ -9,14 +9,16 @@
 | メソッドとパス | 応答 |
 | --- | --- |
 | `GET /api/health` | `{"ok":true}`。Orca CLI を起動せず、サーバーへの接続と認証を確認します |
-| `GET /api/bots` | `{"bots":[{"id":string,"name":string,"specialty":string?,"paused":boolean,"needsYou":number,"avatar":string?,"lastActivityAt":number?,"lastSaid":string?}]}` |
-| `GET /api/bots/{botName}/chats` | `{"chats":[{"id":string,"title":string?,"home":boolean,"lastActivityAt":number?,"lastAsked":string?,"lastSaid":string?}]}` |
-| `GET /api/bots/{botName}/chats/{chatId}/messages?limit=N` | `{"state":string?,"entries":[{"kind":"message","role":string,"text":string} \| {"kind":"tool","name":string,"state":string?}]}` |
+| `GET /api/bots` | `{"bots":[{"id":string,"name":string,"specialty":string?,"paused":boolean,"needsYou":number,"avatar":string?,"lastActivityAt":number?,"lastSaid":string?,"working":boolean,"activeWork":string?}]}` |
+| `GET /api/bots/{botName}/chats` | `{"chats":[{"id":string,"title":string?,"home":boolean,"lastActivityAt":number?,"lastAsked":string?,"lastSaid":string?,"working":boolean}]}` |
+| `GET /api/bots/{botName}/chats/{chatId}/messages?limit=N` | `{"state":string?,"entries":[{"kind":"message","role":string,"text":string} \| {"kind":"tool","name":string,"state":string?}],"activeWorkers":[{"title":string,"tool":string?}]}` |
 | `GET /api/items` | `{"items":[{"bot":string,"number":number,"title":string,"status":string,"chatId":string?,"lastActivityAt":number?}]}` |
 | `GET /api/items/{botName}/{number}` | `{"bot":string,"number":number,"title":string,"status":string,"chatId":string?,"question":{"text":string,"options":[string]}?}` |
 | `GET /api/summary` | `{"summary":{"bot":string,"runAt":number,"content":string,"chatId":string?}?}` |
 
 - Bot 一覧の `needsYou` は Bot ごとの判断待ち件数です。`avatar` は `~/.orca/bots/*/bot.json` で Bot ID が一致し、`mascot:A1` のように英大文字1文字と数字1桁で指定されたマスコットです。`lastActivityAt` と `lastSaid` は一番新しい開いているチャットの時刻と最後の返答です。該当する値が無い場合や、追加情報を取得できない場合は `null` です。
+- Bot の `working` は、本体チャットか配下ワーカーが作業中なら `true` です。`activeWork` は先頭ワーカーのタイトル（最大80文字）、本体チャットだけが作業中なら「応答を作成中」、どちらもなければ `null` です。チャットの `working` はそのチャット自身の稼働を示します。
+- 履歴の `activeWorkers` は、その Bot 配下で作業中のワーカーをタイトルの重複を除いて最大10件返します。`tool` はツール名がなければ `null` です。作業状態は最大3秒間キャッシュし、取得に失敗した場合も通常の応答に `working: false`、`activeWork: null`、`activeWorkers: []` をそれぞれ返します。
 - `botName` は Bot 一覧にある名前を URL エンコードしたパス区間です。チャット一覧には開いているチャットを `lastActivityAt` の降順で返します。時刻が `null` の行は末尾に並びます。
 - `chatId` は UUID 形式です。履歴を取得できるのは指定した Bot のチャットだけで、閉じたチャットも含みます。別の Bot や Bot 外のセッション、および旧パス `/api/chats/{chatId}/messages` は 404 です。履歴は古い行から順に返します。メッセージの `role` は通常 `user` または `assistant` です。`limit` は 1〜100 に丸めます。省略時や整数として読めない場合は 100 です。
 - 判断待ち一覧には全 Bot の `needs_you` 項目を新しい順に返します。`number` は正の整数です。質問があれば現在の質問イベントの本文と選択肢ラベルを返します。選択肢はイベント内の出現順です。質問が無ければ `question` は `null` です。
