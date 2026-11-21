@@ -53,6 +53,7 @@ internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () ->
             modifier = Modifier.weight(1f),
             leading = { Mascot(bot) },
             subtitle = when {
+                bot.needsYou > 0 && bot.paused -> "$preview · 停止中"
                 bot.needsYou > 0 -> preview
                 bot.paused -> "停止中"
                 else -> listPreview(bot.lastSaid) ?: bot.specialty
@@ -78,6 +79,7 @@ internal fun ChatRow(chat: Chat, modifier: Modifier = Modifier, showPreview: Boo
         onClick = open,
         modifier = modifier,
         leading = { OrcaIcon(if (chat.home) R.drawable.ic_home else R.drawable.ic_chat) },
+        titleMaxLines = if (showPreview) 2 else 1,
         subtitle = if (showPreview) listPreview(chat.lastSaid) ?: listPreview(chat.lastAsked) else null,
         caption = relativeTime(chat.lastActivityAt, compact = true),
         showChevron = showPreview,
@@ -98,6 +100,7 @@ internal fun ListRow(
     subtitleColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     caption: String? = null,
     showChevron: Boolean = true,
+    titleMaxLines: Int = 1,
 ) {
     Row(
         modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
@@ -117,7 +120,7 @@ internal fun ListRow(
                     title,
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
+                    maxLines = titleMaxLines,
                     overflow = TextOverflow.Ellipsis,
                 )
                 caption?.let {

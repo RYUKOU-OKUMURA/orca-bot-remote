@@ -24,6 +24,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -100,6 +101,7 @@ internal fun SettingsScreen(
             Text("Tailscale をオンにして、Mac mini のアドレスとトークンを入力してください。")
             OutlinedTextField(
                 value = model.url,
+                colors = OutlinedTextFieldDefaults.colors(focusedLabelColor = orcaAccentText),
                 onValueChange = { model.url = it },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("サーバー URL") },

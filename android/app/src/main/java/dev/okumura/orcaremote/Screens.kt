@@ -38,7 +38,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -148,7 +147,7 @@ private fun <T> DataContent(
                         color = MaterialTheme.colorScheme.error,
                     )
                     if (error == ApiError.UNAUTHORIZED) {
-                        TextButton(onClick = settings) { Text("設定を開く") }
+                        OrcaTextButton(onClick = settings) { Text("設定を開く") }
                     }
                 }
                 Box(Modifier.weight(1f)) { content(data) }
@@ -271,11 +270,11 @@ internal fun HomeScreen(
                             )
                             if (expanded && inlineChats != null) {
                                 when {
-                                    inlineChats.error == ApiError.UNAUTHORIZED -> TextButton(
+                                    inlineChats.error == ApiError.UNAUTHORIZED -> OrcaTextButton(
                                         onClick = settings,
                                         modifier = Modifier.padding(start = 48.dp),
                                     ) { Text("設定を開く") }
-                                    inlineChats.error != null -> TextButton(
+                                    inlineChats.error != null -> OrcaTextButton(
                                         onClick = { openBot(bot.name) },
                                         modifier = Modifier.padding(start = 48.dp),
                                     ) { Text("チャット一覧を開く") }
@@ -576,13 +575,14 @@ internal fun ItemsScreen(
                     Column {
                         ListRow(
                             title = item.title,
+                            titleMaxLines = 2,
                             subtitle = item.bot,
                             caption = relativeTime(item.lastActivityAt),
                             leading = { OrcaIcon(R.drawable.ic_pending, tint = MaterialTheme.colorScheme.tertiary) },
                             onClick = { openItem(item) },
                         )
                         item.chatId?.let { chatId ->
-                            TextButton(onClick = { openChat(item.bot, chatId, item.title) }) {
+                            OrcaTextButton(onClick = { openChat(item.bot, chatId, item.title) }) {
                                 Text("このチャットを開く")
                             }
                         }
@@ -636,12 +636,12 @@ internal fun ItemScreen(
                 textContentColor = MaterialTheme.colorScheme.onSurface,
                 text = { Text("『${label}』と答えますか？", style = MaterialTheme.typography.bodyLarge) },
                 confirmButton = {
-                    TextButton(onClick = {
+                    OrcaTextButton(onClick = {
                         choice = null
                         sender.submit(label)
                     }) { Text("はい") }
                 },
-                dismissButton = { TextButton(onClick = { choice = null }) { Text("キャンセル") } },
+                dismissButton = { OrcaTextButton(onClick = { choice = null }) { Text("キャンセル") } },
             )
         }
     }
@@ -696,7 +696,7 @@ internal fun ItemScreen(
             )
             if (item != null) {
                 item.chatId?.let { chatId ->
-                    TextButton(
+                    OrcaTextButton(
                         onClick = { openChat(item.bot, chatId, item.title) },
                         enabled = !sender.sending,
                     ) { Text("このチャットを開く") }
@@ -721,7 +721,7 @@ internal fun SummaryScreen(
                 if (summary == null) {
                     Text("まだありません")
                 } else {
-                    Text(summary.bot, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                    Text(summary.bot, color = orcaAccentText, style = MaterialTheme.typography.labelLarge)
                     SelectionContainer { Text(summary.content) }
                     summary.chatId?.let { chatId ->
                         Button(onClick = { openChat(summary.bot, chatId, summary.bot) }, shape = MaterialTheme.shapes.medium) {
@@ -761,6 +761,7 @@ private fun DraftField(
         modifier = modifier,
         textStyle = MaterialTheme.typography.bodyLarge,
         colors = OutlinedTextFieldDefaults.colors(
+            focusedLabelColor = orcaAccentText,
             focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         ),
@@ -803,8 +804,8 @@ private fun ResendDialog(cancel: () -> Unit, confirm: () -> Unit) {
         onDismissRequest = cancel,
         textContentColor = MaterialTheme.colorScheme.onSurface,
         text = { Text("前の送信が届いているかもしれません。もう一度送りますか？", style = MaterialTheme.typography.bodyLarge) },
-        confirmButton = { TextButton(onClick = confirm) { Text("もう一度送る") } },
-        dismissButton = { TextButton(onClick = cancel) { Text("やめる") } },
+        confirmButton = { OrcaTextButton(onClick = confirm) { Text("もう一度送る") } },
+        dismissButton = { OrcaTextButton(onClick = cancel) { Text("やめる") } },
     )
 }
 
@@ -827,7 +828,7 @@ private fun SendStatus(
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.error,
         )
-        if (error == ApiError.UNAUTHORIZED) TextButton(onClick = settings) { Text("設定を開く") }
+        if (error == ApiError.UNAUTHORIZED) OrcaTextButton(onClick = settings) { Text("設定を開く") }
     }
     if (sender.deliveryUncertain) {
         Text(
@@ -835,7 +836,7 @@ private fun SendStatus(
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.error,
         )
-        TextButton(onClick = sender::markAsSent, enabled = !sender.sending) {
+        OrcaTextButton(onClick = sender::markAsSent, enabled = !sender.sending) {
             Text("送信済みとして閉じる")
         }
     }
@@ -861,5 +862,5 @@ private fun EntryList(
 
 @Composable
 private fun RefreshAction(model: ScreenModel<*>) {
-    TextButton(onClick = { model.refresh() }, enabled = !model.loading) { Text("更新") }
+    OrcaTextButton(onClick = { model.refresh() }, enabled = !model.loading) { Text("更新") }
 }

@@ -8,6 +8,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -18,44 +19,51 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// Orca 1.4.266 mobile web assets/48f50a11…js defines the palette, spacing, and radii.
+// Orca 1.4.266, out/mobile-web/assets/48f50a112c3adef7131b9cb209e7d2ac6d44e71e16a16c832b65052a67ddfe0d.js
 private val DarkColors = darkColorScheme(
-    background = Color(0xFF0A0A0A),
-    surface = Color(0xFF171717),
-    surfaceContainerLow = Color(0xFF1F1F1F),
-    surfaceContainer = Color(0xFF262626),
-    surfaceContainerHigh = Color(0xFF262626),
-    secondaryContainer = Color(0xFF404040),
-    onSecondaryContainer = Color(0xFFFAFAFA),
-    onBackground = Color(0xFFFAFAFA),
-    onSurface = Color(0xFFFAFAFA),
-    onSurfaceVariant = Color(0xFFACACAC),
-    primary = Color(0xFF8AB4F8),
-    onPrimary = Color(0xFF0A0A0A),
-    tertiary = Color(0xFFF97316),
-    outline = Color(0xFF737373),
-    outlineVariant = Color(0x12FFFFFF),
-    error = Color(0xFFFF6568),
+    background = Color(0xFF0A0A0A), // bgBase
+    surface = Color(0xFF171717), // bgPanel
+    surfaceContainerLow = Color(0xFF1F1F1F), // composerSurface
+    surfaceContainer = Color(0xFF262626), // bgRaised for the sidebar-style lists
+    surfaceContainerHigh = Color(0xFF262626), // bgRaised
+    secondaryContainer = Color(0xFF404040), // Lighten bgRaised to distinguish expanded rows.
+    onSecondaryContainer = Color(0xFFFAFAFA), // textPrimary
+    onBackground = Color(0xFFFAFAFA), // textPrimary
+    onSurface = Color(0xFFFAFAFA), // textPrimary
+    onSurfaceVariant = Color(0xFFACACAC), // textSecondary
+    primary = Color(0xFF3276F2), // accentBlue
+    onPrimary = Color(0xFF0A0A0A), // bgBase gives 4.72:1 on accentBlue (onAccent gives 4.19:1).
+    tertiary = Color(0xFFF97316), // agentQuestion
+    outline = Color(0xFF737373), // inputBorder
+    outlineVariant = Color(0x12FFFFFF), // borderSubtle, 7% alpha rounded to a byte
+    error = Color(0xFFFF6568), // statusRed
 )
 
 private val LightColors = lightColorScheme(
-    background = Color(0xFFFFFFFF),
-    surface = Color(0xFFFAFAFA),
-    surfaceContainerLow = Color(0xFFFFFFFF),
-    surfaceContainer = Color(0xFFF5F5F5),
-    surfaceContainerHigh = Color(0xFFF5F5F5),
-    secondaryContainer = Color(0xFFE5E5E5),
-    onSecondaryContainer = Color(0xFF0A0A0A),
-    onBackground = Color(0xFF0A0A0A),
-    onSurface = Color(0xFF0A0A0A),
-    onSurfaceVariant = Color(0xFF696969),
-    primary = Color(0xFF1D4ED8),
-    onPrimary = Color(0xFFFFFFFF),
-    tertiary = Color(0xFFC2410C),
-    outline = Color(0xFF737373),
-    outlineVariant = Color(0xFFE5E5E5),
-    error = Color(0xFFE40014),
+    background = Color(0xFFFFFFFF), // bgBase
+    surface = Color(0xFFFAFAFA), // bgPanel
+    surfaceContainerLow = Color(0xFFFFFFFF), // composerSurface
+    surfaceContainer = Color(0xFFF5F5F5), // bgRaised for the sidebar-style lists
+    surfaceContainerHigh = Color(0xFFF5F5F5), // bgRaised
+    secondaryContainer = Color(0xFFE5E5E5), // borderSubtle as a fill to distinguish expanded rows
+    onSecondaryContainer = Color(0xFF0A0A0A), // textPrimary
+    onBackground = Color(0xFF0A0A0A), // textPrimary
+    onSurface = Color(0xFF0A0A0A), // textPrimary
+    onSurfaceVariant = Color(0xFF696969), // textSecondary
+    primary = Color(0xFF225BE3), // accentBlue
+    onPrimary = Color(0xFFFFFFFF), // onAccent
+    tertiary = Color(0xFFC2410C), // Darken agentQuestion (#EA580C) for readable text on light surfaces.
+    outline = Color(0xFF737373), // inputBorder
+    outlineVariant = Color(0xFFE5E5E5), // borderSubtle
+    error = Color(0xFFE40014), // statusRed
 )
+
+internal val orcaAccentText: Color
+    @Composable get() = if (isSystemInDarkTheme()) {
+        Color(0xFF8AB4F8) // skillToken for text since accentBlue falls below 4.5:1 on bgPanel and bgRaised.
+    } else {
+        MaterialTheme.colorScheme.primary // accentBlue
+    }
 
 private val OrcaShapes = Shapes(
     extraSmall = RoundedCornerShape(12.dp),
@@ -105,6 +113,22 @@ internal fun OrcaOutlinedButton(
         shape = MaterialTheme.shapes.medium,
         colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurface),
         border = BorderStroke(1.dp, if (enabled) colors.outline else colors.outlineVariant),
+        content = content,
+    )
+}
+
+@Composable
+internal fun OrcaTextButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit,
+) {
+    TextButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        colors = ButtonDefaults.textButtonColors(contentColor = orcaAccentText),
         content = content,
     )
 }
