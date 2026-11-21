@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.okumura.orca-bot-remote</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string></string>
+    <string></string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOST</key>
+    <string></string>
+    <key>SUMMARY_AUTOMATION_ID</key>
+    <string></string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string></string>
+  <key>StandardErrorPath</key>
+  <string></string>
+</dict>
+</plist>
