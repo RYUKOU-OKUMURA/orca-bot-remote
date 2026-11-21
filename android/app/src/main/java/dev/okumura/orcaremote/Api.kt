@@ -298,6 +298,8 @@ internal class OrcaApi(
             })
         }
 
+    fun eventsCall(): Call = eventsClient.newCall(request("events").header("Accept", "text/event-stream").build())
+
     suspend fun bots(): Bots = get("bots")
     suspend fun chats(bot: String): Chats = get("bots", bot, "chats")
     suspend fun messages(bot: String, chatId: String): Messages =
@@ -399,6 +401,10 @@ internal class OrcaApi(
             // The server may run three 20-second Orca commands per request.
             .readTimeout(65, TimeUnit.SECONDS)
             .callTimeout(70, TimeUnit.SECONDS)
+            .build()
+        private val eventsClient = client.newBuilder()
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
             .build()
         private val updateClient = client.newBuilder()
             .callTimeout(0, TimeUnit.SECONDS)

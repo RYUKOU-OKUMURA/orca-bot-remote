@@ -125,7 +125,7 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
     }
 
     private fun updateNotificationSchedule() {
-        scheduleNotifications(getApplication(), notificationsEnabled && connection != null)
+        reconcileNotifications(getApplication())
     }
 }
 
