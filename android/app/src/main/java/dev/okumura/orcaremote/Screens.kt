@@ -606,7 +606,7 @@ internal fun ItemScreen(
                                 },
                                 enabled = !sender.sending && sender.result == null,
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text(label) }
+                            ) { Text(label, style = MaterialTheme.typography.bodyLarge) }
                         }
                     }
                 }
