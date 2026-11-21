@@ -40,6 +40,7 @@ internal fun OrcaIcon(
 internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val shape = MaterialTheme.shapes.small
+    val pausedWithPendingItems = bot.paused && bot.needsYou > 0
     val preview = if (bot.needsYou == 1) "1 needs you" else "${bot.needsYou} need you"
     Row(
         modifier = Modifier.fillMaxWidth().clip(shape)
@@ -53,13 +54,14 @@ internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () ->
             modifier = Modifier.weight(1f),
             leading = { Mascot(bot) },
             subtitle = when {
-                bot.needsYou > 0 && bot.paused -> "$preview · 停止中"
+                pausedWithPendingItems -> "$preview · 停止中"
                 bot.needsYou > 0 -> preview
                 bot.paused -> "停止中"
                 else -> listPreview(bot.lastSaid) ?: bot.specialty
             },
             subtitleIcon = if (bot.needsYou > 0) R.drawable.ic_pending else R.drawable.ic_activity,
             subtitleColor = if (bot.needsYou > 0) colors.tertiary else colors.onSurfaceVariant,
+            subtitleMaxLines = if (pausedWithPendingItems) Int.MAX_VALUE else 1,
             caption = relativeTime(bot.lastActivityAt, compact = true),
             showChevron = false,
         )
@@ -101,6 +103,7 @@ internal fun ListRow(
     caption: String? = null,
     showChevron: Boolean = true,
     titleMaxLines: Int = 1,
+    subtitleMaxLines: Int = 1,
 ) {
     Row(
         modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
@@ -134,7 +137,7 @@ internal fun ListRow(
                         it,
                         style = MaterialTheme.typography.bodyMedium,
                         color = subtitleColor,
-                        maxLines = 1,
+                        maxLines = subtitleMaxLines,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }

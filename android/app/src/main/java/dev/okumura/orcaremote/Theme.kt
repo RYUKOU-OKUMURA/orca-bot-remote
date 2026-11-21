@@ -33,7 +33,7 @@ private val DarkColors = darkColorScheme(
     onSurfaceVariant = Color(0xFFACACAC), // textSecondary
     primary = Color(0xFF3276F2), // accentBlue
     onPrimary = Color(0xFF0A0A0A), // bgBase gives 4.72:1 on accentBlue (onAccent gives 4.19:1).
-    tertiary = Color(0xFFF97316), // agentQuestion
+    tertiary = Color(0xFFFB923C), // Lighten agentQuestion to reach 4.5:1 on expanded rows.
     outline = Color(0xFF737373), // inputBorder
     outlineVariant = Color(0x12FFFFFF), // borderSubtle, 7% alpha rounded to a byte
     error = Color(0xFFFF6568), // statusRed
@@ -49,13 +49,13 @@ private val LightColors = lightColorScheme(
     onSecondaryContainer = Color(0xFF0A0A0A), // textPrimary
     onBackground = Color(0xFF0A0A0A), // textPrimary
     onSurface = Color(0xFF0A0A0A), // textPrimary
-    onSurfaceVariant = Color(0xFF696969), // textSecondary
+    onSurfaceVariant = Color(0xFF636363), // Darken textSecondary to reach 4.5:1 on expanded rows.
     primary = Color(0xFF225BE3), // accentBlue
     onPrimary = Color(0xFFFFFFFF), // onAccent
-    tertiary = Color(0xFFC2410C), // Darken agentQuestion (#EA580C) for readable text on light surfaces.
+    tertiary = Color(0xFFB9380A), // Darken agentQuestion to reach 4.5:1 on expanded rows.
     outline = Color(0xFF737373), // inputBorder
     outlineVariant = Color(0xFFE5E5E5), // borderSubtle
-    error = Color(0xFFE40014), // statusRed
+    error = Color(0xFFD90014), // Darken statusRed to reach 4.5:1 on list surfaces.
 )
 
 internal val orcaAccentText: Color
