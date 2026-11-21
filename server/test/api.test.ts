@@ -909,14 +909,17 @@ test('所属キャッシュの外れは直ちに読み直し、履歴自体は�
   assert.equal(calls().filter(call => call.startsWith('agent read ')).length, 2);
 });
 
-test('POST は所属を毎回確認し、成功・失敗の両方で読み取りキャッシュを消す', async t => {
+test('POST は Bot とチャットの所属を毎回確認し、成功・失敗の両方で読み取りキャッシュを消す', async t => {
   for (const failure of [undefined, 'orca_failed'] as const) {
     const { bin, calls } = recordOrcaCalls(t);
     const call = await writeApi(t, fakeWrite([], failure), bin);
+    const botLookups = () => calls().filter(call => call === 'bot list --json').length;
     assert.equal((await call(openMessages, null, 'GET')).status, 200);
+    assert.equal(botLookups(), 1);
     assert.equal((await call(openMessages)).status, failure ? 502 : 202);
+    assert.equal(botLookups(), 2);
     assert.equal((await call(openMessages, null, 'GET')).status, 200);
-    assert.equal(calls().filter(call => call === 'bot list --json').length, 2);
+    assert.equal(botLookups(), 3);
     assert.equal(calls().filter(call => call.startsWith('bot chats ') && call.includes('--all')).length, 3);
   }
 });

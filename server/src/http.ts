@@ -227,7 +227,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
         return send(400, { error: 'bad_request', message: '判断待ちへの回答は前後の空白を含め、8000 UTF-16 コード単位以内で指定してください。' });
       }
       const name = decode((chats ?? action ?? itemRoute)![1]);
-      const bot = name && (await orca.listBots()).find(bot => bot.name === name);
+      const bot = name && (await orca.listBots(!posting)).find(bot => bot.name === name);
       if (!bot) return send(404, notFound);
       if (action && (posting || menu)) {
         const chat = await orca.findChat(bot, chatId, !posting);

@@ -80,7 +80,7 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/dev.okumura.orca-
 | `PORT` | 既定 `8787` |
 | `TOKEN_FILE` | 既定 `~/.config/orca-bot-remote/token`。権限 `600` の通常ファイル。ファイルへのシンボリックリンクは拒否します |
 | `ORCA_BIN` | 既定 `/Applications/Orca.app/Contents/Resources/bin/orca`。絶対パス |
-| `APP_DIR` | 既定 `~/Library/Application Support/orca-bot-remote/app`。変更する場合はサーバーと公開スクリプトに同じ値を設定します |
+| `APP_DIR` | 既定 `~/Library/Application Support/orca-bot-remote/app`。`install.sh` はこの値を plist に書き込まないため、通常は既定値を使います。上書きはテスト用です |
 | `SUMMARY_AUTOMATION_ID` | まとめの自動化 ID。空の場合は `{"summary":null}` |
 
 サーバーは指定した Tailscale IP にだけバインドします。接続先は tailnet 内のサーバーを指定してください。

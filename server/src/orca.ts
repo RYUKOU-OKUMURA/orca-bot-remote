@@ -210,8 +210,8 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     return value;
   }
 
-  function listBots() {
-    return readList<Bot>('bots', 10_000, bots => bots.every(bot => typeof bot?.id === 'string' && typeof bot.name === 'string'),
+  function listBots(cached = true) {
+    return readList<Bot>('bots', cached ? 10_000 : 0, bots => bots.every(bot => typeof bot?.id === 'string' && typeof bot.name === 'string'),
       () => true, 'bot', 'list');
   }
 
