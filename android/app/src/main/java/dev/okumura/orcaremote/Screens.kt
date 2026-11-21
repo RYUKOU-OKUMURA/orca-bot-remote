@@ -428,16 +428,16 @@ internal fun ConversationScreen(
     back: () -> Unit,
     settings: () -> Unit,
 ) {
-    val model = screenModel { api.messages(bot, chatId) }
     val resolver = LocalContext.current.applicationContext.contentResolver
     val sender: SendModel<String> = viewModel {
         val state = createSavedStateHandle()
         val chat = ChatDraft(state, AttachmentLimits.Conversation)
-        SendModel(state, chat) { text ->
+        SendModel(state, chat, showPendingMessage = true) { text ->
             chat.sendMessage(api, bot, chatId, text) { it.open(resolver) }
             ""
         }
     }
+    val model = screenModel { sender.loadHistory { api.messages(bot, chatId) } }
     val commands: ScreenModel<ChatCommands> = viewModel(key = "commands") { ScreenModel { api.commands(bot, chatId) } }
     val ready = model.data != null
     LaunchedEffect(ready) { if (ready) commands.refresh() }
@@ -445,6 +445,14 @@ internal fun ConversationScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val pending = sender.pendingMessage
+    val pendingStatus = pendingState(
+        sender.sending, sender.error != null || sender.pendingAttachmentError != null,
+        sender.deliveryUncertain,
+    )
+    LaunchedEffect(pending, sender.sending) {
+        if (pending != null && sender.sending) listState.requestScrollToItem(0)
+    }
     val result = sender.result
     LaunchedEffect(result) {
         if (result != null) {
@@ -452,9 +460,9 @@ internal fun ConversationScreen(
                 commands.refresh(afterCurrent = true)
                 scope.launch { snackbar.showSnackbar(result) }
             }
-            model.load(afterCurrent = true)
-            listState.requestScrollToItem(0)
             sender.resultShown()
+            model.refresh(afterCurrent = true)
+            listState.requestScrollToItem(0)
         }
     }
     BackHandler(sender.sending) {}
@@ -477,7 +485,7 @@ internal fun ConversationScreen(
     }) { modifier ->
         Column(modifier.imePadding()) {
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { result ->
-                if (result.entries.isEmpty()) {
+                if (result.entries.isEmpty() && sender.sentMessages.isEmpty() && pending == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("メッセージはまだありません")
                     }
@@ -489,6 +497,16 @@ internal fun ConversationScreen(
                         contentPadding = ListPadding,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        if (pending != null) item(key = "pending-message") {
+                            val reason = if (pendingStatus == PendingState.FAILED) {
+                                sender.pendingAttachmentError ?: sender.error?.let(::conversationSendError)
+                            } else null
+                            PendingBubble(pending, pendingStatus, reason)
+                        }
+                        items(sender.sentMessages.asReversed()) { message ->
+                            PendingBubble(message, PendingState.SENT,
+                                if (model.error != null) "会話の更新に失敗" else null)
+                        }
                         items(result.entries.asReversed()) { entry ->
                             when (entry) {
                                 is Entry.Message -> MessageBubble(entry)
@@ -529,16 +547,40 @@ internal fun ConversationScreen(
                         }
                     }
                 }
-                SendStatus(sender, settings, conflict = "このチャットは閉じているため送れません",
-                    badRequest = "本文・コマンドの引数・スキル・添付を確認してください")
+                SendStatus(sender, settings, conflict = conversationSendError(ApiError.CONFLICT),
+                    badRequest = conversationSendError(ApiError.BAD_REQUEST),
+                    showError = pending == null || pendingStatus != PendingState.FAILED)
             }
         }
     }
 }
 
 @Composable
+private fun PendingBubble(message: PendingMessage, state: PendingState, reason: String?) {
+    val status = when (state) {
+        PendingState.SENDING -> "送信中…"
+        PendingState.UNCERTAIN -> "送れたか確認できません"
+        PendingState.FAILED -> "送れませんでした"
+        PendingState.SENT -> "送信済み"
+    }
+    val body = (listOf(message.text).filter { it.isNotEmpty() } + message.attachments).joinToString("\n")
+    MessageBubble(MessagePresentation(MessageKind.OWNER, "あなた", body),
+        status = listOfNotNull(status, reason).joinToString("\n"))
+}
+
+@Composable
 private fun MessageBubble(message: Entry.Message) {
-    val presentation = remember(message) { presentMessage(message.role, message.text) }
+    MessageBubble(remember(message) { presentMessage(message.role, message.text) })
+}
+
+private fun conversationSendError(error: ApiError) = when (error) {
+    ApiError.CONFLICT -> "このチャットは閉じているため送れません"
+    ApiError.BAD_REQUEST -> "本文・コマンドの引数・スキル・添付を確認してください"
+    else -> error.text
+}
+
+@Composable
+private fun MessageBubble(presentation: MessagePresentation, status: String? = null) {
     val owner = presentation.kind == MessageKind.OWNER
     val colors = MaterialTheme.colorScheme
     Box(Modifier.fillMaxWidth()) {
@@ -568,6 +610,10 @@ private fun MessageBubble(message: Entry.Message) {
                 )
                 presentation.subject?.let { SelectionContainer { Text(it, style = MaterialTheme.typography.titleSmall) } }
                 if (owner) SelectionContainer { Text(presentation.body) } else MarkdownText(presentation.body)
+                status?.let {
+                    Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                        style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                }
             }
         }
     }
@@ -851,10 +897,11 @@ private fun SendStatus(
     conflict: String = ApiError.CONFLICT.text,
     badRequest: String = ApiError.BAD_REQUEST.text,
     unknown: String = ApiError.UNKNOWN_RESULT.text,
+    showError: Boolean = true,
 ) {
     val error = sender.error
     if (error != null) {
-        Text(
+        if (showError) Text(
             when (error) {
                 ApiError.CONFLICT -> conflict
                 ApiError.BAD_REQUEST -> badRequest

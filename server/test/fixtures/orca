@@ -20,6 +20,7 @@ case "$*" in
     'bot chats --bot=専門Bot --json')
         result='{"chats":[]}'
         ;;
+    'agent read orca_session_id:abcdef00-abcd-1234-abcd-123456789abc --limit 100 --json'|\
     'agent read orca_session_id:12345678-abcd-1234-abcd-123456789abc --limit 100 --json'|\
     'agent read orca_session_id:00000000-0000-0000-0000-000000000000 --limit 100 --json')
         result='{"state":"idle","limited":false,"entries":[{"kind":"message","role":"user","text":"質問","id":"unused"},{"kind":"tool","name":"Read","state":"done","input":"unused"},{"kind":"other"},{"kind":"message","role":"assistant","text":"回答"},{"kind":"tool","name":"List"}]}'

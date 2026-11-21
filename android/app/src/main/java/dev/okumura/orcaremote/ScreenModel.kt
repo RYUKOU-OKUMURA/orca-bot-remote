@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.serialization.Serializable
 
 internal class ScreenModel<T>(private val fetch: suspend () -> T) : ViewModel() {
     private val loadMutex = Mutex()
@@ -39,10 +40,23 @@ internal class ScreenModel<T>(private val fetch: suspend () -> T) : ViewModel() 
     }
 }
 
+@Serializable
+internal data class PendingMessage(val text: String, val attachments: List<String>)
+
+internal enum class PendingState { SENDING, FAILED, UNCERTAIN, SENT }
+
+internal fun pendingState(sending: Boolean, error: Boolean, deliveryUncertain: Boolean): PendingState = when {
+    sending -> PendingState.SENDING
+    deliveryUncertain -> PendingState.UNCERTAIN
+    error -> PendingState.FAILED
+    else -> PendingState.SENT
+}
+
 internal class SendModel<T>(
     private val savedState: SavedStateHandle,
     val chat: ChatDraft? = null,
     private val onFailure: suspend (ApiError) -> Unit = {},
+    private val showPendingMessage: Boolean = false,
     private val send: suspend (String) -> T,
 ) : ViewModel() {
     var draftField by mutableStateOf(savedState.get<String>("draft").orEmpty().let { TextFieldValue(it, TextRange(it.length)) })
@@ -65,6 +79,16 @@ internal class SendModel<T>(
     var deliveryUncertain by mutableStateOf(savedState.get<Boolean>("deliveryUncertain") == true)
         private set
 
+    var pendingMessage by mutableStateOf(
+        savedState.get<String>("pendingMessage")?.takeIf { showPendingMessage && deliveryUncertain }
+            ?.let { apiJson.decodeFromString<PendingMessage>(it) }
+    )
+        private set
+    var sentMessages by mutableStateOf(emptyList<PendingMessage>())
+        private set
+    var pendingAttachmentError by mutableStateOf<String?>(null)
+        private set
+
     val lastCommand: String? get() = savedState["lastCommand"]
 
     fun canStartCommand(): Boolean {
@@ -73,11 +97,22 @@ internal class SendModel<T>(
         return false
     }
 
-    fun submit(text: String, resendConfirmed: Boolean = false, command: (suspend (String) -> T)? = null) {
+    fun submit(
+        text: String,
+        resendConfirmed: Boolean = false,
+        showPending: Boolean = true,
+        command: (suspend (String) -> T)? = null,
+    ) {
         if (sending || result != null || chat?.reading == true || (text.isBlank() && chat?.attachments.isNullOrEmpty())) return
         if (command != null && !canStartCommand()) return
         if (!canSubmit(deliveryUncertain, resendConfirmed)) return
         savedState["lastCommand"] = text.takeIf { command != null }
+        val previousPending = pendingMessage
+        pendingMessage = if (showPendingMessage && showPending && command == null) {
+            PendingMessage(text, chat?.attachments.orEmpty().map { it.name })
+        } else null
+        savePendingMessage()
+        pendingAttachmentError = null
         sending = true
         chat?.notice = null
         error = null
@@ -86,14 +121,19 @@ internal class SendModel<T>(
         viewModelScope.launch {
             try {
                 result = (command ?: send)(text)
+                pendingMessage?.let { sentMessages = sentMessages + it }
+                pendingMessage = null
                 clearDraft()
             } catch (failure: AttachmentProblem) {
                 chat?.notice = failure.message
+                if (pendingMessage != null) pendingAttachmentError = failure.message
+                if (deliveryUncertain) restorePendingMessage(previousPending)
                 savedState["deliveryUncertain"] = deliveryUncertain
             } catch (failure: ApiFailure) {
                 if (failure.error == ApiError.UNKNOWN_RESULT) {
                     deliveryUncertain = true
                 } else {
+                    if (deliveryUncertain) restorePendingMessage(previousPending)
                     error = failure.error
                 }
                 savedState["deliveryUncertain"] = deliveryUncertain
@@ -104,8 +144,20 @@ internal class SendModel<T>(
         }
     }
 
+    private fun savePendingMessage() {
+        savedState["pendingMessage"] = pendingMessage?.let { apiJson.encodeToString(it) }
+    }
+
+    private fun restorePendingMessage(previous: PendingMessage?) {
+        pendingMessage = previous
+        savePendingMessage()
+    }
+
     fun markAsSent() {
-        if (!sending && deliveryUncertain) clearDraft()
+        if (!sending && deliveryUncertain) {
+            pendingMessage = null
+            clearDraft()
+        }
     }
 
     private fun clearDraft() {
@@ -115,10 +167,17 @@ internal class SendModel<T>(
         error = null
         deliveryUncertain = false
         savedState["deliveryUncertain"] = false
+        savedState.remove<String>("pendingMessage")
     }
 
     fun resultShown() {
         result = null
+    }
+
+    suspend fun <History> loadHistory(fetch: suspend () -> History): History {
+        // A read already in progress may omit sends that succeeded after it began.
+        val confirmedCount = sentMessages.size
+        return fetch().also { sentMessages = sentMessages.drop(confirmedCount) }
     }
 }
 

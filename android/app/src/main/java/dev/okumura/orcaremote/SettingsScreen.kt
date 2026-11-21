@@ -144,6 +144,7 @@ internal fun SettingsScreen(
             }) {
                 Text("通知を許可する")
             }
+            AppUpdateSection(connection)
         }
     }
 }

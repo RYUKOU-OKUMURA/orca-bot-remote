@@ -1,5 +1,6 @@
 package dev.okumura.orcaremote
 
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
@@ -7,6 +8,8 @@ import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.URLEncoder
 import java.net.Proxy
+import java.net.ProtocolException
+import java.security.MessageDigest
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -20,6 +23,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
@@ -29,6 +33,7 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okio.BufferedSink
+import okio.ByteString.Companion.toByteString
 import okio.source
 import kotlinx.serialization.json.encodeToStream
 
@@ -204,6 +209,29 @@ internal enum class ApiError(val text: String) {
 
 internal class ApiFailure(val error: ApiError) : Exception()
 
+@Serializable
+internal data class AppRelease(val versionCode: Long, val versionName: String, val sha256: String, val size: Long)
+
+@Serializable
+private data class LatestApp(val app: AppRelease?)
+
+private val apkSha256 = Regex("[a-f0-9]{64}")
+
+internal fun validRelease(release: AppRelease): Boolean =
+    release.versionCode in 1..9_007_199_254_740_991L &&
+        release.versionName.length in 1..64 && release.versionName.all { it in ' '..'~' } &&
+        apkSha256.matches(release.sha256) && release.size in 1..(200L * 1024 * 1024)
+
+internal fun isNewerRelease(release: AppRelease, current: Long) = release.versionCode > current
+
+internal fun matchesDownload(release: AppRelease, size: Long, sha256: String) =
+    size == release.size && sha256 == release.sha256
+
+internal fun matchesAppArchive(release: AppRelease, expectedPackage: String, archivePackage: String?, archiveVersion: Long?) =
+    expectedPackage == archivePackage && release.versionCode == archiveVersion
+
+internal class InvalidAppDownload : IOException()
+
 internal class OrcaApi(
     private val connection: Connection,
     private val postClient: OkHttpClient = writeClient,
@@ -211,6 +239,58 @@ internal class OrcaApi(
     suspend fun health() {
         if (!get<OkReceipt>("health").ok) throw ApiFailure(ApiError.RESPONSE)
     }
+
+
+    suspend fun latestApp(): AppRelease? = get<LatestApp>("app").app?.also {
+        if (!validRelease(it)) throw ApiFailure(ApiError.RESPONSE)
+    }
+
+    suspend fun downloadApp(release: AppRelease, file: File, onProgress: (Long) -> Unit) =
+        suspendCancellableCoroutine { continuation ->
+            val call = updateClient.newCall(request("app", "apk").build())
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    continuation.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val result = try {
+                        response.use {
+                            if (!continuation.isActive) return
+                            if (!response.isSuccessful) throw IOException("APK download failed")
+                            val body = response.body
+                            val length = body.contentLength()
+                            if (length != -1L && length != release.size) throw InvalidAppDownload()
+                            val hash = MessageDigest.getInstance("SHA-256")
+                            var bytes = 0L
+                            file.outputStream().buffered().use { output ->
+                                val input = body.byteStream()
+                                val buffer = ByteArray(64 * 1024)
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count == -1) break
+                                    bytes += count
+                                    if (bytes > release.size) throw InvalidAppDownload()
+                                    hash.update(buffer, 0, count)
+                                    output.write(buffer, 0, count)
+                                    onProgress(bytes)
+                                }
+                            }
+                            if (!matchesDownload(release, bytes, hash.digest().toByteString().hex())) {
+                                throw InvalidAppDownload()
+                            }
+                        }
+                        Result.success(Unit)
+                    } catch (failure: Exception) {
+                        Result.failure(if (failure is ProtocolException) InvalidAppDownload() else failure)
+                    } finally {
+                        if (call.isCanceled()) file.delete()
+                    }
+                    continuation.resumeWith(result)
+                }
+            })
+        }
 
     suspend fun bots(): Bots = get("bots")
     suspend fun chats(bot: String): Chats = get("bots", bot, "chats")
@@ -307,11 +387,16 @@ internal class OrcaApi(
     companion object {
         private val client = OkHttpClient.Builder()
             .proxy(Proxy.NO_PROXY)
+            .connectionPool(ConnectionPool(5, 50, TimeUnit.SECONDS))
             .followRedirects(false)
             .connectTimeout(10, TimeUnit.SECONDS)
             // The server may run three 20-second Orca commands per request.
             .readTimeout(65, TimeUnit.SECONDS)
             .callTimeout(70, TimeUnit.SECONDS)
+            .build()
+        private val updateClient = client.newBuilder()
+            .callTimeout(0, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
             .build()
         internal val writeClient = client.newBuilder()
             .retryOnConnectionFailure(false)

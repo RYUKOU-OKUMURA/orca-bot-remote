@@ -4,20 +4,26 @@ import androidx.lifecycle.SavedStateHandle
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.EOFException
+import java.io.File
 import java.io.IOException
 import java.net.ConnectException
 import java.net.InetSocketAddress
 import java.net.NoRouteToHostException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
+import okio.ByteString.Companion.toByteString
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -272,6 +278,113 @@ class WriteApiTest {
         assertEquals(3, messages.size)
         assertEquals(messages[0], messages[1])
         assertTrue(messages[2].contains("\"path\":\"/ref2\""))
+    }
+
+    private val apkBytes = byteArrayOf(0, 1, 2, -1)
+    private val release = AppRelease(42, "0.2.42",
+        MessageDigest.getInstance("SHA-256").digest(apkBytes).toByteString().hex(), apkBytes.size.toLong())
+
+    @Test
+    fun updateEndpointsFetchMetadataAndWriteExactApkBytes() {
+        val requests = mutableListOf<List<String>>()
+        withDownload({ exchange ->
+            requests += listOf(exchange.requestMethod, exchange.requestURI.path, exchange.requestHeaders.getFirst("Authorization"))
+            if (exchange.requestURI.path == "/api/app") {
+                exchange.reply(200, """{"app":${apiJson.encodeToString(release)}}""")
+            } else {
+                exchange.replyApk()
+            }
+        }) { api, file ->
+            val latest = requireNotNull(api.latestApp())
+            assertEquals(release, latest)
+            var progress = 0L
+            api.downloadApp(latest, file) { progress = it }
+            assertEquals(latest.size, progress)
+            assertArrayEquals(apkBytes, file.readBytes())
+        }
+        assertEquals(listOf(
+            listOf("GET", "/api/app", "Bearer mock-token"),
+            listOf("GET", "/api/app/apk", "Bearer mock-token"),
+        ), requests)
+    }
+
+    @Test
+    fun updateRejectsMismatchedContentLength() {
+        withDownload({ it.replyApk() }) { api, file ->
+            val failure = runCatching { api.downloadApp(release.copy(size = release.size + 1), file) {} }.exceptionOrNull()
+            assertTrue(failure is InvalidAppDownload)
+            assertEquals(0L, file.length())
+        }
+    }
+
+    @Test
+    fun updateRejectsOversizedChunkedBody() {
+        withDownload({ it.replyApk(contentLength = 0) }) { api, file ->
+            val failure = runCatching { api.downloadApp(release.copy(size = release.size - 1), file) {} }.exceptionOrNull()
+            assertTrue(failure is InvalidAppDownload)
+        }
+    }
+
+    @Test
+    fun updateRejectsMismatchedSha256() {
+        withDownload({ it.replyApk() }) { api, file ->
+            val failure = runCatching { api.downloadApp(release.copy(sha256 = "0".repeat(64)), file) {} }.exceptionOrNull()
+            assertTrue(failure is InvalidAppDownload)
+        }
+    }
+
+    @Test
+    fun updateDownloadDoesNotFollowRedirects() {
+        val routes = mutableListOf<String>()
+        withDownload({ exchange ->
+            routes += exchange.requestURI.path
+            if (exchange.requestURI.path == "/api/app/apk") {
+                exchange.responseHeaders.set("Location", "/redirected")
+                exchange.sendResponseHeaders(302, -1)
+            } else exchange.replyApk()
+        }) { api, file ->
+            val failure = runCatching { api.downloadApp(release, file) {} }.exceptionOrNull()
+            assertTrue(failure is IOException)
+            assertEquals(0L, file.length())
+        }
+        assertEquals(listOf("/api/app/apk"), routes)
+    }
+
+    @Test
+    fun updateMetadataAllowsNullRelease() {
+        withServer({ it.reply(200, """{"app":null}""") }) { api -> assertNull(api.latestApp()) }
+    }
+
+    @Test
+    fun updateMetadataRejectsInvalidRelease() {
+        val invalid = release.copy(versionCode = 0)
+        withServer({ it.reply(200, """{"app":${apiJson.encodeToString(invalid)}}""") }) { api ->
+            assertEquals(ApiError.RESPONSE, failureFrom { api.latestApp() })
+        }
+    }
+
+    @Test(timeout = 5000)
+    fun updateDownloadResumesWithRuntimeExceptionFromResponseHandler() {
+        val failure = IllegalStateException("progress handler failed")
+        withDownload({ it.replyApk() }) { api, file ->
+            val actual = runCatching { api.downloadApp(release, file) { throw failure } }.exceptionOrNull()
+            assertTrue(actual is IllegalStateException)
+            assertEquals(failure.message, actual?.message)
+        }
+    }
+
+    private fun HttpExchange.replyApk(contentLength: Long = apkBytes.size.toLong()) {
+        sendResponseHeaders(200, contentLength)
+        responseBody.write(apkBytes)
+    }
+
+    private fun withDownload(handle: (HttpExchange) -> Unit, test: suspend (OrcaApi, File) -> Unit) {
+        val file = Files.createTempFile("orca-update-test-", ".apk")
+        try {
+            withServer(handle) { api -> test(api, file.toFile()) }
+        } finally {
+            Files.deleteIfExists(file)
+        }
     }
 
     private fun withServer(

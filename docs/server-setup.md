@@ -49,6 +49,18 @@ Bot 一覧を受け取れたら、Android から同じ IP または MagicDNS 名
 
 標準出力は `~/Library/Logs/orca-bot-remote/access.log` に保存され、1リクエストにつきルートのテンプレート、HTTP ステータス、所要時間が1行で出ます。認証失敗時は `unauthenticated`、不明なルートは `unknown` と記録します。起動エラーは同じディレクトリの `error.log` に出ます。
 
+## アプリの新しい版を置く
+
+Mac mini でリポジトリのルートから実行します。
+
+```sh
+server/launchd/publish-app.sh
+```
+
+署名済みの APK と版情報が揃うと、`~/Library/Application Support/orca-bot-remote/app/` に公開し、版番号と SHA-256 を表示します。次にスマートフォンでアプリの設定を開くと、公開した版が表示されます。公開先のディレクトリはサーバーの設置先とは別にあり、サーバー更新後も使えます。
+
+署名鍵と `signing.properties` はリポジトリ外の `~/.config/orca-bot-remote/release/` に置き、ファイルの権限を `600` に設定します。署名鍵を失うと、インストール済みアプリを上書き更新できなくなります。鍵の控えは本人が別の安全な場所に保管してください。
+
 ## 停止とアンインストール
 
 一時停止する場合はジョブを登録解除します。再開は plist を再登録します。
@@ -68,6 +80,7 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/dev.okumura.orca-
 | `PORT` | 既定 `8787` |
 | `TOKEN_FILE` | 既定 `~/.config/orca-bot-remote/token`。権限 `600` の通常ファイル。ファイルへのシンボリックリンクは拒否します |
 | `ORCA_BIN` | 既定 `/Applications/Orca.app/Contents/Resources/bin/orca`。絶対パス |
+| `APP_DIR` | 既定 `~/Library/Application Support/orca-bot-remote/app`。`install.sh` はこの値を plist に書き込まないため、通常は既定値を使います。上書きはテスト用です |
 | `SUMMARY_AUTOMATION_ID` | まとめの自動化 ID。空の場合は `{"summary":null}` |
 
 サーバーは指定した Tailscale IP にだけバインドします。接続先は tailnet 内のサーバーを指定してください。

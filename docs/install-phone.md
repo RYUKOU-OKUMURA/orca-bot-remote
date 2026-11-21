@@ -8,12 +8,13 @@
 
 [Tailscale の Android インストール手順](https://tailscale.com/docs/install/android)
 
-## 2. APK を Pixel に移してインストールする
+## 2. 初回だけリリース版 APK を Pixel に移してインストールする
 
-1. Mac でビルドした APK は `android/app/build/outputs/apk/debug/app-debug.apk` にあります。ビルドする場合は [開発環境と動作確認手順](2026-11-21-phase0-devenv.md#ビルドと画面確認)の `assembleDebug` を実行します。
-2. APK を自分の Google Drive など、Pixel で開ける場所に置きます。Pixel でファイルをダウンロードし、**Files** アプリの「ダウンロード」から APK をタップします。
-3. 提供元不明のアプリを許可する画面が出たら、**設定**をタップして、APK を開いたアプリの**この提供元のアプリを許可**をオンにします。戻って**インストール**をタップします。
-4. インストール後は、Pixel の **設定 → アプリ → 特別なアプリアクセス → 不明なアプリのインストール**で、手順 3 で許可したアプリを選んで許可をオフに戻せます。
+1. Pixel にデバッグ版の Orca Bot Remote が入っている場合はアンインストールします。保存済みの URL とトークンは、リリース版のインストール後に入力し直します。
+2. Mac でビルドした署名済み APK は `android/app/build/outputs/apk/release/app-release.apk` にあります。Mac mini で [アプリの新しい版を置く手順](server-setup.md#アプリの新しい版を置く)を実行すると、同じファイルが生成されます。
+3. APK を自分の Google Drive など、Pixel で開ける場所に置きます。Pixel でファイルをダウンロードし、**Files** アプリの「ダウンロード」から APK をタップします。
+4. 提供元不明のアプリを許可する画面が出たら、**設定**をタップして、APK を開いたアプリの**この提供元のアプリを許可**をオンにします。戻って**インストール**をタップします。
+5. インストール後は、Pixel の **設定 → アプリ → 特別なアプリアクセス → 不明なアプリのインストール**で、手順 4 で許可したアプリを選んで許可をオフに戻せます。
 
 [Google Pixel ヘルプのインストール手順](https://support.google.com/pixelphone/answer/7391672?hl=ja)
 
@@ -25,6 +26,12 @@
 4. 「接続できました。設定を保存しました」と表示され、Bot 一覧が開きます。「トークンが違います」と出たらトークンを確認します。「Mac mini につながりません」と出たら Tailscale の接続、URL、中継サーバーの起動を確認します。
 
 [MagicDNS の説明](https://tailscale.com/docs/features/magicdns) · [Android のローカルネットワーク権限](https://developer.android.com/privacy-and-security/local-network-permission)
+
+## 4. 2回目からはアプリの設定で更新する
+
+1. Orca Bot Remote で **設定 → アプリの更新** を開きます。最新の版がいまの版より新しい場合は、**更新**をタップします。
+2. 初回の更新で許可を求められたら、Orca Bot Remote の**常に許可（Always allow）**を選びます。古い Android では**この提供元のアプリを許可**をオンにします。アプリに戻ってもう一度**更新**をタップすると、ダウンロードが始まります。
+3. Android の確認画面で**更新**をタップすると、インストールされます。
 
 ## 会話でコマンド・スキル・添付を使う
 
