@@ -1,7 +1,9 @@
 package dev.okumura.orcaremote
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.res.AssetManager
+import android.util.LruCache
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
@@ -33,35 +35,48 @@ import java.io.IOException
 private const val ASSET_ORIGIN = "https://appassets.androidplatform.net/mermaid/"
 private const val PAGE = "${ASSET_ORIGIN}index.html"
 
+private data class DiagramInput(val source: String, val dark: Boolean)
+
+private val measuredHeights = LruCache<DiagramInput, Int>(64)
+
 @Composable
 internal fun MermaidDiagram(source: String) {
-    val dark = isSystemInDarkTheme()
-    key(source, dark) {
-        var failed by remember { mutableStateOf(false) }
-        var expanded by remember { mutableStateOf(false) }
-        var height by remember { mutableIntStateOf(72) }
-        if (failed) {
-            Text("図として表示できませんでした", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            CodeBlock(source, "mermaid")
-        } else {
-            Box(Modifier.fillMaxWidth().height(height.dp)) {
-                DiagramView(source, dark, false, Modifier.fillMaxSize()) { size ->
-                    if (size < 0) failed = true else if (size > 0) height = size.coerceIn(48, 420)
-                }
-                Box(Modifier.matchParentSize().semantics { contentDescription = "Mermaid 図を拡大" }
-                    .clickable(role = Role.Button) { expanded = true })
+    val input = DiagramInput(source, isSystemInDarkTheme())
+    var failed by remember(input) { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(false) }
+    var height by remember(input) { mutableIntStateOf(measuredHeights.get(input) ?: 72) }
+
+    if (failed) {
+        Text("図として表示できませんでした", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        CodeBlock(source, "mermaid")
+        return
+    }
+
+    val showSource = {
+        failed = true
+        expanded = false
+    }
+    Box(Modifier.fillMaxWidth().height(height.dp)) {
+        DiagramView(input, false, Modifier.fillMaxSize()) { size ->
+            if (size < 0) {
+                showSource()
+            } else if (size > 0) {
+                height = size.coerceIn(48, 420)
+                measuredHeights.put(input, height)
             }
-            if (expanded) {
-                Dialog(onDismissRequest = { expanded = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-                    Surface(Modifier.fillMaxSize()) {
-                        Column(Modifier.safeDrawingPadding()) {
-                            OrcaTextButton(onClick = { expanded = false }, modifier = Modifier.align(Alignment.End)) {
-                                Text("閉じる")
-                            }
-                            DiagramView(source, dark, true, Modifier.fillMaxSize()) { if (it < 0) failed = true }
-                        }
+        }
+        Box(Modifier.matchParentSize().semantics { contentDescription = "Mermaid 図を拡大" }
+            .clickable(role = Role.Button) { expanded = true })
+    }
+    if (expanded) {
+        Dialog(onDismissRequest = { expanded = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.fillMaxSize()) {
+                Column(Modifier.safeDrawingPadding()) {
+                    OrcaTextButton(onClick = { expanded = false }, modifier = Modifier.align(Alignment.End)) {
+                        Text("閉じる")
                     }
+                    DiagramView(input, true, Modifier.fillMaxSize()) { if (it < 0) showSource() }
                 }
             }
         }
@@ -84,58 +99,95 @@ private fun localAsset(assets: AssetManager, url: String): WebResourceResponse {
     return WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), null)
 }
 
-@SuppressLint("SetJavaScriptEnabled")
-@Suppress("DEPRECATION") // Explicitly disable Web SQL on WebView versions that still implement it.
 @Composable
-private fun DiagramView(source: String, dark: Boolean, zoom: Boolean, modifier: Modifier, onSize: (Int) -> Unit) {
+private fun DiagramView(input: DiagramInput, zoom: Boolean, modifier: Modifier, onSize: (Int) -> Unit) {
     val background = MaterialTheme.colorScheme.surface.toArgb()
     AndroidView(
         modifier = modifier,
-        factory = { context ->
-            WebView(context).apply {
-                setBackgroundColor(background)
-                settings.apply {
-                    javaScriptEnabled = true
-                    allowFileAccess = false
-                    allowContentAccess = false
-                    domStorageEnabled = false
-                    databaseEnabled = false
-                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                    blockNetworkLoads = true
-                    setSupportZoom(zoom)
-                    builtInZoomControls = zoom
-                    displayZoomControls = false
-                    useWideViewPort = true
-                }
-                if (!zoom) importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                addJavascriptInterface(object {
-                    @JavascriptInterface
-                    fun report(height: Int) { post { onSize(height) } }
-                }, "DiagramSize")
-                webViewClient = object : WebViewClient() {
-                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest) =
-                        localAsset(context.assets, request.url.toString())
-
-                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
-
-                    override fun onPageFinished(view: WebView, url: String) {
-                        if (url != PAGE) return
-                        val theme = if (dark) "dark" else "default"
-                        val script = "typeof renderDiagram === 'function' && (renderDiagram(${JSONObject.quote(source)}, '$theme'), true)"
-                        view.evaluateJavascript(script) { if (it != "true") onSize(-1) }
-                    }
-
-                    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                        onSize(-1)
-                        return true
-                    }
-                }
-                loadUrl(PAGE)
-            }
-        },
-        onRelease = { view ->
-            view.removeJavascriptInterface("DiagramSize")
-            view.destroy()
-        },
+        factory = { DiagramWebView(it, zoom) },
+        update = { it.update(input, background, onSize) },
+        onRelease = { it.release() },
     )
+}
+
+@SuppressLint("SetJavaScriptEnabled", "ViewConstructor")
+@Suppress("DEPRECATION") // Explicitly disable Web SQL on WebView versions that still implement it.
+private class DiagramWebView(context: Context, zoom: Boolean) : WebView(context) {
+    private var input: DiagramInput? = null
+    private var revision = 0
+    private var ready = false
+    private var unusable = false
+    private var onSize: ((Int) -> Unit)? = null
+
+    init {
+        settings.apply {
+            javaScriptEnabled = true
+            allowFileAccess = false
+            allowContentAccess = false
+            domStorageEnabled = false
+            databaseEnabled = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            blockNetworkLoads = true
+            setSupportZoom(zoom)
+            builtInZoomControls = zoom
+            displayZoomControls = false
+            useWideViewPort = true
+        }
+        if (!zoom) importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        addJavascriptInterface(object {
+            @JavascriptInterface
+            fun report(id: Int, height: Int) { post { reportSize(id, height) } }
+        }, "DiagramSize")
+        webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest) =
+                localAsset(context.assets, request.url.toString())
+
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
+
+            override fun onPageFinished(view: WebView, url: String) {
+                if (url == PAGE && !unusable && !ready) {
+                    ready = true
+                    render()
+                }
+            }
+
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                unusable = true
+                onSize?.invoke(-1)
+                return true
+            }
+        }
+        loadUrl(PAGE)
+    }
+
+    fun update(next: DiagramInput, background: Int, onSize: (Int) -> Unit) {
+        this.onSize = onSize
+        if (unusable) {
+            onSize(-1)
+            return
+        }
+        if (next == input) return
+        input = next
+        revision++
+        setBackgroundColor(background)
+        if (ready) render()
+    }
+
+    private fun render() {
+        val diagram = input ?: return
+        val id = revision
+        val theme = if (diagram.dark) "dark" else "default"
+        val script = "typeof renderDiagram === 'function' && (renderDiagram(${JSONObject.quote(diagram.source)}, '$theme', $id), true)"
+        evaluateJavascript(script) { if (it != "true") reportSize(id, -1) }
+    }
+
+    private fun reportSize(id: Int, height: Int) {
+        if (!unusable && id == revision) onSize?.invoke(height)
+    }
+
+    fun release() {
+        unusable = true
+        onSize = null
+        destroy()
+    }
 }
