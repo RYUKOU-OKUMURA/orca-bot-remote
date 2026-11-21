@@ -24,6 +24,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,7 +39,7 @@ internal fun OrcaIcon(
 ) = Icon(painterResource(id), description, modifier, tint)
 
 @Composable
-internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () -> Unit) {
+internal fun BotRow(bot: Bot, unread: Boolean, expanded: Boolean, open: () -> Unit, toggle: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val shape = MaterialTheme.shapes.small
     val pausedWithPendingItems = bot.paused && bot.needsYou > 0
@@ -50,6 +52,7 @@ internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () ->
     ) {
         ListRow(
             title = bot.name,
+            unread = unread,
             onClick = open,
             modifier = Modifier.weight(1f),
             leading = { Mascot(bot) },
@@ -75,17 +78,25 @@ internal fun BotRow(bot: Bot, expanded: Boolean, open: () -> Unit, toggle: () ->
 }
 
 @Composable
-internal fun ChatRow(chat: Chat, modifier: Modifier = Modifier, showPreview: Boolean = true, open: () -> Unit) {
-    ListRow(
+internal fun ChatRow(chat: Chat, bot: String, meta: ChatMetaStore, modifier: Modifier = Modifier, showPreview: Boolean = true, open: () -> Unit) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        ListRow(
         title = chat.displayTitle,
         onClick = open,
-        modifier = modifier,
+        modifier = Modifier.weight(1f),
+        unread = meta.unread(bot, chat),
         leading = { OrcaIcon(if (chat.home) R.drawable.ic_home else R.drawable.ic_chat) },
         titleMaxLines = if (showPreview) 2 else 1,
         subtitle = if (showPreview) markdownPreview(chat.lastSaid) ?: markdownPreview(chat.lastAsked) else null,
         caption = relativeTime(chat.lastActivityAt, compact = true),
-        showChevron = showPreview,
-    )
+        showChevron = false,
+        )
+        val pinned = meta.pinned(bot, chat.id)
+        IconButton(onClick = { meta.togglePin(bot, chat.id) }) {
+            OrcaIcon(R.drawable.ic_pin, if (pinned) "ピン留めを解除" else "ピン留め",
+                tint = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
+        }
+    }
 }
 
 @Composable
@@ -98,6 +109,7 @@ internal fun ListRow(
     @DrawableRes subtitleIcon: Int? = null,
     subtitleColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     caption: String? = null,
+    unread: Boolean = false,
     showChevron: Boolean = true,
     titleMaxLines: Int = 1,
     subtitleMaxLines: Int = 1,
@@ -116,9 +128,12 @@ internal fun ListRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (unread) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape)
+                    .semantics { contentDescription = "未読" })
                 Text(
                     title,
-                    Modifier.weight(1f),
+                    fontWeight = if (unread) androidx.compose.ui.text.font.FontWeight.Bold else null,
+                    modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = titleMaxLines,
                     overflow = TextOverflow.Ellipsis,

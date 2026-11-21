@@ -196,6 +196,7 @@ private fun LoadError(
 @Composable
 internal fun HomeScreen(
     api: OrcaApi,
+    meta: ChatMetaStore,
     showSuccess: Boolean,
     successShown: () -> Unit,
     refreshCounts: Boolean,
@@ -206,11 +207,11 @@ internal fun HomeScreen(
     openSummary: () -> Unit,
     openChat: (String, String, String) -> Unit,
 ) {
-    val bots = screenModel("bots") { api.bots().bots }
+    val bots = screenModel("bots") { api.bots().bots.also(meta::observeBots) }
     val summary = screenModel("summary") { api.summary() }
     var expandedBot by rememberSaveable { mutableStateOf<String?>(null) }
     val inlineChats = expandedBot?.let { bot ->
-        viewModel<ScreenModel<Chats>>(key = "inline chats: $bot") { ScreenModel { api.chats(bot) } }
+        viewModel<ScreenModel<Chats>>(key = "inline chats: $bot") { ScreenModel { api.chats(bot).also { meta.observeChats(bot, it.chats) } } }
     }
     LaunchedEffect(inlineChats) {
         inlineChats?.load()
@@ -270,7 +271,7 @@ internal fun HomeScreen(
                         val expanded = expandedBot == bot.name
                         item(key = "bot/${bot.id}") {
                             BotRow(
-                                bot,
+                                bot, unread = meta.unread(bot),
                                 expanded = expanded,
                                 open = { openBot(bot.name) },
                                 toggle = { expandedBot = if (expanded) null else bot.name },
@@ -298,10 +299,10 @@ internal fun HomeScreen(
                         }
                         if (expanded && inlineChats?.error == null) {
                             items(
-                                inlineChats?.data?.chats.orEmpty().sortedByDescending { it.home },
+                                meta.sorted(bot.name, inlineChats?.data?.chats.orEmpty()),
                                 key = { "chat/${bot.id}/${it.id}" },
                             ) { chat ->
-                                ChatRow(chat, Modifier.padding(start = 40.dp), showPreview = false) {
+                                ChatRow(chat, bot.name, meta, Modifier.padding(start = 40.dp), showPreview = false) {
                                     openChat(bot.name, chat.id, chat.displayTitle)
                                 }
                             }
@@ -347,6 +348,7 @@ internal val Chat.displayTitle: String
 @Composable
 internal fun ChatsScreen(
     api: OrcaApi,
+    meta: ChatMetaStore,
     bot: String,
     back: () -> Unit,
     settings: () -> Unit,
@@ -355,7 +357,7 @@ internal fun ChatsScreen(
     openNewChat: () -> Unit,
     openChat: (Chat) -> Unit,
 ) {
-    val model = screenModel { api.chats(bot) }
+    val model = screenModel { api.chats(bot).also { meta.observeChats(bot, it.chats) } }
     LaunchedEffect(refreshChats) {
         if (refreshChats) {
             model.load(afterCurrent = true)
@@ -372,8 +374,8 @@ internal fun ChatsScreen(
             )
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings) { result ->
                 EntryList(empty = result.chats.isEmpty(), emptyText = "チャットはまだありません") {
-                    items(result.chats.sortedByDescending { it.home }, key = { it.id }) { chat ->
-                        ChatRow(chat) { openChat(chat) }
+                    items(meta.sorted(bot, result.chats), key = { it.id }) { chat ->
+                        ChatRow(chat, bot, meta) { openChat(chat) }
                     }
                 }
             }
@@ -422,6 +424,7 @@ internal fun NewChatScreen(
 @Composable
 internal fun ConversationScreen(
     api: OrcaApi,
+    meta: ChatMetaStore,
     bot: String,
     chatId: String,
     title: String,
@@ -434,10 +437,14 @@ internal fun ConversationScreen(
         val chat = ChatDraft(state, AttachmentLimits.Conversation)
         SendModel(state, chat, showPendingMessage = true) { text ->
             chat.sendMessage(api, bot, chatId, text) { it.open(resolver) }
+            meta.markRead(bot, chatId)
             ""
         }
     }
-    val model = screenModel { sender.loadHistory { api.messages(bot, chatId) } }
+    val model = screenModel {
+        val requestedAt = System.currentTimeMillis()
+        sender.loadHistory { api.messages(bot, chatId) }.also { meta.markRead(bot, chatId, requestedAt) }
+    }
     val commands: ScreenModel<ChatCommands> = viewModel(key = "commands") { ScreenModel { api.commands(bot, chatId) } }
     val ready = model.data != null
     LaunchedEffect(ready) { if (ready) commands.refresh() }

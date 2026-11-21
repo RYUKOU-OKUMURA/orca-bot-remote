@@ -141,12 +141,14 @@ private const val RefreshItems = "refreshItems"
 private const val Answered = "answered"
 
 @Composable
-private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String): SendModel<String> {
+private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String, meta: ChatMetaStore): SendModel<String> {
     val resolver = LocalContext.current.applicationContext.contentResolver
     return viewModel(viewModelStoreOwner = entry) {
         val state = createSavedStateHandle()
         val chat = ChatDraft(state, AttachmentLimits.NewChat)
-        SendModel(state, chat) { api.startChat(bot, it, chat.inline { file -> file.open(resolver) }) }
+        SendModel(state, chat) {
+            api.startChat(bot, it, chat.inline { file -> file.open(resolver) }).also { id -> meta.markRead(bot, id) }
+        }
     }
 }
 
@@ -160,6 +162,8 @@ private fun RemoteApp(
     val currentEntry by nav.currentBackStackEntryAsState()
     val settingsFirst = rememberSaveable { store.connection == null }
     val connection = store.connection
+    val context = LocalContext.current.applicationContext
+    val meta = remember(connection) { context.chatMetaStore(connection?.url?.toString().orEmpty()) }
     val api = remember(connection) { connection?.let { OrcaApi(it) } }
     val openSettings = { nav.navigate(SettingsRoute) { launchSingleTop = true } }
     val back: () -> Unit = { nav.navigateUp() }
@@ -190,7 +194,7 @@ private fun RemoteApp(
                 RequestNotificationPermission(store)
                 HomeScreen(
                     api,
-                    showSuccess,
+                    meta, showSuccess,
                     { showSuccess = false },
                     refreshCounts,
                     { entry.savedStateHandle[RefreshCounts] = false },
@@ -207,7 +211,7 @@ private fun RemoteApp(
             val refreshChats by entry.savedStateHandle.getStateFlow(RefreshChats, false).collectAsState()
             if (api != null) {
                 ChatsScreen(
-                    api, bot, back, openSettings, refreshChats,
+                    api, meta, bot, back, openSettings, refreshChats,
                     { entry.savedStateHandle[RefreshChats] = false },
                     { nav.navigate(NewChatRoute(bot)) },
                     { openConversation(bot, it.id, it.displayTitle) },
@@ -218,7 +222,7 @@ private fun RemoteApp(
             val (bot) = entry.toRoute<NewChatRoute>()
             val chatsEntry = remember(entry) { nav.getBackStackEntry<ChatsRoute>() }
             if (api != null) {
-                val sender = newChatSender(chatsEntry, api, bot)
+                val sender = newChatSender(chatsEntry, api, bot, meta)
                 NewChatScreen(
                     sender, bot, back, openSettings,
                     checkChats = {
@@ -230,7 +234,7 @@ private fun RemoteApp(
         }
         composable<ConversationRoute> { entry ->
             val (bot, chatId, title) = entry.toRoute<ConversationRoute>()
-            if (api != null) ConversationScreen(api, bot, chatId, title, back, openSettings)
+            if (api != null) ConversationScreen(api, meta, bot, chatId, title, back, openSettings)
         }
         composable<ItemsRoute> { entry ->
             val answered by entry.savedStateHandle.getStateFlow(Answered, false).collectAsState()
@@ -269,7 +273,7 @@ private fun RemoteApp(
     if (api != null && newChatEntry != null) {
         val (bot) = newChatEntry.toRoute<NewChatRoute>()
         val chatsEntry = remember(newChatEntry) { nav.getBackStackEntry<ChatsRoute>() }
-        val sender = newChatSender(chatsEntry, api, bot)
+        val sender = newChatSender(chatsEntry, api, bot, meta)
         val result = sender.result
         LaunchedEffect(newChatEntry, result) {
             if (result != null) {
