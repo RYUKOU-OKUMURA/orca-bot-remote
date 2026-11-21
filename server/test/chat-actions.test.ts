@@ -3,11 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { attachmentStore, maxUploadBytes, inlineUploads } from '../src/attachments.ts';
+import { commandMenu } from '../src/commands.ts';
 import { tokenDigest } from '../src/config.ts';
 import { createApi } from '../src/http.ts';
 import { createOrcaWrite, type messageParams } from '../src/orca-write.ts';
@@ -117,6 +118,21 @@ test('command menu uses reported commands, skills and the current model’s effo
   assert.deepEqual((await (await f.request(route + '/commands')).json()).options, {});
 });
 
+test('placeholder choices do not become selectable models or efforts', () => {
+  const placeholder = { id: '', label: 'Model not reported', efforts: [], isDefault: true };
+  const model = { id: 'm', label: 'Model', isDefault: true, efforts: [
+    { value: '', label: 'Effort not reported' }, { value: 'high', label: 'High' }
+  ] };
+  const current = { model: '', effort: '' };
+  assert.deepEqual(commandMenu({}, { current, models: [placeholder, model] }).options, {
+    model: { current: null, choices: [{ value: 'm', label: 'Model' }] },
+    effort: { current: null, choices: [{ value: 'high', label: 'High' }] }
+  });
+  const empty = commandMenu({}, { current, models: [placeholder] });
+  assert.deepEqual(empty.options, {});
+  assert.deepEqual(empty.commands, []);
+});
+
 test('command mutations use current fence, operation ID and exact fingerprint fields', async t => {
   const expected = [
     { command: 'clear' }, { command: 'compact' }, { command: 'compact', instructions: 'keep context' },
@@ -166,13 +182,17 @@ test('a dropped, ambiguous, or refused command never gets replayed; error detail
 test('messages bind stored files, images and skills in the fingerprint and reject invalid paths', async t => {
   let body: unknown;
   const f = await fixture(t, ({ method, params }) => {
+    if (method === 'agentSession.commands') {
+      assert.deepEqual(params, { sessionId });
+      return { result: { commands: [{ kind: 'skill', name: 'note', path: '/skills/note' }] } };
+    }
     assert.equal(method, 'agentSession.send');
     body = params!.body;
     const envelope = params!.envelope as Envelope;
     assert.equal(envelope.payloadFingerprint, fingerprint({ method, sessionId, fields: { body } }));
     return { result: { ok: true, value: { clientMessageId: envelope.clientOperationId, submission: { reason: null } } } };
   });
-  const dir = join(attachmentStore(), randomUUID());
+  const dir = join(homedir(), 'Library/Application Support/orca/agent-session-attachments', randomUUID());
   await mkdir(dir, { recursive: true });
   const file = join(dir, 'my notes.txt'), image = join(dir, '写真.jpg');
   await writeFile(file, 'notes');
@@ -196,6 +216,48 @@ test('messages bind stored files, images and skills in the fingerprint and rejec
     assert.equal((await f.post(route + '/messages', { text: 'text', ...bad })).status, 400);
   }
   assert.equal(methods(f.calls).filter(m => m === 'agentSession.send').length, 2);
+});
+
+test('skill sends require every name and path to be reported by the current session', async t => {
+  const skill = { name: 'note', path: '/skills/note' };
+  const replies = [
+    { result: { commands: [skill] } }, { result: { commands: [skill] } },
+    { error: { code: 'method_not_supported' } }, { result: { commandsPending: true, commands: [] } }, { result: {} }
+  ];
+  const f = await fixture(t, ({ method, params }) => {
+    assert.equal(method, 'agentSession.commands');
+    assert.deepEqual(params, { sessionId });
+    return replies.shift()!;
+  });
+  for (const [skills, status] of [
+    [[skill, { ...skill, path: '/unlisted' }], 400], [[{ ...skill, name: 'other' }], 400],
+    [[skill], 502], [[skill], 502], [[skill], 502]
+  ] as const) {
+    const res = await f.post(route + '/messages', { text: 'hi', skills });
+    assert.equal(res.status, status);
+    assert.equal((await res.json()).error, status === 400 ? 'bad_request' : 'orca_failed');
+  }
+  assert.deepEqual(methods(f.calls), Array(5).fill(['orchestration.partyLocation', 'agentSession.commands']).flat());
+});
+
+test('after session creation an upload or first message failure makes the creation request uncertain', async t => {
+  let failStage = 'upload';
+  const f = await fixture(t, ({ method }) => {
+    if (method === 'bots.session.start') return { result: { sessionId } };
+    assert.equal(method, failStage === 'upload' ? 'agentSessionAttachment.uploadStart' : 'agentSession.send');
+    return { error: { code: failStage === 'auth' ? 'device_revoked' : 'forbidden' } };
+  });
+  for (const stage of ['upload', 'send', 'auth']) {
+    failStage = stage;
+    const body = stage === 'upload' ? { inlineAttachments: [{ name: 'x', contentBase64: 'WA==' }] } : { text: 'hi' };
+    const res = await f.post(chats, body);
+    assert.equal(res.status, stage === 'auth' ? 503 : 502);
+    assert.equal((await res.json()).error, stage === 'auth' ? 'write_unavailable' : 'unknown_result');
+  }
+  assert.deepEqual(methods(f.calls), [
+    'bots.session.start', 'agentSessionAttachment.uploadStart', 'bots.session.start', 'agentSession.history',
+    'agentSession.send', 'bots.session.start', 'agentSession.history', 'agentSession.send'
+  ]);
 });
 
 test('raw and inline uploads use ordered 384 KiB chunks, verify commit, and send only after upload', async t => {
@@ -222,7 +284,7 @@ test('raw and inline uploads use ordered 384 KiB chunks, verify commit, and send
       case 'agentSessionAttachment.uploadCommit':
         assert.deepEqual(params, { uploadId: id });
         assert.equal(offset, bytes.length);
-        return { result: { path: join(attachmentStore(), id, name), name, byteLength: offset } };
+        return { result: { path: join(homedir(), 'Library/Application Support/orca/agent-session-attachments', id, name), name, byteLength: offset } };
       case 'agentSession.send':
         assert.deepEqual(params!.body, { kind: 'message', role: 'user', blocks: [
           { type: 'image-ref', path: join(attachmentStore(), id, name), alt: name }

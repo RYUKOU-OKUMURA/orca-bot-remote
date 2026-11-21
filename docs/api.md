@@ -94,14 +94,14 @@ Pi エージェントを使う Bot は書き込みの対象外です。
 - `clear` は引数を省略するか空文字にします。`compact` は任意で最大10,000文字の指示を取ります。指示を受け付けるセッションでは `argumentHint` に `[指示]` が付きます。
 - `model` と `effort` は選択肢の `value` を `argument` に指定します。空白だけの値は使えません。上限は512 UTF-16コード単位です。`options.effort.choices` は対象モデルの推論強度です。候補のないキーは省略され、現在値が不明なときは `current: null` になります。
 - `kind: "text"` のセッション報告コマンドは、例として `{"text":"/help"}` を既存のメッセージ送信 API に渡します。`POST {chat}/command` が受け付ける名前は上記4種類です。未知の名前や不正な引数は400、閉じたチャットへの書き込みは409です。
-- スキルを使う場合は `POST {chat}/messages` に `skills: [{"name":"review","path":"/skills/review/SKILL.md"}]` を追加します。上限16件、名前は512、パスは4096 UTF-16コード単位までの空でない文字列で、制御文字は使えません。Orca が一覧でパスを報告しないスキルの `path` は `null` です。
+- スキルを使う場合は `POST {chat}/messages` に `skills: [{"name":"review","path":"/skills/review/SKILL.md"}]` を追加します。上限16件、名前は512、パスは4096 UTF-16コード単位までの空でない文字列で、制御文字は使えません。送信時に現在のセッションの一覧を照合し、名前とパスが一致するものだけを受け付けます。パスが `null` のスキルは指定できません。一覧と一致しない場合は400、一覧取得が未対応の場合は502です。どちらもメッセージは送信されません。
 
 ## ファイル添付
 
 **既存チャット**では、先に `POST {chat}/attachments` でファイルを1つずつアップロードします。`X-File-Name` は UTF-8 のファイル名を URL エンコードした値です。デコード後の上限は256 UTF-16コード単位です。`Content-Type` は `application/octet-stream` やファイルの MIME タイプを使えます。`Content-Length` がない転送にも対応します。1ファイルは1バイト〜20 MiBです。空ファイル、上限超過、不正なヘッダー、multipart 形式は400です。
 
 ```json
-{"path":"/Users/example/Library/Application Support/Orca/agent-session-attachments/12345678-abcd-1234-abcd-123456789abc/図.png","name":"図.png","kind":"image","byteLength":12345}
+{"path":"/Users/example/Library/Application Support/orca/agent-session-attachments/12345678-abcd-1234-abcd-123456789abc/図.png","name":"図.png","kind":"image","byteLength":12345}
 ```
 
 次に `POST {chat}/messages` の `attachments` 配列に、201応答の `path`、`kind`、任意の `name` を渡します。最大10件です。添付があれば `text` は省略または空文字にでき、成功時は従来どおり202です。`skills` も同時に指定できます。サーバーは同じ Mac の Orca 添付ストアにある確定済みの通常ファイルを照合します。外部パス、親ディレクトリ参照、シンボリックリンクは400です。
@@ -116,4 +116,4 @@ Pi エージェントを使う Bot は書き込みの対象外です。
 
 `mimeType` は任意です。`contentBase64` は改行・data URL 接頭辞を含まない標準のパディング付き Base64 です。最大5件、デコード後は1件1バイト〜15 MiB、合計20 MiBまでです。Base64 文字列の内容を除く JSON 全体の上限は64 KiBです。添付だけでも作成でき、成功応答は従来どおり `201 {"chatId":"…"}` です。
 
-サーバーは入力を確認してからチャットを開始し、すべての添付をアップロードして最初のメッセージを送ります。開始後に失敗した場合は、空のチャットや確定済みの添付が残ることがあります。再送前にチャット一覧と履歴を更新してください。コマンドもメッセージも自動再送しません。確定した拒否は502 `orca_failed`、送信後の切断など結果不明の場合は502 `unknown_result` です。
+サーバーは入力を確認してからチャットを開始し、すべての添付をアップロードして最初のメッセージを送ります。チャット開始後にアップロードや送信が失敗すると、空のチャットや確定済みの添付が残ることがあります。この場合は認証エラー（503）と対象消失（404）を除き、502 `unknown_result` を返します。再送前にチャット一覧と履歴を更新してください。コマンドもメッセージも自動再送しません。

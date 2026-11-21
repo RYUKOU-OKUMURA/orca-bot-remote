@@ -31,6 +31,10 @@ export type SessionOptions = {
 type ReportedCommand = { name: string; description?: string; kind?: string; argumentHint?: string; path?: string };
 export type CommandReport = { commands?: ReportedCommand[]; commandsPending?: boolean };
 
+export function isReportedSkill(row: ReportedCommand) {
+  return row.kind === 'skill' || !!row.path;
+}
+
 export function commandMenu(report: CommandReport, session: SessionOptions) {
   const commands: { name: string; description: string; kind: string; argumentHint: string | null }[] = [];
   const skills: { name: string; description: string; path: string | null; argumentHint: string | null }[] = [];
@@ -41,18 +45,20 @@ export function commandMenu(report: CommandReport, session: SessionOptions) {
       argumentHint: name === 'compact' && session.compactInstructions ? '[指示]' : null
     });
   }
-  if (session.models.length) {
-    options.model = { current: session.current.model ?? null, choices: session.models.map(m => ({ value: m.id, label: m.label })) };
+  const models = session.models.filter(model => model.id.trim());
+  if (models.length) {
+    options.model = { current: session.current.model || null, choices: models.map(m => ({ value: m.id, label: m.label })) };
     commands.push({ name: 'model', kind: 'option', description: 'モデルを変更', argumentHint: '<モデル>' });
-    const model = session.current.model ? session.models.find(m => m.id === session.current.model) : session.models.find(m => m.isDefault);
-    if (model?.efforts?.length) {
-      options.effort = { current: session.current.effort ?? null, choices: model.efforts.map(({ value, label }) => ({ value, label })) };
+    const model = session.current.model ? models.find(m => m.id === session.current.model) : models.find(m => m.isDefault);
+    const efforts = model?.efforts?.filter(choice => choice.value.trim());
+    if (efforts?.length) {
+      options.effort = { current: session.current.effort || null, choices: efforts.map(({ value, label }) => ({ value, label })) };
       commands.push({ name: 'effort', kind: 'option', description: '推論の強さを変更', argumentHint: '<強さ>' });
     }
   }
   for (const row of report.commands ?? []) {
     const entry = { name: row.name, description: row.description ?? '', argumentHint: row.argumentHint ?? null };
-    if (row.kind === 'skill' || row.path) skills.push({ ...entry, path: row.path ?? null });
+    if (isReportedSkill(row)) skills.push({ ...entry, path: row.path ?? null });
     else if (!['clear', 'compact', 'model', 'effort'].includes(row.name)) commands.push({ ...entry, kind: 'text' });
   }
   return { commands, skills, options };

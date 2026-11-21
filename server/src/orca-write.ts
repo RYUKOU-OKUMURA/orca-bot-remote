@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { attachmentKind, storePath, type MessageExtras, type Upload, type Uploaded } from './attachments.ts';
-import { commandMenu, type Command, type CommandReport, type SessionOptions } from './commands.ts';
+import { attachmentKind, BadInput, storePath, type MessageExtras, type Upload, type Uploaded } from './attachments.ts';
+import { commandMenu, isReportedSkill, type Command, type CommandReport, type SessionOptions } from './commands.ts';
 import { isTailscaleAddress } from './config.ts';
 import { createPairedE2EEClientHandshake } from '../vendor/orca/shared/remote-runtime/e2ee/paired-e2ee-client-handshake.js';
 import { NODE_PAIRED_E2EE_PRIMITIVES } from '../vendor/orca/shared/remote-runtime/e2ee/node/paired-e2ee-node-primitives.js';
@@ -189,7 +189,7 @@ export async function withOrcaDevice<T>(
     };
     return await run(call);
   } catch (error) {
-    if (error instanceof OrcaWriteError) throw error;
+    if (error instanceof OrcaWriteError || error instanceof BadInput) throw error;
     throw new OrcaWriteError('orca_failed');
   } finally {
     socket?.close();
@@ -217,6 +217,15 @@ function unsuccessful(result: MutationOutcome | undefined): never {
 }
 
 async function sendMessage(call: Call, sessionId: string, text: string, extras?: MessageExtras) {
+  if (extras?.skills?.length) {
+    const report = await call<CommandReport>('agentSession.commands', { sessionId });
+    if (!Array.isArray(report?.commands)) throw new OrcaWriteError('orca_failed');
+    const offered = report.commands.filter(isReportedSkill);
+    if (!extras.skills.every(skill => offered.some(row => row.path === skill.path && row.name === skill.name))) {
+      if (report.commandsPending) throw new OrcaWriteError('orca_failed');
+      throw new BadInput('このチャットのスキル一覧から選び直してください。');
+    }
+  }
   const params = messageParams(sessionId, text, await runtimeFence(call, sessionId), extras);
   const result = await call<{
     ok: boolean;
@@ -279,9 +288,15 @@ export function createOrcaWrite(file = DEVICE_FILE): OrcaWrite {
       return withOrcaDevice(device, signal, async call => {
         const result = await call<{ sessionId: string }>('bots.session.start', { botId }, true);
         if (typeof result?.sessionId !== 'string' || !result.sessionId) throw new OrcaWriteError('unknown_result');
-        const attachments = [];
-        for (const upload of uploads) attachments.push(await uploadFile(device, call, result.sessionId, upload));
-        await sendMessage(call, result.sessionId, text, { attachments });
+        try {
+          const attachments = [];
+          for (const upload of uploads) attachments.push(await uploadFile(device, call, result.sessionId, upload));
+          await sendMessage(call, result.sessionId, text, { attachments });
+        } catch (error) {
+          if (error instanceof OrcaWriteError && (error.code === 'write_unavailable' || error.code === 'not_found')) throw error;
+          // The chat already exists; retrying the whole HTTP request may create another one.
+          throw new OrcaWriteError('unknown_result');
+        }
         return result.sessionId;
       });
     },

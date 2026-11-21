@@ -33,7 +33,7 @@ export function uploadName(value: unknown) {
 }
 
 export function attachmentStore() {
-  return join(homedir(), 'Library', 'Application Support', 'Orca', AGENT_SESSION_ATTACHMENTS_DIR_NAME);
+  return join(homedir(), 'Library', 'Application Support', 'orca', AGENT_SESSION_ATTACHMENTS_DIR_NAME);
 }
 
 export function storePath(path: unknown): path is string {
