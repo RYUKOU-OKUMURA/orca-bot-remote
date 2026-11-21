@@ -280,14 +280,14 @@ private fun RemoteApp(
             it.getOrNull(0).orEmpty() to it.getOrNull(1)?.toLongOrNull()
         }
         when (screen) {
-            "summary" -> nav.navigate(SummaryRoute)
-            "items" -> nav.navigate(ItemsRoute)
+            "summary" -> nav.navigate(SummaryRoute) { launchSingleTop = true }
+            "items" -> nav.navigate(ItemsRoute) { launchSingleTop = true }
             "item" -> if (bot.isNotBlank() && number != null && number > 0) {
                 val route = ItemRoute(bot, number)
                 if (runCatching { nav.getBackStackEntry(route) }.isSuccess) {
                     nav.popBackStack(route, inclusive = false)
                 } else {
-                    if (notificationTarget.coldStart) nav.navigate(ItemsRoute)
+                    if (notificationTarget.coldStart) nav.navigate(ItemsRoute) { launchSingleTop = true }
                     nav.navigate(route)
                 }
             }

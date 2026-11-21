@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -109,7 +111,7 @@ internal fun Page(
         snackbarHost = { if (snackbar != null) SnackbarHost(snackbar) },
     ) { padding ->
         ProvideTextStyle(MaterialTheme.typography.bodyLarge) {
-            content(Modifier.fillMaxSize().padding(padding))
+            content(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding))
         }
     }
 }
@@ -139,23 +141,26 @@ private fun <T> DataContent(
                 LoadError(model, error, settings, Modifier.align(Alignment.Center))
             }
             data != null && keepDataOnError -> Column {
-                if (error != null) {
-                    Text(
-                        error.text,
-                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    if (error == ApiError.UNAUTHORIZED) {
-                        OrcaTextButton(onClick = settings) { Text("設定を開く") }
-                    }
-                }
+                if (error != null) RefreshError(error, settings)
                 Box(Modifier.weight(1f)) { content(data) }
             }
             data != null -> content(data)
             else -> CircularProgressIndicator(Modifier.align(Alignment.Center))
         }
         if (error != null && model.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+private fun RefreshError(error: ApiError, settings: () -> Unit) {
+    Text(
+        error.text,
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
+    )
+    if (error == ApiError.UNAUTHORIZED) {
+        OrcaTextButton(onClick = settings) { Text("設定を開く") }
     }
 }
 
@@ -200,7 +205,6 @@ internal fun HomeScreen(
     openChat: (String, String, String) -> Unit,
 ) {
     val bots = screenModel("bots") { api.bots().bots }
-    val items = screenModel("items") { api.items().items.size }
     val summary = screenModel("summary") { api.summary() }
     var expandedBot by rememberSaveable { mutableStateOf<String?>(null) }
     val inlineChats = expandedBot?.let { bot ->
@@ -211,7 +215,6 @@ internal fun HomeScreen(
     }
     val refresh = {
         bots.refresh()
-        items.refresh()
         summary.refresh()
         inlineChats?.refresh()
         Unit
@@ -220,7 +223,6 @@ internal fun HomeScreen(
     LaunchedEffect(refreshCounts) {
         if (refreshCounts) {
             bots.refresh(afterCurrent = true)
-            items.refresh(afterCurrent = true)
             countsRefreshStarted()
         }
     }
@@ -237,16 +239,19 @@ internal fun HomeScreen(
         container = MaterialTheme.colorScheme.surfaceContainer,
     ) { modifier ->
         val botError = bots.error
-        if (botError != null) {
+        if (botError != null && bots.data == null) {
             Box(modifier) {
                 LoadError(bots, botError, settings, Modifier.align(Alignment.Center), retry = refresh)
                 if (bots.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
-        } else {
+            return@Page
+        }
+        Column(modifier) {
+            if (botError != null) RefreshError(botError, settings)
             PullToRefreshBox(
-                isRefreshing = bots.loading || items.loading || summary.loading || inlineChats?.loading == true,
+                isRefreshing = bots.loading || summary.loading,
                 onRefresh = refresh,
-                modifier = modifier,
+                modifier = Modifier.fillMaxSize(),
             ) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().semantics {
@@ -315,7 +320,7 @@ internal fun HomeScreen(
                         )
                     }
                     item {
-                        val count = items.data
+                        val count = botList?.sumOf { it.needsYou }
                         ListRow(
                             title = if (count == null) "判断待ち" else "判断待ち ${count}件",
                             onClick = openItems,
@@ -326,7 +331,6 @@ internal fun HomeScreen(
                                     else MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             },
-                            subtitle = if (items.error != null) "件数を読めませんでした" else null,
                         )
                     }
                 }
@@ -459,7 +463,7 @@ internal fun ConversationScreen(
                         contentPadding = ListPadding,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        items(result.entries.asReversed()) { entry ->
+                        itemsIndexed(result.entries.asReversed(), key = { idx, _ -> result.entries.lastIndex - idx }) { _, entry ->
                             when (entry) {
                                 is Entry.Message -> MessageBubble(entry)
                                 is Entry.Tool -> Row(
