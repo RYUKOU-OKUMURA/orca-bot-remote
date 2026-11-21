@@ -44,11 +44,14 @@ type Run = {
 const newestFirst = (a: { lastActivityAt?: number }, b: { lastActivityAt?: number }) =>
   (b.lastActivityAt ?? -Infinity) - (a.lastActivityAt ?? -Infinity);
 
-export function createOrca(orcaBin: string, summaryId?: string) {
-  function read<T>(...args: string[]): Promise<T> {
+export function createOrca(orcaBin: string, summaryId: string | undefined, signal: AbortSignal, deadline: number) {
+  async function read<T>(...args: string[]): Promise<T> {
+    signal.throwIfAborted();
+    if (performance.now() >= deadline) throw new OrcaError();
     return new Promise((resolve, reject) => {
       execFile(orcaBin, [...args, '--json'], {
         env: { HOME: homedir(), PATH: '/usr/bin:/bin' },
+        signal,
         timeout: 20_000,
         killSignal: 'SIGKILL',
         maxBuffer: 4 * 1024 * 1024

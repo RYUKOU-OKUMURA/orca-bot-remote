@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test, type TestContext } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.ts';
 import { createApi } from '../src/http.ts';
@@ -24,11 +25,20 @@ before(() => {
 });
 after(() => rmSync(tokenDir, { recursive: true }));
 
-async function openApi(t: TestContext, summaryId?: string) {
+function recordOrcaCalls(t: TestContext) {
+  const dir = mkdtempSync(join(tokenDir, 'orca-'));
+  const bin = join(dir, 'orca');
+  copyFileSync(orcaBin, bin);
+  writeFileSync(`${bin}.calls`, '');
+  t.after(() => rmSync(dir, { recursive: true }));
+  return { bin, calls: () => readFileSync(`${bin}.calls`, 'utf8').trim().split('\n') };
+}
+
+async function openApi(t: TestContext, summaryId?: string, bin = orcaBin, requestTimeoutMs?: number) {
   const server = createApi(readConfig({
     HOST: '100.113.115.59', TOKEN_FILE: join(tokenDir, 'token'),
-    ORCA_BIN: orcaBin, SUMMARY_AUTOMATION_ID: summaryId
-  }));
+    ORCA_BIN: bin, SUMMARY_AUTOMATION_ID: summaryId
+  }), requestTimeoutMs);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
@@ -150,13 +160,34 @@ test('未知のパス・Bot・チャット・項目は 404', async t => {
 });
 
 test('履歴の旧パス、未知の Bot、別の Bot のチャット、Bot 外のセッションには 404 を返す', async t => {
-  const get = await openApi(t);
+  const { bin, calls } = recordOrcaCalls(t);
+  const get = await openApi(t, undefined, bin);
   for (const path of [
     `/api/chats/${chat}/messages`, `/api/bots/unknown/chats/${chat}/messages`,
     `/api/bots/${other}/chats/${chat}/messages`, `/api/bots/${bot}/chats/${unrelatedChat}/messages`
   ]) {
     assert.equal((await get(path, 404)).error, 'not_found');
   }
+  assert.deepEqual(calls(), [
+    'bot list --json', 'bot list --json', 'bot chats --bot=専門Bot --all --json',
+    'bot list --json', 'bot chats --bot=メインBot --all --json'
+  ]);
+});
+
+test('リクエスト全体の期限で実行中の CLI を停止し、残りを呼ばず 502 を返す', { timeout: 5000 }, async t => {
+  const { bin, calls } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.slow`, '');
+  const get = await openApi(t, undefined, bin, 1200);
+  assert.deepEqual(await get(`/api/items/${bot}/7`, 502), {
+    error: 'orca_failed', message: 'Orca の読み取りが制限時間内に終わりませんでした。'
+  });
+  await delay(50);
+  assert.throws(() => process.kill(Number(readFileSync(`${bin}.pid`, 'utf8')), 0), { code: 'ESRCH' });
+  assert.deepEqual(calls(), [
+    'bot list --json',
+    'bot item list --bot=メインBot --all --limit 100 --json',
+    'bot item list --bot=メインBot --all --limit 100 --cursor 400:1 --json'
+  ]);
 });
 
 test('既知パスの GET 以外は 405', async t => {
