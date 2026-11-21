@@ -57,6 +57,14 @@ internal class ChatMetaStore(
         save(bot, old.copy(read = old.read + (id to time)))
     }
 
+    fun markNotificationRead(bot: String, id: String, activityAt: Long) {
+        val old = meta(bot)
+        save(bot, old.copy(
+            read = old.read + (id to maxOf(old.read[id] ?: 0, activityAt)),
+            activity = old.activity + (id to maxOf(old.activity[id] ?: 0, activityAt)),
+        ))
+    }
+
     fun unread(bot: String, chat: Chat) = (chat.lastActivityAt ?: 0) > (meta(bot).read[chat.id] ?: 0)
     fun unread(bot: Bot): Boolean {
         val m = meta(bot.name)

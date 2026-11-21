@@ -23,6 +23,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 private const val ReplyKey = "reply"
 private const val ChoiceKey = "choice"
+private const val ChatActivityKey = "chatActivity"
 private const val NoticeKey = "noticeId"
 internal const val NotificationConnectionId = "notificationConnectionId"
 
@@ -33,13 +34,14 @@ internal fun responseActions(options: List<String>) =
 internal fun responseText(inline: Boolean, choice: String?, remoteResult: CharSequence?): String? =
     (if (inline) remoteResult?.toString()?.trim() else choice)?.takeIf { it.isNotBlank() }
 
-internal fun Notification.Builder.addResponseActions(context: Context, target: Uri, options: List<String>) {
+internal fun Notification.Builder.addResponseActions(context: Context, target: Uri, options: List<String>, chatActivity: Long = 0) {
     val noticeId = UUID.randomUUID().toString()
     addExtras(Bundle().apply { putString(NoticeKey, noticeId) })
     responseActions(options).forEachIndexed { index, action ->
         val intent = Intent(context, NotificationActionReceiver::class.java)
             .setAction(if (action.inline) ReplyKey else "choice/$index")
             .setData(target.buildUpon().fragment(noticeId).build())
+            .putExtra(ChatActivityKey, chatActivity)
             .putExtra(NotificationConnectionId, context.connectionPreferences().getString(NotificationConnectionId, ""))
         if (!action.inline) intent.putExtra(ChoiceKey, action.label)
         val mutability = if (action.inline) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
@@ -99,7 +101,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     if (!connection.matches(prefs.enabledConnection())) return@launch
                     if (error == null) {
                         if (item) WorkManager.getInstance(context).enqueue(OneTimeWorkRequestBuilder<NotificationWorker>().build())
-                        else withContext(Dispatchers.Main) { context.chatMetaStore(connection.url.toString()).markRead(bot, id) }
+                        else withContext(Dispatchers.Main) {
+                            context.chatMetaStore(connection.url.toString()).markNotificationRead(bot, id, intent.getLongExtra(ChatActivityKey, 0))
+                        }
                     }
                     val result = error?.let { "${it.text} タップして確認してください。" }
                         ?: if (item) "回答を送りました：$text" else "送信しました：$text"

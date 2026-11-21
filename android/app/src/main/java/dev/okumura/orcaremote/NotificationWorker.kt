@@ -65,7 +65,10 @@ internal object NotificationSync {
 
     private suspend fun checkChanges(context: Context) = coroutineScope {
         val prefs = context.connectionPreferences()
-        val connection = prefs.enabledConnection() ?: return@coroutineScope
+        val (connection, connectionId) = notificationSettingsMutex.withLock {
+            val saved = prefs.enabledConnection() ?: return@coroutineScope
+            saved to prefs.getString(NotificationConnectionId, "")
+        }
         createNotificationChannels(context)
         val api = OrcaApi(connection)
         val itemsRequest = async { readOrNull { api.items().items } }
@@ -85,7 +88,7 @@ internal object NotificationSync {
             val now = LocalTime.now()
             return notificationChannel(channel, details.quietAt(now.hour, now.minute), details.replies, target,
                 ActiveChatTracker.current)?.takeIf {
-                manager.areNotificationsEnabled() && manager.getNotificationChannel(it)?.importance != NotificationManager.IMPORTANCE_NONE
+                manager.areNotificationsEnabled() && (manager.getNotificationChannel(it)?.importance ?: 0) > NotificationManager.IMPORTANCE_NONE
             }
         }
         val newItems = decideNotifications(previous, items, null, summaryUpdated = false,
@@ -106,7 +109,7 @@ internal object NotificationSync {
         val questions = questionsRequest.await()
         notificationSettingsMutex.withLock {
             ensureActive()
-            if (!connection.matches(prefs.enabledConnection())) return@withLock
+            if (!connection.matches(prefs.enabledConnection()) || connectionId != prefs.getString(NotificationConnectionId, "")) return@withLock
             if (items != null) QuickMemoWidgetProvider.updateCount(context, items.count { it.status == "needs_you" })
             val itemChannel = delivery(ItemsChannel)
             val summaryChannel = delivery(SummaryChannel)
@@ -138,7 +141,7 @@ internal object NotificationSync {
                     val target = chat.chatId?.let { notificationTarget("chat", bot.name, it) }
                         ?: notificationTarget("chats", bot.name)
                     manager.post(context, channel, target, "ボットの返答：${bot.name}", bot.lastSaid.orEmpty()) {
-                        if (chat.chatId != null) addResponseActions(context, target, emptyList())
+                        if (chat.chatId != null) addResponseActions(context, target, emptyList(), bot.lastActivityAt ?: 0)
                     }
                 }
             }

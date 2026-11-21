@@ -80,9 +80,13 @@ internal class ConnectionStore(application: Application) : AndroidViewModel(appl
         private set
 
     fun updateNotificationPrefs(value: NotificationPrefs) {
-        preferences.edit().putString("notificationDetails", apiJson.encodeToString(value)).apply()
-        notificationPrefs = value
-        updateNotificationSchedule()
+        viewModelScope.launch {
+            notificationSettingsMutex.withLock {
+                preferences.edit().putString("notificationDetails", apiJson.encodeToString(value)).apply()
+                notificationPrefs = value
+                updateNotificationSchedule()
+            }
+        }
     }
 
     init {
