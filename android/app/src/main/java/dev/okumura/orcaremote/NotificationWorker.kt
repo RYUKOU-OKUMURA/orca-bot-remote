@@ -78,8 +78,8 @@ internal object NotificationSync {
         val summary = summaryRequest.await()
         val bots = botsRequest.await()
         val previous = prefs.notificationHistory()
-        val oldReplies = prefs.getString(ReplyHistory, null)?.let {
-            apiJson.decodeFromString<Map<String, ReplyStamp>>(it)
+        val oldReplies = readNotificationJson<Map<String, ReplyStamp>> {
+            prefs.getString(ReplyHistory, null)
         }.orEmpty()
         val replies = bots?.let { decideReplies(oldReplies, it) }
         val manager = context.getSystemService(NotificationManager::class.java)

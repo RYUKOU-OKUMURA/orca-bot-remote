@@ -12,6 +12,7 @@ import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import java.io.IOException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,6 +26,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 
+// Main-thread only. A queued foreground start must promote itself before it can be stopped.
+private var stopPromotedStart: (() -> Unit)? = null
+
 internal fun reconcileNotifications(context: Context) {
     val prefs = context.connectionPreferences()
     val enabled = prefs.enabledConnection() != null
@@ -33,7 +37,7 @@ internal fun reconcileNotifications(context: Context) {
     if (enabled && prefs.notificationPrefs().realtime) {
         // Background starts can be denied even after a boot/update broadcast.
         runCatching { context.startForegroundService(service) }
-    } else context.stopService(service)
+    } else stopPromotedStart?.invoke()
 }
 
 class BootReceiver : BroadcastReceiver() {
@@ -45,25 +49,31 @@ class BootReceiver : BroadcastReceiver() {
 }
 
 class RealtimeNotificationService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate +
+        CoroutineExceptionHandler { _, failure ->
+            android.util.Log.w("OrcaNotifications", "Realtime sync stopped: ${failure.javaClass.simpleName}")
+            stopPromotedStart?.invoke()
+        })
     private val networkChanged = Channel<Unit>(Channel.CONFLATED)
     private var loop: Job? = null
     private var connected: Connection? = null
     private lateinit var connectivity: ConnectivityManager
     private var callbackRegistered = false
+    private var lastNetwork: Network? = null
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) { networkChanged.trySend(Unit) }
+        override fun onAvailable(network: Network) {
+            if (network != lastNetwork) networkChanged.trySend(Unit)
+            lastNetwork = network
+        }
+
+        override fun onLost(network: Network) {
+            if (network == lastNetwork) lastNetwork = null
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val prefs = connectionPreferences()
-        val connection = prefs.enabledConnection()
-        if (connection == null || !prefs.notificationPrefs().realtime) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
         createNotificationChannels(this)
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val status = Notification.Builder(this, RealtimeChannel)
@@ -79,7 +89,15 @@ class RealtimeNotificationService : Service() {
             } else startForeground(1, status)
         }
         if (promoted.isFailure) {
-            stopSelf()
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        stopPromotedStart = { stopSelf(startId) }
+        val prefs = connectionPreferences()
+        val connection = prefs.enabledConnection()
+        if (connection == null || !prefs.notificationPrefs().realtime) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
             return START_NOT_STICKY
         }
         if (!connection.matches(connected) || loop?.isActive != true) {
@@ -87,7 +105,10 @@ class RealtimeNotificationService : Service() {
             connected = connection
             if (!callbackRegistered) {
                 connectivity = getSystemService(ConnectivityManager::class.java)
-                callbackRegistered = runCatching { connectivity.registerDefaultNetworkCallback(callback) }.isSuccess
+                callbackRegistered = runCatching {
+                    lastNetwork = connectivity.activeNetwork
+                    connectivity.registerDefaultNetworkCallback(callback)
+                }.isSuccess
             }
             loop = scope.launch { listen(connection) }
         }
@@ -132,7 +153,7 @@ class RealtimeNotificationService : Service() {
                 }
             }
             when (end) {
-                End.STOP -> { stopSelf(); return@coroutineScope }
+                End.STOP -> { stopPromotedStart?.invoke(); return@coroutineScope }
                 End.NETWORK_CHANGED -> failures = 0
                 End.RETRY -> {
                     if (withTimeoutOrNull(reconnectDelay(failures)) { networkChanged.receive() } != null) failures = 0
@@ -143,6 +164,7 @@ class RealtimeNotificationService : Service() {
     }
 
     override fun onDestroy() {
+        stopPromotedStart = null
         scope.cancel()
         if (callbackRegistered) connectivity.unregisterNetworkCallback(callback)
         stopForeground(STOP_FOREGROUND_REMOVE)

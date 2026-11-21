@@ -154,6 +154,9 @@ internal fun SettingsScreen(
                     TimeButton("開始", details.startMinute) { onDetailsChanged(details.copy(startMinute = it)) }
                     TimeButton("終了", details.endMinute) { onDetailsChanged(details.copy(endMinute = it)) }
                 }
+                if (details.startMinute == details.endMinute) {
+                    Text("開始と終了が同じ時刻のため、おやすみ時間は無効です。")
+                }
             }
             NotificationToggle("リアルタイム通知（数秒でお知らせ）", details.realtime) {
                 onDetailsChanged(details.copy(realtime = it))

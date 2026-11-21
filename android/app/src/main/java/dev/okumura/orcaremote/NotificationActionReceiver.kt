@@ -76,15 +76,19 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     it.notification.extras.getString(NoticeKey) == noticeId }?.notification
                 fun update(notification: Notification, message: String) {
                     manager.post(context, notification.channelId, target,
-                        notification.extras.getString(Notification.EXTRA_TITLE).orEmpty(), message) {
+                        notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty(), message) {
                         addExtras(Bundle().apply { putString(NoticeKey, noticeId) })
                         setOnlyAlertOnce(true)
                     }
                 }
+                fun sameConnectionId() = prefs.getString(NotificationConnectionId, "") == intent.getStringExtra(NotificationConnectionId)
                 val connection = notificationSettingsMutex.withLock {
-                    val saved = prefs.enabledConnection() ?: return@launch
-                    if (prefs.getString(NotificationConnectionId, "") != intent.getStringExtra(NotificationConnectionId)) return@launch
                     val notification = current()?.takeUnless { it.actions.isNullOrEmpty() } ?: return@launch
+                    val saved = prefs.enabledConnection()
+                    if (saved == null || !sameConnectionId()) {
+                        update(notification, "送信できませんでした。アプリで確認してください。")
+                        return@launch
+                    }
                     update(notification, "送信中…")
                     saved
                 }
@@ -98,7 +102,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     if (sent == true) null else ApiError.UNKNOWN_RESULT
                 } catch (failure: ApiFailure) { failure.error }
                 notificationSettingsMutex.withLock {
-                    if (!connection.matches(prefs.enabledConnection())) return@launch
+                    if (!connection.matches(prefs.enabledConnection()) || !sameConnectionId()) {
+                        current()?.let { update(it, "送信結果をアプリで確認してください。") }
+                        return@launch
+                    }
                     if (error == null) {
                         if (item) WorkManager.getInstance(context).enqueue(OneTimeWorkRequestBuilder<NotificationWorker>().build())
                         else withContext(Dispatchers.Main) {

@@ -18,11 +18,18 @@ internal data class NotificationPrefs(
     val endMinute: Int = 7 * 60,
     val realtime: Boolean = true,
 ) {
+    init {
+        require(startMinute in 0 until 24 * 60 && endMinute in 0 until 24 * 60)
+    }
+
     fun quietAt(hour: Int, minute: Int) = quietHours && isQuietHours(hour, minute, startMinute, endMinute)
 }
 
+internal inline fun <reified T> readNotificationJson(read: () -> String?): T? =
+    runCatching { read()?.let { apiJson.decodeFromString<T>(it) } }.getOrNull()
+
 internal fun SharedPreferences.notificationPrefs() =
-    getString("notificationDetails", null)?.let { apiJson.decodeFromString<NotificationPrefs>(it) } ?: NotificationPrefs()
+    readNotificationJson<NotificationPrefs> { getString("notificationDetails", null) } ?: NotificationPrefs()
 
 internal fun isQuietHours(hour: Int, minute: Int, startMinute: Int, endMinute: Int): Boolean {
     val now = hour * 60 + minute

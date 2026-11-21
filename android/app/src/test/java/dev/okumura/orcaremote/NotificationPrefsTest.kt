@@ -4,6 +4,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NotificationPrefsTest {
+    @Test fun unreadableStoredSettingsAndHistoryFallBackWithoutAnnouncingOldReplies() {
+        assertNull(readNotificationJson<NotificationPrefs> { "broken" })
+        assertNull(readNotificationJson<NotificationPrefs> { """{"startMinute":1440}""" })
+        assertNull(readNotificationJson<NotificationPrefs> { throw ClassCastException() })
+        val valid = NotificationPrefs(realtime = false)
+        assertEquals(valid, readNotificationJson<NotificationPrefs> { apiJson.encodeToString(valid) })
+
+        val previous = readNotificationJson<Map<String, ReplyStamp>> { """{"id":false}""" }.orEmpty()
+        val bot = Bot("id", "bot", paused = false, needsYou = 0, lastActivityAt = 10, lastSaid = "old")
+        val decision = decideReplies(previous, listOf(bot))
+        assertTrue(decision.newReplies.isEmpty())
+        assertEquals(ReplyStamp(10, "old"), decision.history[bot.id])
+    }
+
     @Test fun overnightBoundariesAndDisabledHours() {
         val prefs = NotificationPrefs()
         assertTrue(prefs.quietAt(22, 0))
