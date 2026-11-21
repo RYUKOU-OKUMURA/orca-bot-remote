@@ -131,8 +131,14 @@ private fun <T> DataContent(
 }
 
 @Composable
-private fun LoadError(model: ScreenModel<*>, error: ApiError, settings: () -> Unit, modifier: Modifier) {
-    val retryWithPermission = withLocalNetworkPermission(onDenied = {}, onGranted = model::refresh)
+private fun LoadError(
+    model: ScreenModel<*>,
+    error: ApiError,
+    settings: () -> Unit,
+    modifier: Modifier,
+    retry: () -> Unit = model::refresh,
+) {
+    val retryWithPermission = withLocalNetworkPermission(onDenied = {}, onGranted = retry)
     Column(
         modifier.widthIn(max = 450.dp).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -142,7 +148,7 @@ private fun LoadError(model: ScreenModel<*>, error: ApiError, settings: () -> Un
         when (error) {
             ApiError.UNAUTHORIZED -> Button(onClick = settings) { Text("設定を開く") }
             else -> Button(
-                onClick = if (error == ApiError.CONNECTION) retryWithPermission else model::refresh,
+                onClick = if (error == ApiError.CONNECTION) retryWithPermission else retry,
                 enabled = !model.loading,
             ) { Text("再試行") }
         }
@@ -183,7 +189,7 @@ internal fun HomeScreen(
         val botError = bots.error
         if (botError != null) {
             Box(modifier) {
-                LoadError(bots, botError, settings, Modifier.align(Alignment.Center))
+                LoadError(bots, botError, settings, Modifier.align(Alignment.Center), retry = refresh)
                 if (bots.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         } else {
