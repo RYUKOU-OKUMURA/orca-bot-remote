@@ -9,6 +9,7 @@
 | メソッドとパス | 応答 |
 | --- | --- |
 | `GET /api/health` | `{"ok":true}`。Orca CLI を起動せず、サーバーへの接続と認証を確認します |
+| `GET /api/board` | `{"updatedAt":number,"bots":[…],"sessions":[…],"tasks":[…]}`。秘書ボードの取得時刻、全 Bot、稼働中セッション、アクティブな項目をまとめて返します |
 | `GET /api/bots` | `{"bots":[{"id":string,"name":string,"specialty":string?,"paused":boolean,"needsYou":number,"avatar":string?,"lastActivityAt":number?,"lastSaid":string?,"working":boolean,"activeWork":string?}]}` |
 | `GET /api/bots/{botName}/chats` | `{"chats":[{"id":string,"title":string?,"home":boolean,"lastActivityAt":number?,"lastAsked":string?,"lastSaid":string?,"working":boolean}]}` |
 | `GET /api/bots/{botName}/chats/{chatId}/messages?limit=N` | `{"state":string?,"entries":[{"kind":"message","role":string,"text":string} \| {"kind":"tool","name":string,"state":string?}],"activeWorkers":[{"title":string,"tool":string?}]}` |
@@ -25,6 +26,12 @@
 - 判断待ち一覧には全 Bot の `needs_you` 項目を新しい順に返します。`number` は正の整数です。質問があれば現在の質問イベントの本文と選択肢ラベルを返します。選択肢はイベント内の出現順です。質問が無ければ `question` は `null` です。
 - まとめは `automations runs --limit 20` で取得した、設定された自動化の直近20回の実行のうち、最新の完了済み定期実行を選びます。`bot` は自動化定義の Bot 名です。Bot 一覧から名前を特定できない場合は定義にある Bot ID を返します。`runAt` は予定時刻（Orca の `scheduledFor`）です。未設定、該当する実行が無い場合、または該当回の本文がまだ無い場合は `{"summary":null}` を返します。
 
+### 秘書ボード
+
+- `bots` は一覧順に `id, name, avatar, working, activeWork, needsYou, paused` を返します。`needsYou` は表示上限を適用する前の判断待ち件数です。
+- `sessions` は稼働中の最大20件で、各行に `bot, avatar, kind, title, tool, chatId` が入ります。`kind` は配下ワーカーの `worker` または本体チャットの `chat` です。ワーカーの `chatId` と不明なツール名は `null` です。`worktree ps` 失敗時は 200 で空の `sessions` と各 Bot の `working: false, activeWork: null` を返します。
+- `tasks` の各行は `bot, avatar, number, title, status, chatId, lastActivityAt` を持ちます。`needs_you` → `in_progress` → `planned`、同じ状態なら最終活動の新しい順（時刻不明は末尾）で最大30件です。
+
 ## リアルタイム通知
 
 `GET /api/events` は Bearer 認証後に `text/event-stream; charset=utf-8` で接続を維持します。トークンがない場合や不正な場合は 401、認証済みの GET 以外は 405（`Allow: GET`）です。同時接続はサーバー全体で8本までで、上限では `503 {"error":"too_many_connections","message":"リアルタイム通知の接続数が上限に達しています。"}` を返します。
@@ -32,7 +39,7 @@
 | フレーム | 送信条件とデータ |
 | --- | --- |
 | `event: ready` | 接続直後に `data: {"at":1795299000000}` を送ります。再接続までの変更履歴は配信しないため、現在値は各読み取り API で取得します |
-| `event: change` | 約10秒ごとに確認し、判断待ち一覧・最新まとめの予定時刻・Bot の返答や作業状態に変化があれば `data: {"items":true,"summary":false,"bots":true,"at":1795299010000}` の形式で知らせます。`true` の対象を再取得してください |
+| `event: change` | 約10秒ごとに判断待ち一覧（`items`）、最新まとめの予定時刻（`summary`）、Bot の返答・作業状態等（`bots`）、アクティブな項目（`board`）の変化を調べ、例として `data: {"items":false,"summary":false,"bots":false,"board":true,"at":1795299010000}` を送ります。秘書ボードは `board` または `bots` が `true` のときに再取得します |
 | `: ping` | 接続維持のため約25秒ごとに送るコメントです |
 
 接続中の全端末で監視を共有します。最初の正常な取得は比較の基準とし、取得失敗時はその対象の直前の正常値を保持します。最後の端末が切断すると監視を停止します。

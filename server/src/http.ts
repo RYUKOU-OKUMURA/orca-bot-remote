@@ -161,9 +161,10 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     const bots = BOTS.test(path);
     const items = ITEMS.test(path);
     const summary = SUMMARY.test(path);
+    const board = path === '/api/board';
     const health = path === '/api/health';
     if (health) logPath = '/api/health';
-    else if (app || apk || streaming) logPath = path;
+    else if (app || apk || streaming || board) logPath = path;
     else if (bots) logPath = '/api/bots';
     else if (chats) logPath = '/api/bots/:bot/chats';
     else if (action) logPath = '/api/bots/:bot/chats/:chat/' + route;
@@ -210,6 +211,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     });
     const orca = createOrca(orcaBin, summaryId, signal, deadline);
     try {
+      if (board) return send(200, await orca.board());
       if (bots) return send(200, { bots: await orca.bots() });
       if (items) return send(200, { items: await orca.items() });
       if (summary) return send(200, { summary: await orca.summary() });
