@@ -29,5 +29,4 @@ dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.material3)
     implementation(libs.activity.compose)
-    implementation(libs.ui.tooling.preview)
 }
