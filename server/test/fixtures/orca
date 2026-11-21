@@ -48,6 +48,16 @@ case "$*" in
         result='{"items":[{"number":2,"title":"確認","status":"needs_you","lastActivityAt":200}]}'
         if [ -f "$0.items-result" ]; then result=$(/bin/cat "$0.items-result"); fi
         ;;
+    'bot item list --bot=メインBot --limit 100 --json')
+        result='{"items":[{"number":7,"title":"判断待ち","status":"needs_you","chat":{"id":"chat-7"},"lastActivityAt":100},{"number":9,"title":"完了","status":"done"}],"nextCursor":"100:7"}'
+        ;;
+    'bot item list --bot=メインBot --limit 100 --cursor 100:7 --json')
+        result='{"items":[{"number":6,"title":"進行中","status":"in_progress"},{"number":5,"title":"予定","status":"planned","lastActivityAt":900},{"number":4,"status":"canceled"}]}'
+        ;;
+    'bot item list --bot=専門Bot --limit 100 --json')
+        result='{"items":[{"number":2,"title":"確認","status":"needs_you","lastActivityAt":200}]}'
+        if [ -f "$0.items-result" ]; then result=$(/bin/cat "$0.items-result"); fi
+        ;;
     'bot item list --bot=メインBot --all --limit 100 --json')
         if [ -f "$0.slow" ]; then sleep 0.6; fi
         result='{"items":[{"uid":"uid-1","number":1}],"nextCursor":"400:1"}'
