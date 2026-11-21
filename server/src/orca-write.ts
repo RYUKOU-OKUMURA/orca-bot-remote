@@ -19,7 +19,7 @@ export type OrcaWrite = {
 };
 
 export class OrcaWriteError extends Error {
-  readonly code: 'write_unavailable' | 'orca_failed' | 'unknown_result';
+  readonly code: 'write_unavailable' | 'orca_failed' | 'unknown_result' | 'not_found';
 
   constructor(code: OrcaWriteError['code']) {
     super(code);
@@ -158,6 +158,11 @@ export async function withOrcaDevice<T>(
       if (reply.ok) return reply.result;
       const code = reply.error?.code;
       if (code === 'unauthorized' || code === 'device_revoked') throw new OrcaWriteError('write_unavailable');
+      if ((method === 'bots.items.owner.comment' && code === 'not_found') ||
+          (method === 'bots.session.start' && code === 'bot_not_found')) throw new OrcaWriteError('not_found');
+      if (method === 'bots.session.start' && code === 'bots_disabled') throw new OrcaWriteError('orca_failed');
+      if (method === 'agentSession.send' && code === 'runtime_error' &&
+          reply.error.data?.refusal?.code === 'structured_agent_session_unsupported') throw new OrcaWriteError('orca_failed');
       throw new OrcaWriteError(mutates && !refusedRpcCodes.has(code) ? 'unknown_result' : 'orca_failed');
     };
     return await run(call);
@@ -204,7 +209,16 @@ export function createOrcaWrite(file = DEVICE_FILE): OrcaWrite {
       });
     },
     async send(chatId, text, signal) {
-      await withOrcaDevice(readDevice(file), signal, call => sendMessage(call, chatId, text));
+      await withOrcaDevice(readDevice(file), signal, async call => {
+        const result = await call<{ location: { kind: string; sessionId?: string } | null; lost?: string }>(
+          'orchestration.partyLocation', { address: `orca_session_id:${chatId}` }
+        );
+        const location = result?.location;
+        if (location?.kind !== 'chat' || typeof location.sessionId !== 'string' || !location.sessionId) {
+          throw new OrcaWriteError(location === null && result.lost === 'chat' ? 'not_found' : 'orca_failed');
+        }
+        await sendMessage(call, location.sessionId, text);
+      });
     },
     async answer(uid, text, signal) {
       await withOrcaDevice(readDevice(file), signal, async call => {

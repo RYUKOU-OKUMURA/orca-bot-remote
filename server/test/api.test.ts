@@ -268,9 +268,7 @@ test('個別の CLI の期限でも親と子を停止して 502 を返す', { ti
   assert.deepEqual(calls(), slowItemCalls);
 });
 
-test('サーバーは SIGTERM で実行中の CLI とその子を停止して終了する', { timeout: 5000 }, async t => {
-  const { bin } = recordOrcaCalls(t);
-  writeFileSync(`${bin}.slow`, '');
+async function forkServer(t: TestContext, bin: string, extraPreload = '', home?: string) {
   // Run the actual entry point on an ephemeral loopback port without requiring Tailscale.
   const preload = `
     import { Server } from 'node:http';
@@ -278,9 +276,10 @@ test('サーバーは SIGTERM で実行中の CLI とその子を停止して終
     Server.prototype.listen = function () {
       return listen.call(this, 0, '127.0.0.1', () => process.send(this.address().port));
     };
+    ${extraPreload}
   `;
   const server = fork(fileURLToPath(new URL('../src/main.ts', import.meta.url)), {
-    env: { HOST: '100.113.115.59', TOKEN_FILE: join(tokenDir, 'token'), ORCA_BIN: bin },
+    env: { HOST: '100.113.115.59', TOKEN_FILE: join(tokenDir, 'token'), ORCA_BIN: bin, HOME: home },
     execArgv: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
     silent: true
   });
@@ -288,6 +287,13 @@ test('サーバーは SIGTERM で実行中の CLI とその子を停止して終
   const exited = once(server, 'exit', { signal: t.signal });
   const [port] = await Promise.race([once(server, 'message', { signal: t.signal }), exited]);
   assert.ok(typeof port === 'number' && port > 0, 'サーバーが待ち受けを開始しませんでした');
+  return { server, exited, port };
+}
+
+test('サーバーは SIGTERM で実行中の CLI とその子を停止して終了する', { timeout: 5000 }, async t => {
+  const { bin } = recordOrcaCalls(t);
+  writeFileSync(`${bin}.slow`, '');
+  const { server, exited, port } = await forkServer(t, bin);
   const client = request({
     host: '127.0.0.1', port, path: `/api/items/${bot}/7`, headers: { Authorization: `Bearer ${token}` }
   }, response => response.resume());
@@ -298,6 +304,43 @@ test('サーバーは SIGTERM で実行中の CLI とその子を停止して終
   assert.ok(server.kill('SIGTERM'));
   assert.deepEqual(await exited, [0, null]);
   await assertProcessesStopped(pids);
+});
+
+test('SIGTERM は書き込み前後に応じた HTTP エラーを返してから終了する', { timeout: 5000 }, async t => {
+  const hostFixture = new URL('./fixtures/orca-protocol/fake-host.ts', import.meta.url).href;
+  const preload = `
+    import { mkdirSync, writeFileSync } from 'node:fs';
+    import { device, installFakeHost, hold } from ${JSON.stringify(hostFixture)};
+    const dir = process.env.HOME + '/.config/orca-bot-remote';
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(dir + '/orca-device.json', JSON.stringify(device), { mode: 0o600 });
+    installFakeHost(({ method }) => {
+      if (method === 'orchestration.partyLocation') {
+        return { result: { location: { kind: 'chat', sessionId: 'successor' } } };
+      }
+      if (method === 'agentSession.history' && process.env.HOME.endsWith('/unknown_result')) {
+        return { result: { ok: true, page: { fence: 1 } } };
+      }
+      process.send(method);
+      return hold;
+    });
+  `;
+  for (const [code, method] of [['orca_failed', 'agentSession.history'], ['unknown_result', 'agentSession.send']]) {
+    const { server, exited, port } = await forkServer(t, orcaBin, preload, join(tokenDir, code));
+    const waiting = once(server, 'message', { signal: t.signal });
+    const response = fetch(`http://127.0.0.1:${port}${openMessages}`, {
+      method: 'POST', body: '{"text":"入力"}', signal: t.signal,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+    });
+    const [received] = await Promise.race([waiting, exited]);
+    assert.equal(received, method);
+    assert.ok(server.kill('SIGTERM'));
+    const reply = await response;
+    assert.equal(reply.status, 502);
+    assert.equal((await reply.json()).error, code);
+    assert.deepEqual(await exited, [0, null]);
+    await assertProcessesStopped([server.pid!]);
+  }
 });
 
 test('CLI のリーダーが終了済みなら中止時にグループへシグナルを送らない', async t => {
@@ -499,6 +542,37 @@ test('判断待ちへの回答は前後の空白を含めて最大8000 UTF-16コ
   assert.deepEqual(calls, [['answer', 'uid-7', text]]);
 });
 
+test('同じ UID の同時回答は最初の回答後に状態を読み直して 409 を返す', { timeout: 5000 }, async t => {
+  const { bin, calls: cliCalls } = recordOrcaCalls(t);
+  const calls: string[][] = [];
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(release.resolve);
+  const post = await writeApi(t, {
+    ...fakeWrite(calls),
+    async answer(uid, text) {
+      calls.push(['answer', uid, text]);
+      entered.resolve();
+      await release.promise;
+      writeFileSync(`${bin}.answered`, '');
+    }
+  }, bin);
+  const first = post(answer);
+  await entered.promise;
+  const second = post(answer, '{"text":"保留"}');
+  while (cliCalls().filter(call => call === slowItemCalls[2]).length < 2) {
+    await delay(10, undefined, { signal: t.signal });
+  }
+  await delay(50, undefined, { signal: t.signal });
+  assert.equal(cliCalls().filter(call => call === 'bot item show --id=uid-7 --json').length, 1);
+  release.resolve();
+  const [accepted, conflict] = await Promise.all([first, second]);
+  assert.equal(accepted.status, 200);
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).error, 'conflict');
+  assert.deepEqual(calls, [['answer', 'uid-7', '進める']]);
+});
+
 test('書き込みも認証を先に確認し、未知の対象、閉じたチャット、回答済み項目を拒否する', async t => {
   const calls: string[][] = [];
   const post = await writeApi(t, fakeWrite(calls));
@@ -554,6 +628,15 @@ test('書き込みの拒否と送信結果が不明な場合を区別して再�
     }
     assert.deepEqual(calls, [['send', openChat, '進める']]);
   }
+});
+
+test('書き込み前に Orca から項目の消失が返ると HTTP 404 を返す', async t => {
+  const calls: string[][] = [];
+  const post = await writeApi(t, fakeWrite(calls, 'not_found'));
+  const response = await post(answer);
+  assert.equal(response.status, 404);
+  assert.equal((await response.json()).error, 'not_found');
+  assert.deepEqual(calls, [['answer', 'uid-7', '進める']]);
 });
 
 test('HTTP の期限で送信後の結果不明を読み取りタイムアウトに置き換えない', async t => {

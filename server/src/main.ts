@@ -4,7 +4,8 @@ import { stopAll } from './orca.ts';
 
 try {
   const config = readConfig();
-  const server = createApi(config);
+  const shutdownController = new AbortController();
+  const server = createApi({ ...config, shutdownSignal: shutdownController.signal });
   server.on('error', error => {
     console.error(error.message);
     process.exitCode = 1;
@@ -15,9 +16,10 @@ try {
   function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
-    server.close();
-    void stopAll().then(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000);
+    const drained = new Promise<void>(resolve => server.close(() => resolve()));
+    shutdownController.abort();
+    void Promise.all([drained, stopAll()]).then(() => process.exit(0));
   }
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

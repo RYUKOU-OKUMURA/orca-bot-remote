@@ -87,9 +87,10 @@ function readText(request: IncomingMessage, signal: AbortSignal) {
   });
 }
 
-export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite() }: {
-  orcaBin: string; digest: Buffer; summaryId?: string; write?: OrcaWrite;
+export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(), shutdownSignal }: {
+  orcaBin: string; digest: Buffer; summaryId?: string; write?: OrcaWrite; shutdownSignal?: AbortSignal;
 }, requestTimeoutMs = 55_000) {
+  const pendingAnswers = new Map<string, Promise<void>>();
   return createServer(async (request, response) => {
     const started = performance.now();
     const deadline = started + requestTimeoutMs;
@@ -104,6 +105,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     });
     function send(status: number, body: object) {
       if (response.destroyed || response.writableEnded) return;
+      if (shutdownSignal?.aborted) response.setHeader('Connection', 'close');
       if (!posting && performance.now() >= deadline) {
         status = 502;
         body = timedOut;
@@ -142,6 +144,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     }
 
     const controller = new AbortController();
+    const signal = shutdownSignal ? AbortSignal.any([controller.signal, shutdownSignal]) : controller.signal;
     function stop() {
       clearTimeout(timer);
       controller.abort();
@@ -153,7 +156,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     response.once('close', () => {
       if (!response.writableEnded) stop();
     });
-    const orca = createOrca(orcaBin, summaryId, controller.signal, deadline);
+    const orca = createOrca(orcaBin, summaryId, signal, deadline);
     try {
       if (bots) return send(200, { bots: await orca.bots() });
       if (items) return send(200, { items: await orca.items() });
@@ -167,7 +170,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       if (itemRoute && (!/^\d+$/.test(numberText) || !Number.isSafeInteger(number) || number < 1)) {
         return send(404, notFound);
       }
-      const text = posting ? await readText(request, controller.signal) : null;
+      const text = posting ? await readText(request, signal) : null;
       if (posting && text === null) {
         if (!request.readableEnded) response.setHeader('Connection', 'close');
         return send(400, { error: 'bad_request', message: '本文は最大 64 KiB の JSON で、text は前後の空白を除いて 1〜10000 文字で指定してください。' });
@@ -179,21 +182,37 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       const bot = name && (await orca.listBots()).find(bot => bot.name === name);
       if (!bot) return send(404, notFound);
       if (text !== null) {
-        if (chats) return send(201, { chatId: await write.start(bot.id, text, controller.signal) });
+        signal.throwIfAborted();
+        if (chats) return send(201, { chatId: await write.start(bot.id, text, signal) });
         if (messages) {
           const chat = await orca.findChat(bot, chatId);
           if (!chat) return send(404, notFound);
           if (chat.closed) return send(409, { error: 'conflict', message: 'このチャットは閉じています。' });
-          await write.send(chatId, text, controller.signal);
+          signal.throwIfAborted();
+          await write.send(chatId, text, signal);
           return send(202, { ok: true });
         }
-        const target = await orca.answerTarget(bot, number);
-        if (!target) return send(404, notFound);
-        if (target.status !== 'needs_you') {
-          return send(409, { error: 'conflict', message: 'この項目は判断待ちではありません。' });
+        const uid = await orca.findItemUid(bot, number);
+        if (!uid) return send(404, notFound);
+        const previous = pendingAnswers.get(uid);
+        const result = (async () => {
+          await previous;
+          const target = await orca.showItem(bot, uid);
+          if (!target) return send(404, notFound);
+          if (target.page.item.status !== 'needs_you') {
+            return send(409, { error: 'conflict', message: 'この項目は判断待ちではありません。' });
+          }
+          signal.throwIfAborted();
+          await write.answer(uid, text, signal);
+          return send(200, { ok: true });
+        })();
+        const pending = result.catch(() => {});
+        pendingAnswers.set(uid, pending);
+        try {
+          return await result;
+        } finally {
+          if (pendingAnswers.get(uid) === pending) pendingAnswers.delete(uid);
         }
-        await write.answer(target.uid, text, controller.signal);
-        return send(200, { ok: true });
       }
       if (chats) return send(200, { chats: await orca.chats(bot) });
 
@@ -211,6 +230,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       if (posting) {
         if (!request.readableEnded) response.setHeader('Connection', 'close');
         const code = error instanceof OrcaWriteError ? error.code : 'orca_failed';
+        if (code === 'not_found') return send(404, notFound);
         return send(code === 'write_unavailable' ? 503 : 502, { error: code, message: writeErrors[code] });
       }
       return send(502, { error: 'orca_failed', message: 'Orca の読み取りに失敗しました。' });

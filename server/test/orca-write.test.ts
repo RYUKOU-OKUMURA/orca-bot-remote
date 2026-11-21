@@ -5,21 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import {
-  createOrcaWrite, messageParams, readDevice, withOrcaDevice, type Device
+  createOrcaWrite, messageParams, readDevice, withOrcaDevice
 } from '../src/orca-write.ts';
 import {
   createMobileE2EEV2Fixture, MOBILE_E2EE_V2_VECTOR
 } from './fixtures/orca-protocol/mobile-e2ee-v2-fixtures.cjs';
 import { createFixedKeyLegacyHandshakeForTest } from './fixtures/orca-protocol/paired-e2ee-fixed-key-test-fixture.cjs';
 import { structuredAgentSessionPayloadFingerprint } from '../vendor/orca/shared/agent-session/lifecycle/operations/structured-agent-session-mutation.js';
-import { pairedE2EEV2TokenAuth } from '../vendor/orca/shared/remote-runtime/e2ee/paired-e2ee-client-handshake.js';
 import {
   encodeMobileE2EEV2Transcript, validateMobileE2EEV2Handshake
 } from '../vendor/orca/shared/remote-runtime/e2ee/mobile-e2ee-v2-contract.js';
-import {
-  openMobileE2EEV2Frame, sealMobileE2EEV2Frame
-} from '../vendor/orca/shared/remote-runtime/e2ee/mobile-e2ee-v2-framing.js';
 import { NODE_PAIRED_E2EE_PRIMITIVES as crypto } from '../vendor/orca/shared/remote-runtime/e2ee/node/paired-e2ee-node-primitives.js';
+import { device, drop, installFakeHost } from './fixtures/orca-protocol/fake-host.ts';
 
 test('Orca の E2EE v2 フィクスチャと鍵導出が一致する', () => {
   const { hello, ready, sharedSecret } = createMobileE2EEV2Fixture();
@@ -62,13 +59,6 @@ test('操作 ID の形式と payloadFingerprint が Orca と一致する', () =>
   }));
 });
 
-const hostKey = crypto.generateKeyPair();
-const device: Device = {
-  endpoint: 'ws://127.0.0.1:6768',
-  publicKeyB64: crypto.publicKeyToBase64(hostKey.publicKey),
-  deviceToken: 'ab'.repeat(24)
-};
-
 function deviceFile(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'orca-write-test-'));
   t.after(() => rmSync(dir, { recursive: true }));
@@ -89,97 +79,10 @@ test('資格情報は権限600の通常ファイルと、限定した接続先�
   assert.throws(() => readDevice(file), { code: 'write_unavailable' });
 });
 
-type Rpc = { id: string; method: string; params?: Record<string, unknown> };
-type Reply = { result: unknown } | { error: { code: string } };
-const drop = Symbol('drop');
-
-function fakeHost(t: TestContext, handle: (request: Rpc) => Reply | typeof drop, authorized = true) {
-  const calls: Rpc[] = [];
-  let connections = 0;
-  let closes = 0;
-  const original = globalThis.WebSocket;
-  class Socket extends EventTarget {
-    static OPEN = original.OPEN;
-    static CLOSING = original.CLOSING;
-    readyState = original.CONNECTING;
-    keys: ReturnType<typeof crypto.deriveV2KeySchedule> | undefined;
-    received = 0n;
-    sent = 0n;
-
-    constructor(endpoint: string) {
-      super();
-      assert.equal(endpoint, device.endpoint);
-      connections++;
-      queueMicrotask(() => {
-        this.readyState = original.OPEN;
-        this.dispatchEvent(new Event('open'));
-      });
-    }
-
-    message(data: string) {
-      queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data })));
-    }
-
-    encrypt(payload: object) {
-      const keys = this.keys!;
-      return Buffer.from(sealMobileE2EEV2Frame({
-        payload: Buffer.from(JSON.stringify(payload)), key: keys.desktopToMobileKey, sessionId: keys.sessionId,
-        direction: 'desktop-to-mobile', payloadKind: 'text', counter: this.sent++
-      })).toString('base64');
-    }
-
-    send(data: string) {
-      if (!this.keys) {
-        const hello = JSON.parse(data);
-        const ready = {
-          type: 'e2ee_ready', v: 2, desktopPublicKeyB64: device.publicKeyB64,
-          clientNonceB64: hello.clientNonceB64, desktopNonceB64: Buffer.alloc(32, 7).toString('base64'),
-          selection: { framing: 2, payloadKinds: ['text', 'binary'] }, context: hello.context
-        };
-        const handshake = validateMobileE2EEV2Handshake(hello, ready);
-        assert.ok(handshake);
-        this.keys = crypto.deriveV2KeySchedule({
-          sharedSecret: crypto.deriveSharedKey(hostKey.secretKey, handshake.clientPublicKey),
-          transcript: encodeMobileE2EEV2Transcript(handshake),
-          clientNonce: handshake.clientNonce, desktopNonce: handshake.desktopNonce
-        });
-        this.message(JSON.stringify(ready));
-        return;
-      }
-      const decoded = openMobileE2EEV2Frame({
-        frame: Buffer.from(data, 'base64'), key: this.keys.mobileToDesktopKey, sessionId: this.keys.sessionId,
-        direction: 'mobile-to-desktop', payloadKind: 'text', expectedCounter: this.received++
-      });
-      assert.ok(decoded);
-      const body = JSON.parse(Buffer.from(decoded).toString('utf8'));
-      const transcript = Buffer.from(this.keys.transcriptHash).toString('base64');
-      if (body.type === 'e2ee_auth') {
-        assert.deepEqual(body, {
-          ...pairedE2EEV2TokenAuth(transcript, device.deviceToken),
-          clientCapabilities: ['agent-session.structured.v1']
-        });
-        this.message(this.encrypt(authorized
-          ? { type: 'e2ee_authenticated', v: 2, transcriptHashB64: transcript }
-          : { type: 'e2ee_error', error: { code: 'unauthorized' } }));
-        return;
-      }
-      calls.push(body);
-      const reply = handle(body);
-      if (reply === drop) queueMicrotask(() => this.close());
-      else this.message(this.encrypt({ id: body.id, ok: 'result' in reply, ...reply }));
-    }
-
-    close() {
-      if (this.readyState === original.CLOSED) return;
-      this.readyState = original.CLOSED;
-      closes++;
-      this.dispatchEvent(new Event('close'));
-    }
-  }
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket')!;
-  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: Socket });
-  t.after(() => Object.defineProperty(globalThis, 'WebSocket', descriptor));
-  return { calls, connections: () => connections, closes: () => closes };
+function fakeHost(t: TestContext, ...args: Parameters<typeof installFakeHost>) {
+  const host = installFakeHost(...args);
+  t.after(host.restore);
+  return host;
 }
 
 test('新規チャットは同じ認証済み接続で履歴の fence を取得して1回だけ送る', async t => {
@@ -213,6 +116,36 @@ test('新規チャットは同じ認証済み接続で履歴の fence を取得�
   assert.equal(host.closes(), 1);
 });
 
+test('既存チャットはルート ID を解決して後継の fence と ID で送る', async t => {
+  const root = randomUUID();
+  const successor = randomUUID();
+  const host = fakeHost(t, ({ method, params }) => {
+    switch (method) {
+      case 'orchestration.partyLocation':
+        assert.deepEqual(params, { address: `orca_session_id:${root}` });
+        return { result: { location: { kind: 'chat', sessionId: successor } } };
+      case 'agentSession.history':
+        assert.deepEqual(params, { sessionId: successor, direction: 'tail', limit: 1 });
+        return { result: { ok: true, page: { fence: 21 } } };
+      case 'agentSession.send': {
+        const { envelope } = params as ReturnType<typeof messageParams>;
+        assert.equal(envelope.sessionId, successor);
+        assert.equal(envelope.expectedRuntimeFence, 21);
+        return { result: { ok: true, value: {
+          clientMessageId: envelope.clientOperationId, submission: { reason: null }
+        } } };
+      }
+      default: throw new Error('unexpected RPC');
+    }
+  });
+  await createOrcaWrite(deviceFile(t)).send(root, '入力', AbortSignal.timeout(1000));
+  assert.deepEqual(host.calls.map(call => call.method), [
+    'orchestration.partyLocation', 'agentSession.history', 'agentSession.send'
+  ]);
+  assert.equal(host.connections(), 1);
+  assert.equal(host.closes(), 1);
+});
+
 test('応答前の切断は読み取りなら orca_failed、書き込みなら unknown_result で再送しない', async t => {
   const host = fakeHost(t, () => drop);
   const signal = AbortSignal.timeout(1000);
@@ -220,11 +153,46 @@ test('応答前の切断は読み取りなら orca_failed、書き込みなら u
   await assert.rejects(write.send('chat', '入力', signal), { code: 'orca_failed' });
   await assert.rejects(write.answer('uid-7', '回答', signal), { code: 'unknown_result' });
   assert.deepEqual(host.calls.map(call => [call.method, call.params]), [
-    ['agentSession.history', { sessionId: 'chat', direction: 'tail', limit: 1 }],
+    ['orchestration.partyLocation', { address: 'orca_session_id:chat' }],
     ['bots.items.owner.comment', { item: 'uid-7', text: '回答' }]
   ]);
   assert.equal(host.connections(), 2);
   assert.equal(host.closes(), 2);
+});
+
+test('偽ホストの確定拒否と結果不明の応答を区別して再送しない', async t => {
+  const cases = [
+    ['not_found', 'not_found'],
+    ['invalid_argument', 'orca_failed'],
+    ['forbidden', 'orca_failed'],
+    ['operation_unknown', 'unknown_result'],
+    ['runtime_error', 'unknown_result']
+  ];
+  let code = '';
+  const host = fakeHost(t, ({ method }) => {
+    if (method === 'orchestration.partyLocation') return { result: { location: { kind: 'chat', sessionId: 'session' } } };
+    if (method === 'agentSession.history') return { result: { ok: true, page: { fence: 1 } } };
+    if (method === 'agentSession.send') {
+      return { error: { code: 'runtime_error', data: { refusal: { code: 'structured_agent_session_unsupported' } } } };
+    }
+    return { error: { code } };
+  });
+  const write = createOrcaWrite(deviceFile(t));
+  for (const [reason, expected] of cases) {
+    code = reason;
+    await assert.rejects(write.answer('uid-7', '回答', AbortSignal.timeout(1000)), { code: expected });
+  }
+  code = 'bot_not_found';
+  await assert.rejects(write.start('main', '入力', AbortSignal.timeout(1000)), { code: 'not_found' });
+  code = 'bots_disabled';
+  await assert.rejects(write.start('main', '入力', AbortSignal.timeout(1000)), { code: 'orca_failed' });
+  await assert.rejects(write.send('chat', '入力', AbortSignal.timeout(1000)), { code: 'orca_failed' });
+  assert.deepEqual(host.calls.map(call => call.method), [
+    ...cases.map(() => 'bots.items.owner.comment'), 'bots.session.start', 'bots.session.start',
+    'orchestration.partyLocation', 'agentSession.history', 'agentSession.send'
+  ]);
+  assert.equal(host.connections(), cases.length + 3);
+  assert.equal(host.closes(), host.connections());
 });
 
 test('認証済みホストからのトークン拒否では RPC を送らない', async t => {
