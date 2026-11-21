@@ -52,6 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
@@ -68,6 +70,7 @@ import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private val ListPadding = PaddingValues(horizontal = OrcaInset, vertical = OrcaGap)
 
@@ -390,10 +393,17 @@ internal fun NewChatScreen(
     Page("新しく頼む", back = { if (!sender.sending) back() }) { modifier ->
         DetailContent(modifier.imePadding()) {
             Text(bot, style = MaterialTheme.typography.titleMedium)
-            DraftField(sender, "Bot に頼みたいこと", Modifier.fillMaxWidth(), minLines = 5)
+            val chat = requireNotNull(sender.chat)
+            val enabled = !sender.sending && sender.result == null
+            AttachmentPreview(chat, enabled)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AttachmentPicker(chat, enabled)
+                DraftField(sender, "Bot に頼みたいこと", Modifier.weight(1f), minLines = 5)
+            }
             SendButton(sender, Modifier.fillMaxWidth())
             SendStatus(
                 sender, settings,
+                badRequest = "本文や添付の形式・サイズを確認してください",
                 unknown = "送れたか確認できませんでした。チャット一覧を更新して、新しいチャットができていないか確かめてください",
             )
             if (sender.deliveryUncertain) {
@@ -419,13 +429,29 @@ internal fun ConversationScreen(
     settings: () -> Unit,
 ) {
     val model = screenModel { api.messages(bot, chatId) }
-    val sender: SendModel<Unit> = viewModel {
-        SendModel(createSavedStateHandle()) { api.sendMessage(bot, chatId, it) }
+    val resolver = LocalContext.current.applicationContext.contentResolver
+    val sender: SendModel<String> = viewModel {
+        val state = createSavedStateHandle()
+        val chat = ChatDraft(state, AttachmentLimits.Conversation)
+        SendModel(state, chat) { text ->
+            chat.sendMessage(api, bot, chatId, text) { it.open(resolver) }
+            ""
+        }
     }
+    val commands: ScreenModel<ChatCommands> = viewModel(key = "commands") { ScreenModel { api.commands(bot, chatId) } }
+    val ready = model.data != null
+    LaunchedEffect(ready) { if (ready) commands.refresh() }
+    val catalog = commands.data.takeIf { commands.error == null }
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val result = sender.result
     LaunchedEffect(result) {
         if (result != null) {
+            if (result.isNotEmpty()) {
+                commands.refresh(afterCurrent = true)
+                scope.launch { snackbar.showSnackbar(result) }
+            }
             model.load(afterCurrent = true)
             listState.requestScrollToItem(0)
             sender.resultShown()
@@ -443,7 +469,12 @@ internal fun ConversationScreen(
             }
         }
     }
-    Page(title, back = { if (!sender.sending) back() }, action = { RefreshAction(model) }) { modifier ->
+    Page(title, back = { if (!sender.sending) back() }, snackbar = snackbar, action = {
+        OrcaTextButton(onClick = {
+            model.refresh()
+            if (ready) commands.refresh(afterCurrent = true)
+        }, enabled = !model.loading) { Text("更新") }
+    }) { modifier ->
         Column(modifier.imePadding()) {
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { result ->
                 if (result.entries.isEmpty()) {
@@ -486,15 +517,20 @@ internal fun ConversationScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (model.data != null) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        DraftField(sender, "メッセージ", Modifier.weight(1f))
-                        SendButton(sender, Modifier.widthIn(min = 80.dp))
+                    ConversationInput(sender, catalog) { cmd, confirmed ->
+                        sender.submit(sender.draft, confirmed) {
+                            api.runCommand(bot, chatId, cmd.name, cmd.argument)
+                            when (cmd.name) {
+                                "clear" -> "会話をリセットしました"
+                                "compact" -> "会話の圧縮をリクエストしました"
+                                "model" -> "モデルを ${cmd.argument} に変更しました"
+                                else -> "推論強度を ${cmd.argument} に変更しました"
+                            }
+                        }
                     }
                 }
-                SendStatus(sender, settings, conflict = "このチャットは閉じているため送れません")
+                SendStatus(sender, settings, conflict = "このチャットは閉じているため送れません",
+                    badRequest = "本文・コマンドの引数・スキル・添付を確認してください")
             }
         }
     }
@@ -739,7 +775,7 @@ private fun DetailContent(modifier: Modifier = Modifier, content: @Composable Co
 }
 
 @Composable
-private fun DraftField(
+internal fun DraftField(
     sender: SendModel<*>,
     label: String,
     modifier: Modifier,
@@ -747,8 +783,8 @@ private fun DraftField(
     enabled: Boolean = true,
 ) {
     OutlinedTextField(
-        value = sender.draft,
-        onValueChange = { sender.draft = it },
+        value = sender.draftField,
+        onValueChange = sender::edit,
         label = { Text(label) },
         minLines = minLines,
         maxLines = 5,
@@ -764,7 +800,9 @@ private fun DraftField(
 }
 
 @Composable
-private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier, enabled: Boolean = true) {
+internal fun SendButton(
+    sender: SendModel<*>, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: (() -> Unit)? = null,
+) {
     val focus = LocalFocusManager.current
     var resendText by remember { mutableStateOf<String?>(null) }
     if (enabled) resendText?.let { text ->
@@ -777,9 +815,11 @@ private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier, enab
         shape = MaterialTheme.shapes.medium,
         onClick = {
             focus.clearFocus()
-            if (sender.deliveryUncertain) resendText = sender.draft else sender.submit(sender.draft)
+            if (onClick != null) onClick()
+            else if (sender.deliveryUncertain) resendText = sender.draft else sender.submit(sender.draft)
         },
-        enabled = enabled && sender.draft.isNotBlank() && !sender.sending && sender.result == null,
+        enabled = enabled && !sender.sending && sender.result == null && sender.chat?.reading != true &&
+            (sender.draft.isNotBlank() || !sender.chat?.attachments.isNullOrEmpty()),
         modifier = modifier,
     ) {
         if (sender.sending) {
@@ -794,7 +834,7 @@ private fun SendButton(sender: SendModel<*>, modifier: Modifier = Modifier, enab
 }
 
 @Composable
-private fun ResendDialog(cancel: () -> Unit, confirm: () -> Unit) {
+internal fun ResendDialog(cancel: () -> Unit, confirm: () -> Unit) {
     AlertDialog(
         onDismissRequest = cancel,
         textContentColor = MaterialTheme.colorScheme.onSurface,

@@ -1,9 +1,11 @@
 package dev.okumura.orcaremote
 
 import java.io.IOException
+import java.io.InputStream
 import java.io.InterruptedIOException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
+import java.net.URLEncoder
 import java.net.Proxy
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
@@ -26,6 +28,9 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okio.BufferedSink
+import okio.source
+import kotlinx.serialization.json.encodeToStream
 
 @Serializable
 data class Bots(val bots: List<Bot>)
@@ -113,7 +118,45 @@ internal data class NewChat(val chatId: String)
 internal data class OkReceipt(val ok: Boolean)
 
 @Serializable
-private data class WriteInput(val text: String)
+data class ChatCommands(val commands: List<SlashCommand>, val skills: List<ChatSkill>, val options: ChatOptions = ChatOptions())
+
+@Serializable
+data class SlashCommand(val name: String, val description: String = "", val kind: String, val argumentHint: String? = null)
+
+@Serializable
+data class ChatSkill(val name: String, val description: String = "", val path: String? = null, val argumentHint: String? = null)
+
+@Serializable
+data class ChatOptions(val model: OptionDescriptor? = null, val effort: OptionDescriptor? = null)
+
+@Serializable
+data class OptionDescriptor(val current: String? = null, val choices: List<OptionChoice> = emptyList())
+
+@Serializable
+data class OptionChoice(val value: String, val label: String)
+
+@Serializable
+data class SkillRef(val name: String, val path: String)
+
+@Serializable
+data class UploadedAttachment(val path: String, val name: String? = null, val kind: String, val byteLength: Long? = null)
+
+@Serializable
+data class AttachmentRef(val path: String, val name: String? = null, val kind: String)
+
+@Serializable
+data class InlineAttachment(val name: String, val mimeType: String? = null, val contentBase64: String)
+
+@Serializable
+private data class WriteInput(
+    val text: String,
+    val skills: List<SkillRef> = emptyList(),
+    val attachments: List<AttachmentRef> = emptyList(),
+    val inlineAttachments: List<InlineAttachment> = emptyList(),
+)
+
+@Serializable
+internal data class CommandInput(val name: String, val argument: String? = null)
 
 @Serializable
 private data class WriteError(val error: String)
@@ -177,23 +220,55 @@ internal class OrcaApi(
     suspend fun item(bot: String, number: Long): ItemDetail = get("items", bot, number.toString())
     suspend fun summary(): LatestSummary = get("summary")
 
-    suspend fun startChat(bot: String, text: String): String {
-        val result = post<NewChat>(201, text, "bots", bot, "chats")
+    suspend fun commands(bot: String, chatId: String): ChatCommands =
+        get("bots", bot, "chats", chatId, "commands", commands = true)
+
+    suspend fun runCommand(bot: String, chatId: String, name: String, argument: String? = null) {
+        val body = jsonBody(apiJson.encodeToString(CommandInput(name, argument)))
+        val result = post<OkReceipt>(200, request("bots", bot, "chats", chatId, "command").post(body))
+        if (!result.ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
+    }
+
+    suspend fun uploadAttachment(
+        bot: String, chatId: String, fileName: String, contentType: String, contentLength: Long,
+        openStream: () -> InputStream,
+    ): UploadedAttachment {
+        val body = object : RequestBody() {
+            override fun contentType() = contentType.toMediaType()
+            override fun contentLength() = contentLength
+            override fun isOneShot() = true
+            override fun writeTo(sink: BufferedSink) {
+                openStream().source().use { sink.writeAll(it) }
+            }
+        }
+        val name = URLEncoder.encode(fileName, "UTF-8").replace("+", "%20").replace("*", "%2A").replace("%7E", "~")
+        return post(201, request("bots", bot, "chats", chatId, "attachments")
+            .header("X-File-Name", name).post(body))
+    }
+
+    suspend fun startChat(bot: String, text: String, inlineAttachments: List<InlineAttachment> = emptyList()): String {
+        val input = WriteInput(text, inlineAttachments = inlineAttachments)
+        val body = if (inlineAttachments.isEmpty()) writeBody(text) else inlineBody(input)
+        val result = post<NewChat>(201, request("bots", bot, "chats").post(body))
         if (result.chatId.isBlank()) throw ApiFailure(ApiError.UNKNOWN_RESULT)
         return result.chatId
     }
 
-    suspend fun sendMessage(bot: String, chatId: String, text: String) {
-        val result = post<OkReceipt>(202, text, "bots", bot, "chats", chatId, "messages")
+    suspend fun sendMessage(
+        bot: String, chatId: String, text: String,
+        skills: List<SkillRef> = emptyList(), attachments: List<AttachmentRef> = emptyList(),
+    ) {
+        val body = jsonBody(apiJson.encodeToString(WriteInput(text, skills, attachments)))
+        val result = post<OkReceipt>(202, request("bots", bot, "chats", chatId, "messages").post(body))
         if (!result.ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
     }
 
     suspend fun answer(bot: String, number: Long, text: String) {
-        val result = post<OkReceipt>(200, text, "items", bot, number.toString(), "answer")
+        val result = post<OkReceipt>(200, request("items", bot, number.toString(), "answer").post(writeBody(text)))
         if (!result.ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
     }
 
-    private fun request(path: Array<out String>, limit: Int? = null): Request.Builder {
+    private fun request(vararg path: String, limit: Int? = null): Request.Builder {
         val url = connection.url.newBuilder().addPathSegment("api")
         path.forEach { url.addPathSegment(it) }
         if (limit != null) url.addQueryParameter("limit", limit.toString())
@@ -201,10 +276,10 @@ internal class OrcaApi(
             .header("Authorization", "Bearer ${connection.token}")
     }
 
-    private suspend inline fun <reified T> get(vararg path: String, limit: Int? = null): T {
-        val request = request(path, limit).build()
+    private suspend inline fun <reified T> get(vararg path: String, limit: Int? = null, commands: Boolean = false): T {
+        val request = request(*path, limit = limit).build()
         return try {
-            val body = client.newCall(request).readBody()
+            val body = client.newCall(request).readBody(commands = commands)
             withContext(Dispatchers.Default) { apiJson.decodeFromString(body) }
         } catch (_: InterruptedIOException) {
             throw ApiFailure(ApiError.TIMEOUT)
@@ -215,10 +290,9 @@ internal class OrcaApi(
         }
     }
 
-    private suspend inline fun <reified T> post(status: Int, text: String, vararg path: String): T {
-        val request = request(path).post(writeBody(text)).build()
+    private suspend inline fun <reified T> post(status: Int, request: Request.Builder): T {
         return try {
-            val body = postClient.newCall(request).readBody(status)
+            val body = postClient.newCall(request.build()).readBody(status)
             withContext(Dispatchers.Default) { apiJson.decodeFromString(body) }
         } catch (e: IOException) {
             throw ApiFailure(when (e) {
@@ -239,12 +313,30 @@ internal class OrcaApi(
             .readTimeout(65, TimeUnit.SECONDS)
             .callTimeout(70, TimeUnit.SECONDS)
             .build()
-        internal val writeClient = client.newBuilder().retryOnConnectionFailure(false).build()
+        internal val writeClient = client.newBuilder()
+            .retryOnConnectionFailure(false)
+            .writeTimeout(120, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .callTimeout(120, TimeUnit.SECONDS)
+            .build()
     }
 }
 
-internal fun writeBody(text: String): RequestBody {
-    val body = apiJson.encodeToString(WriteInput(text)).toRequestBody("application/json".toMediaType())
+// Base64 is ASCII without JSON escapes. Measure metadata only and stream the large JSON on OkHttp's thread.
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+private fun inlineBody(input: WriteInput) = object : RequestBody() {
+    private val metadata = input.copy(inlineAttachments = input.inlineAttachments.map { it.copy(contentBase64 = "") })
+    override fun contentType() = "application/json".toMediaType()
+    override fun contentLength() = apiJson.encodeToString(metadata).toByteArray().size +
+        input.inlineAttachments.sumOf { it.contentBase64.length.toLong() }
+    override fun isOneShot() = true
+    override fun writeTo(sink: BufferedSink) = apiJson.encodeToStream(input, sink.outputStream())
+}
+
+internal fun writeBody(text: String): RequestBody = jsonBody(apiJson.encodeToString(WriteInput(text)))
+
+private fun jsonBody(json: String): RequestBody {
+    val body = json.toRequestBody("application/json".toMediaType())
     // Even a response-driven follow-up must never replay the owner's input.
     return object : RequestBody() {
         override fun contentType() = body.contentType()
@@ -271,7 +363,7 @@ internal fun writeResponseError(status: Int, body: String = ""): ApiError = when
     else -> ApiError.UNKNOWN_RESULT
 }
 
-private suspend fun Call.readBody(writeStatus: Int? = null): String = suspendCancellableCoroutine { continuation ->
+private suspend fun Call.readBody(writeStatus: Int? = null, commands: Boolean = false): String = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
@@ -290,6 +382,7 @@ private suspend fun Call.readBody(writeStatus: Int? = null): String = suspendCan
                             401 -> ApiError.UNAUTHORIZED
                             404 -> ApiError.NOT_FOUND
                             502 -> ApiError.ORCA
+                            503 -> if (commands) ApiError.WRITE_UNAVAILABLE else ApiError.RESPONSE
                             else -> ApiError.RESPONSE
                         })
                     }

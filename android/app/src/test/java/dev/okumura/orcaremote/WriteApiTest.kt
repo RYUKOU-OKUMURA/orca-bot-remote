@@ -1,5 +1,6 @@
 package dev.okumura.orcaremote
 
+import androidx.lifecycle.SavedStateHandle
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.EOFException
@@ -158,6 +159,119 @@ class WriteApiTest {
         withServer({ it.reply(202, """{"ok":false}""") }) { api ->
             assertEquals(ApiError.UNKNOWN_RESULT, failureFrom { api.sendMessage("bot", "chat", "確認") })
         }
+    }
+
+    @Test
+    fun commandCatalogUsesReadErrorsExceptForUnpairedHost() {
+        val calls = AtomicInteger()
+        withServer({ exchange ->
+            if (calls.incrementAndGet() == 1) exchange.reply(200, """{"commands":[{"name":"compact","kind":"conversation"}],"skills":[{"name":"review"}],"options":{"model":{"choices":[{"value":"m","label":"Model M"}]}}}""")
+            else exchange.reply(503, "{}")
+        }) { api ->
+            val catalog = api.commands("bot", "chat")
+            assertEquals(SlashCommand("compact", kind = "conversation"), catalog.commands.single())
+            assertEquals(ChatSkill("review"), catalog.skills.single())
+            assertEquals(OptionChoice("m", "Model M"), catalog.options.model?.choices?.single())
+            assertEquals(ApiError.WRITE_UNAVAILABLE, failureFrom { api.commands("bot", "chat") })
+            assertEquals(ApiError.RESPONSE, failureFrom { api.bots() })
+        }
+    }
+
+    @Test
+    fun attachmentAndCommandWireFormat() {
+        val requests = mutableListOf<Pair<String, String>>()
+        var uploadHeaders = emptyList<String>()
+        withServer({ e ->
+            val path = e.requestURI.rawPath
+            requests += (e.requestMethod + " " + path) to e.requestBody.bufferedReader().readText()
+            when (path.substringAfterLast('/')) {
+                "commands" -> e.reply(200, """{"commands":[],"skills":[]}""")
+                "command" -> e.reply(200, """{"ok":true}""")
+                "attachments" -> {
+                    uploadHeaders = listOf("X-File-Name", "Content-Type", "Content-Length", "Authorization")
+                        .map { e.requestHeaders.getFirst(it) }
+                    e.reply(201, """{"path":"/store/file","name":"図 A+.txt","kind":"file","byteLength":3}""")
+                }
+                "messages" -> e.reply(202, """{"ok":true}""")
+                else -> e.reply(201, """{"chatId":"new"}""")
+            }
+        }) { api ->
+            api.commands("a/b", "chat")
+            api.runCommand("a/b", "chat", "compact")
+            api.runCommand("a/b", "chat", "model", "m")
+            val receipt = api.uploadAttachment("a/b", "chat", "図 A+.txt", "text/plain", 3) { "abc".byteInputStream() }
+            assertEquals(UploadedAttachment("/store/file", "図 A+.txt", "file", 3), receipt)
+            val ref = listOf(AttachmentRef(receipt.path, receipt.name, receipt.kind))
+            api.sendMessage("a/b", "chat", "確認", listOf(SkillRef("review", "/s")), ref)
+            api.sendMessage("a/b", "chat", "", attachments = ref)
+            assertEquals("new", api.startChat("a/b", "", listOf(InlineAttachment("図.txt", "text/plain", "YQ=="))))
+        }
+        val route = "/api/bots/a%2Fb/chats/chat"
+        assertEquals(listOf("GET $route/commands", "POST $route/command", "POST $route/command",
+            "POST $route/attachments", "POST $route/messages", "POST $route/messages", "POST /api/bots/a%2Fb/chats"),
+            requests.map { it.first })
+        assertEquals(listOf("%E5%9B%B3%20A%2B.txt", "text/plain", "3", "Bearer mock-token"), uploadHeaders)
+        assertEquals(listOf("", """{"name":"compact"}""", """{"name":"model","argument":"m"}""", "abc",
+            """{"text":"確認","skills":[{"name":"review","path":"/s"}],"attachments":[{"path":"/store/file","name":"図 A+.txt","kind":"file"}]}""",
+            """{"text":"","attachments":[{"path":"/store/file","name":"図 A+.txt","kind":"file"}]}""",
+            """{"text":"","inlineAttachments":[{"name":"図.txt","mimeType":"text/plain","contentBase64":"YQ=="}]}"""),
+            requests.map { it.second })
+    }
+
+    @Test
+    fun uploadErrorsDoNotReplayTheStream() {
+        val calls = AtomicInteger()
+        val opens = AtomicInteger()
+        withServer({ e ->
+            e.requestBody.readBytes()
+            e.responseHeaders.set("Retry-After", "0")
+            e.reply(if (calls.incrementAndGet() == 1) 400 else 503, "{}")
+        }) { api ->
+            for (expected in listOf(ApiError.BAD_REQUEST, ApiError.WRITE_UNAVAILABLE)) {
+                assertEquals(expected, failureFrom {
+                    api.uploadAttachment("bot", "chat", "a.txt", "text/plain", 1) {
+                        opens.incrementAndGet()
+                        "a".byteInputStream()
+                    }
+                })
+            }
+        }
+        assertEquals(2, opens.get())
+        assertEquals(2, calls.get())
+    }
+
+    @Test
+    fun onlyRejectedMessageDiscardsUploadReferencesForManualRetry() {
+        val uploads = AtomicInteger()
+        val messages = mutableListOf<String>()
+        val files = listOf(LocalAttachment("content://test/a", "a", null, 1))
+        val state = SavedStateHandle(mapOf("attachments" to apiJson.encodeToString(files)))
+        val draft = ChatDraft(state, AttachmentLimits.Conversation)
+        withServer({ exchange ->
+            val body = exchange.requestBody.bufferedReader().readText()
+            if (exchange.requestURI.path.endsWith("/attachments")) {
+                exchange.reply(201, """{"path":"/ref${uploads.incrementAndGet()}","kind":"file"}""")
+            } else {
+                messages += body
+                when (messages.size) {
+                    1 -> exchange.reply(503, "{}")
+                    2 -> exchange.reply(400, "{}")
+                    else -> exchange.reply(202, """{"ok":true}""")
+                }
+            }
+        }) { api ->
+            suspend fun send(chat: ChatDraft) = chat.sendMessage(api, "bot", "chat", "確認") { "a".byteInputStream() }
+            assertEquals(ApiError.WRITE_UNAVAILABLE, failureFrom { send(draft) })
+            assertEquals("/ref1", draft.attachments.single().uploaded?.path)
+            assertEquals(ApiError.BAD_REQUEST, failureFrom { send(draft) })
+            val restored = ChatDraft(state, AttachmentLimits.Conversation)
+            assertEquals(files, restored.attachments)
+            send(restored)
+        }
+        assertEquals(2, uploads.get())
+        assertEquals(3, messages.size)
+        assertEquals(messages[0], messages[1])
+        assertTrue(messages[2].contains("\"path\":\"/ref2\""))
     }
 
     private fun withServer(
