@@ -141,6 +141,12 @@ error: no_active_sender_terminal: Could not determine the calling terminal for t
 
 11月21日にこの Mac で `lsof -nP -iTCP:6768 -sTCP:LISTEN` を実行し、Orca が既に IPv4 の `TCP *:6768 (LISTEN)` で待ち受けていることを確認した。広がった時期と他端末からの到達可否は未確認。発行と待ち受けの根拠は `orca pair --help`、`src/cli/server/pair.ts:54–77`、`runtime-rpc-mobile-pairing.ts:37–57, 141–167`、`runtime-rpc-network-exposure.ts:12–54`、`pairing-offer-requests.ts:43–49, 109–136, 172–181`。
 
+### 実測結果（2026-11-21、Phase 2）
+
+- ペアリング：`orca pair --mobile` で1回だけ登録し、loopback（127.0.0.1:6768）で接続。E2EE 経由の `status.get` と本人専用の `bots.items.owner.list` が通った（エージェント扱いなら拒否される RPC）。
+- 本人入力：サーバーの `POST /api/bots/メインBot/chats` で、メインBotの新しいチャット（0bf9db04-…）に試験の1通だけを送った。会話には `From:` 付きのメールではなく通常の `role:"user"` の行として入り、Bot は同じチャットで「受信テストOK」と返した。これで「Bot がオーナーの依頼として扱い、同じチャットに返答する」の採用条件を満たした。
+- 判断待ちへの回答（`bots.items.owner.comment`）の実物での確認は未実施（安全に試せる判断待ちが無いため。オーナーが実機で最初に使うときに確かめる）。
+
 ### 採用前に実測する項目
 
 - (A) を第一候補とし、オーナーの承認後に CLI で発行する。承認後の試験では通常入力1通についてジャーナルの `source` と `typedBy` を照合し、Botがオーナーの依頼として扱い、同じチャットに返答することを確認する。判断待ち1件について、回答イベントの発行とカードの状態更新を確認する。現時点の送信成功はワーカー名義の質問1通のみ。

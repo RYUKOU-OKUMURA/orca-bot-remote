@@ -127,6 +127,10 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     return (await read<{ chats: Chat[] }>('bot', 'chats', `--bot=${bot.name}`, ...filters)).chats;
   }
 
+  async function findChat(bot: Bot, chatId: string) {
+    return (await listChats(bot, '--all')).find(chat => chat.id === chatId);
+  }
+
   async function* itemPages(bot: Bot, ...filters: string[]) {
     let cursor: string | undefined;
     do {
@@ -145,8 +149,28 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
     return items;
   }
 
+  async function findItemUid(bot: Bot, number: number) {
+    // Orca's item show takes a UID or an unscoped number.
+    for await (const page of itemPages(bot, '--all')) {
+      const uid = page.find(item => item.number === number)?.uid;
+      if (uid) return uid;
+    }
+    return null;
+  }
+
+  async function showItem(bot: Bot, uid: string) {
+    const show = (after?: string) => read<{ item: Item; events: Event[]; nextCursor?: string }>(
+      'bot', 'item', 'show', `--id=${uid}`, ...(after ? ['--after', after] : [])
+    );
+    const page = await show();
+    return page.item.owner.botId === bot.id ? { page, show } : null;
+  }
+
   return {
     listBots,
+    findChat,
+    findItemUid,
+    showItem,
     async bots() {
       return Promise.all((await listBots()).map(async bot => ({
         id: bot.id, name: bot.name, specialty: bot.specialty ?? null, paused: bot.paused,
@@ -161,8 +185,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       }));
     },
     async messages(bot: Bot, chatId: string, limit: number) {
-      const chats = await listChats(bot, '--all');
-      if (!chats.some(chat => chat.id === chatId)) return null;
+      if (!await findChat(bot, chatId)) return null;
 
       const { state, entries } = await read<{ state?: string; entries: Entry[] }>(
         'agent', 'read', `orca_session_id:${chatId}`, '--limit', String(limit)
@@ -186,20 +209,12 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       return lists.flat().sort(newestFirst);
     },
     async item(bot: Bot, number: number) {
-      // Orca's item show takes a UID or an unscoped number, so resolve the UID within this Bot first.
-      let uid: string | undefined;
-      for await (const page of itemPages(bot, '--all')) {
-        uid = page.find(item => item.number === number)?.uid;
-        if (uid) break;
-      }
-      if (!uid) return null;
-
-      const show = (after?: string) => read<{ item: Item; events: Event[]; nextCursor?: string }>(
-        'bot', 'item', 'show', `--id=${uid}`, ...(after ? ['--after', after] : [])
-      );
-      let page = await show();
+      const uid = await findItemUid(bot, number);
+      const resolved = uid && await showItem(bot, uid);
+      if (!resolved) return null;
+      const { show } = resolved;
+      let { page } = resolved;
       const { item } = page;
-      if (item.owner.botId !== bot.id) return null;
 
       let question: { text: string; options: string[] } | null = null;
       if (item.question) {

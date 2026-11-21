@@ -50,7 +50,9 @@ case "$*" in
         result='{"items":[]}'
         ;;
     'bot item show --id=uid-7 --json')
-        result='{"item":{"number":7,"title":"判断待ち","status":"needs_you","chat":{"id":"chat-7","kind":"home","title":"Home"},"owner":{"botId":"main","name":"メインBot"},"question":{"eventId":"e51","text":"質問の投影は使用しない"}},"events":[{"id":"e50","kind":"commented","data":{"text":"古い質問","ask":{"questions":[{"prompt":"古い質問","options":[{"label":"古い選択肢"}]}]}}}],"nextCursor":"e50"}'
+        status=needs_you
+        if [ -f "$0.answered" ]; then status=working; fi
+        result='{"item":{"number":7,"title":"判断待ち","status":"'"$status"'","chat":{"id":"chat-7","kind":"home","title":"Home"},"owner":{"botId":"main","name":"メインBot"},"question":{"eventId":"e51","text":"質問の投影は使用しない"}},"events":[{"id":"e50","kind":"commented","data":{"text":"古い質問","ask":{"questions":[{"prompt":"古い質問","options":[{"label":"古い選択肢"}]}]}}}],"nextCursor":"e50"}'
         ;;
     'bot item show --id=uid-7 --after e50 --json')
         result='{"item":{"number":7},"events":[{"id":"e51","kind":"commented","data":{"text":"どちらにしますか？","ask":{"questions":[{"prompt":"どちらにしますか？","options":[{"label":"進める"},{"label":"保留","detail":"追加情報"}],"recommended":0}]},"answerable":true}}]}'
