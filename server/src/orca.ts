@@ -366,6 +366,10 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
   return {
     listBots,
     findChat,
+    async optionsChat(bot: Bot) {
+      const chats = openChats(await listChats(bot));
+      return chats.find(chat => chat.home) ?? chats[0];
+    },
     findItemUid,
     showItem,
     async notificationRows() {

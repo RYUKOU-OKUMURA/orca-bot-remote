@@ -22,13 +22,14 @@ async function until(condition: () => boolean) {
   }
 }
 
-async function fixture(t: TestContext, requestTimeoutMs?: number) {
+async function fixture(t: TestContext, requestTimeoutMs?: number, interval = pollIntervalMs) {
   const dir = mkdtempSync(join(tmpdir(), 'orca-events-'));
   const bin = join(dir, 'orca');
   copyFileSync(new URL('./fixtures/orca', import.meta.url), bin);
   writeFileSync(bin + '.calls', '');
+  const tasksFile = join(dir, 'tasks.json');
   const server = createApi({ orcaBin: bin, digest: tokenDigest('events-test'), summaryId: 'daily',
-    pollIntervalMs, keepaliveIntervalMs: 20 }, requestTimeoutMs);
+    pollIntervalMs: interval, keepaliveIntervalMs: 20, tasksFile }, requestTimeoutMs);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
@@ -56,7 +57,7 @@ async function fixture(t: TestContext, requestTimeoutMs?: number) {
     assert.match(frames[0], /^event: ready\ndata: \{"at":\d+\}$/);
     return { response, frames };
   }
-  return { bin, server, url, connect, calls: () => readFileSync(bin + '.calls', 'utf8') };
+  return { bin, server, url, connect, tasksFile, calls: () => readFileSync(bin + '.calls', 'utf8') };
 }
 
 test('events authenticates before checking GET and runs no CLI without subscribers', async t => {
@@ -128,14 +129,14 @@ printf '{"ok":true,"result":%s}\\n' "$result"
 });
 
 test('one poller broadcasts only changed fields and retains good values across CLI failures', async t => {
-  const { connect, bin, calls } = await fixture(t);
+  const { connect, bin, calls, tasksFile } = await fixture(t);
   const first = await connect();
   const second = await connect();
   const polls = () => calls().split('automations runs').length - 1;
   await until(() => polls() >= 3);
   const changes = (frames: string[]) => frames.filter(frame => frame !== ': ping').slice(1);
   let count = 0;
-  async function expectChange(items: boolean, summary: boolean, bots: boolean, board = items) {
+  async function expectChange(items: boolean, summary: boolean, bots: boolean, board = items, memoTasks = false) {
     count++;
     for (const { frames } of [first, second]) {
       await until(() => changes(frames).length >= count);
@@ -143,7 +144,7 @@ test('one poller broadcasts only changed fields and retains good values across C
       assert.match(frame, /^event: change\ndata: /);
       const { at, ...flags } = JSON.parse(frame.split('\ndata: ')[1]);
       assert.ok(Number.isSafeInteger(at));
-      assert.deepEqual(flags, { items, summary, bots, board });
+      assert.deepEqual(flags, { items, summary, bots, board, memoTasks });
     }
   }
   assert.equal(changes(first.frames).length, 0);
@@ -176,7 +177,30 @@ test('one poller broadcasts only changed fields and retains good values across C
   writeFileSync(bin + '.ps-result', JSON.stringify({ worktrees: [{ bot: 'メインBot', agents: [{ state: 'working' }] }] }));
   clearReadCache();
   await expectChange(false, false, true);
+  // A task written by the bot itself is picked up by the poll and also flags board.
+  writeFileSync(tasksFile, JSON.stringify({ version: 1, tasks: [{ id: 'a', title: 'Botが追加', done: false, createdAt: 1 }] }));
+  await expectChange(false, false, false, true, true);
+  writeFileSync(tasksFile, '{broken');
+  const unchanged = polls();
+  await until(() => polls() >= unchanged + 2);
+  assert.equal(changes(first.frames).length, count);
   assert.deepEqual(changes(first.frames), changes(second.frames));
+});
+
+test('a task write notifies connected clients before the next poll', async t => {
+  const { connect, server, calls } = await fixture(t, undefined, 60_000);
+  const { frames } = await connect();
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await until(() => calls().includes('automations runs'));
+  await delay(200); // Let the first poll record its baseline; the next one is a minute away.
+  const response = await fetch(base + '/api/tasks', {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '即時' })
+  });
+  assert.equal(response.status, 201);
+  await until(() => frames.some(frame => frame.startsWith('event: change')));
+  const { at, ...flags } = JSON.parse(frames.find(frame => frame.startsWith('event: change'))!.split('\ndata: ')[1]);
+  assert.ok(Number.isSafeInteger(at));
+  assert.deepEqual(flags, { items: false, summary: false, bots: false, board: true, memoTasks: true });
 });
 
 test('eight clients share the poller and a disconnected slot can be reused', async t => {

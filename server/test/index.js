@@ -7,3 +7,4 @@ import './orca-write.test.ts';
 import './pair.test.ts';
 import './app-release.test.ts';
 import './events.test.ts';
+import './tasks.test.ts';

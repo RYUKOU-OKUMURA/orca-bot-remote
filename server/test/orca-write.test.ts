@@ -203,3 +203,73 @@ test('認証済みホストからのトークン拒否では RPC を送らない
   assert.deepEqual(host.calls, []);
   assert.equal(host.closes(), 1);
 });
+
+test('新規チャットは開始後に選択肢を確かめて model と effort を設定してから送る', async t => {
+  const chatId = randomUUID();
+  let refuse = false;
+  const host = fakeHost(t, ({ method, params }) => {
+    switch (method) {
+      case 'bots.session.start':
+        assert.deepEqual(params, { botId: 'main' });
+        return { result: { sessionId: chatId } };
+      case 'agentSession.options':
+        return { result: { current: {}, models: [
+          { id: 'opus', label: 'Opus', isDefault: true, efforts: [{ value: 'high', label: 'High' }] },
+          { id: 'fable', label: 'Fable', efforts: [{ value: 'max', label: 'Max' }] }
+        ] } };
+      case 'agentSession.history':
+        return { result: { ok: true, page: { fence: 3 } } };
+      case 'agentSession.setOption': {
+        const { envelope, key, value } = params as { envelope: { sessionId: string; payloadFingerprint: string }; key: string; value: string };
+        assert.equal(envelope.sessionId, chatId);
+        assert.equal(envelope.payloadFingerprint, structuredAgentSessionPayloadFingerprint({
+          method, sessionId: chatId, fields: { key, value }
+        }));
+        if (refuse) return { result: { ok: false, refusal: { code: 'invalid_option' } } };
+        return { result: { ok: true, value: { key, value } } };
+      }
+      case 'agentSession.send': {
+        const { envelope } = params as ReturnType<typeof messageParams>;
+        return { result: { ok: true, value: { clientMessageId: envelope.clientOperationId, submission: { reason: null } } } };
+      }
+      default: throw new Error('unexpected RPC');
+    }
+  });
+  const write = createOrcaWrite(deviceFile(t));
+  const signal = () => AbortSignal.timeout(1000);
+  assert.equal(await write.start('main', '入力', signal(), [], { model: 'fable', effort: 'max' }), chatId);
+  assert.deepEqual(host.calls.map(call => [call.method, (call.params as { key?: string }).key]), [
+    ['bots.session.start', undefined], ['agentSession.options', undefined],
+    ['agentSession.history', undefined], ['agentSession.setOption', 'model'],
+    ['agentSession.history', undefined], ['agentSession.setOption', 'effort'],
+    ['agentSession.history', undefined], ['agentSession.send', undefined]
+  ]);
+
+  // effort alone is checked against the session's current (or default) model.
+  host.calls.length = 0;
+  await write.start('main', '入力', signal(), [], { effort: 'high' });
+  assert.deepEqual(host.calls.filter(call => call.method === 'agentSession.setOption').map(call => call.params!.value), ['high']);
+
+  for (const choice of [{ model: 'missing' }, { effort: 'max' }, { model: 'opus', effort: 'max' }]) {
+    host.calls.length = 0;
+    await assert.rejects(write.start('main', '入力', signal(), [], choice), { message: 'モデルまたは推論の強さを選択肢から選び直してください。' });
+    assert.deepEqual(host.calls.map(call => call.method), ['bots.session.start', 'agentSession.options']);
+  }
+
+  // Orca refusing the option after the chat exists must not invite a retry that opens another chat.
+  refuse = true;
+  host.calls.length = 0;
+  await assert.rejects(write.start('main', '入力', signal(), [], { model: 'fable' }), { code: 'unknown_result' });
+  assert.ok(!host.calls.some(call => call.method === 'agentSession.send'));
+});
+
+test('モデル選択肢はチャットの現在のセッションから読む', async t => {
+  const options = { current: { model: 'm' }, models: [{ id: 'm', label: 'M', efforts: [] }] };
+  fakeHost(t, ({ method, params }) => {
+    if (method === 'orchestration.partyLocation') return { result: { location: { kind: 'chat', sessionId: 'successor' } } };
+    assert.equal(method, 'agentSession.options');
+    assert.deepEqual(params, { sessionId: 'successor' });
+    return { result: options };
+  });
+  assert.deepEqual(await createOrcaWrite(deviceFile(t)).options('root', AbortSignal.timeout(1000)), options);
+});
