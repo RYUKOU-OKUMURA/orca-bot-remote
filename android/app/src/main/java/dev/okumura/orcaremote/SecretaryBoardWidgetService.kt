@@ -20,7 +20,8 @@ private class BoardFactory(private val context: Context) : RemoteViewsService.Re
 
     override fun onCreate() = onDataSetChanged()
     override fun onDataSetChanged() {
-        rows = context.boardSnapshot(context.connectionPreferences().savedConnection())?.taskRows(LocalDate.now()).orEmpty()
+        val prefs = context.connectionPreferences()
+        rows = context.boardSnapshot(prefs.savedConnection())?.rows(prefs.boardTab(), LocalDate.now()).orEmpty()
     }
     override fun onDestroy() { rows = emptyList() }
     override fun getCount() = rows.size
@@ -40,7 +41,11 @@ internal fun TaskRow.toViews(context: Context) = RemoteViews(context.packageName
         setSpan(StyleSpan(Typeface.BOLD), 0, length, 0)
     } else detail)
     setViewVisibility(R.id.row_subtitle, if (detail.isEmpty()) View.GONE else View.VISIBLE)
-    setContentDescription(R.id.row_check, "「$title」を完了にする")
-    setOnClickFillInIntent(R.id.row_check, Intent().setData(Uri.parse(taskDoneLink(id))))
-    setOnClickFillInIntent(R.id.row_body, Intent().setData(Uri.parse(TasksLink)))
+    // Launchers reuse row views, so set the check both ways.
+    setViewVisibility(R.id.row_check, if (id == null) View.GONE else View.VISIBLE)
+    if (id != null) {
+        setContentDescription(R.id.row_check, "「$title」を完了にする")
+        setOnClickFillInIntent(R.id.row_check, Intent().setData(Uri.parse(taskDoneLink(id))))
+    }
+    setOnClickFillInIntent(R.id.row_body, Intent().setData(Uri.parse(link)))
 }

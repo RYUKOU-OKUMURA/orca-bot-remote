@@ -10,6 +10,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.graphics.Typeface
+import android.text.SpannableString
+import android.text.style.StyleSpan
 import android.view.View
 import android.widget.RemoteViews
 import androidx.work.Constraints
@@ -29,6 +32,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 private const val RefreshBoard = "dev.okumura.orcaremote.REFRESH_BOARD"
+private const val SelectTab = "dev.okumura.orcaremote.SELECT_BOARD_TAB"
+private const val TabExtra = "tab"
 
 private fun Context.boardIds() = AppWidgetManager.getInstance(this)
     .getAppWidgetIds(ComponentName(this, SecretaryBoardWidgetProvider::class.java))
@@ -50,7 +55,14 @@ internal fun Context.boardSnapshot(connection: Connection?): BoardSnapshot? =
 
 class SecretaryBoardWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == RefreshBoard) update(context) else super.onReceive(context, intent)
+        when (intent.action) {
+            RefreshBoard -> update(context)
+            SelectTab -> {
+                context.connectionPreferences().saveBoardTab(boardTab(intent.getStringExtra(TabExtra)))
+                renderCached(context)
+            }
+            else -> super.onReceive(context, intent)
+        }
     }
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = update(context)
@@ -109,6 +121,25 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
             views.setOnClickPendingIntent(R.id.board_voice, open(context, "orcaremote://quick-memo?inbox=1&voice=1"))
             val refresh = Intent(context, SecretaryBoardWidgetProvider::class.java).setAction(RefreshBoard)
             views.setOnClickPendingIntent(R.id.board_refresh, PendingIntent.getBroadcast(context, 0, refresh, PendingIntent.FLAG_IMMUTABLE))
+            val tab = context.connectionPreferences().boardTab()
+            val rows = board?.rows(tab, LocalDate.now()).orEmpty()
+            for ((target, id, label, count) in listOf(
+                TabButton(BoardTab.TASKS, R.id.board_tab_tasks, "タスク", board?.taskRows(LocalDate.now())?.size ?: 0),
+                TabButton(BoardTab.PROGRESS, R.id.board_tab_progress, "進捗", board?.progressRows()?.size ?: 0),
+            )) {
+                val text = if (count > 0) "$label $count" else label
+                val selected = target == tab
+                views.setTextViewText(id, if (selected) SpannableString(text).apply {
+                    setSpan(StyleSpan(Typeface.BOLD), 0, length, 0)
+                } else text)
+                views.setInt(id, "setBackgroundResource", if (selected) R.drawable.board_tab_selected else R.drawable.board_tab)
+                views.setContentDescription(id, "$text${if (selected) "（表示中）" else "を表示"}")
+                views.setOnClickPendingIntent(id, selectTab(context, target))
+            }
+            val banner = board?.workingBanner()?.takeIf { tab == BoardTab.TASKS }
+            views.setViewVisibility(R.id.board_working, if (banner != null) View.VISIBLE else View.GONE)
+            views.setTextViewText(R.id.board_working, banner.orEmpty())
+            views.setOnClickPendingIntent(R.id.board_working, selectTab(context, BoardTab.PROGRESS))
             views.removeAllViews(R.id.board_bots)
             board?.bots?.take(6)?.forEach { bot ->
                 val tile = RemoteViews(context.packageName, R.layout.widget_board_bot)
@@ -129,16 +160,17 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
             val empty = when {
                 connection == null -> "アプリで Mac mini に接続してください"
                 board == null -> "ボードを取得できません。接続先を確認してください"
+                tab == BoardTab.PROGRESS -> "稼働中のセッションや進行中の項目はありません"
                 board.memoTasks == null -> "タスクリストを読めませんでした"
                 else -> "タスクリストは空です（上の「メモ」から追加）"
             }
             views.setTextViewText(R.id.board_empty, empty)
-            views.setOnClickPendingIntent(R.id.board_empty, open(context, TasksLink))
+            views.setOnClickPendingIntent(R.id.board_empty, open(context, if (tab == BoardTab.PROGRESS) HomeLink else TasksLink))
             views.setEmptyView(R.id.board_list, R.id.board_empty)
             if (Build.VERSION.SDK_INT >= 35) {
                 // Publish rows and header together. A separate legacy invalidation can republish an older header.
                 val items = RemoteViews.RemoteCollectionItems.Builder().setViewTypeCount(1)
-                board?.taskRows(LocalDate.now())?.forEachIndexed { index, row -> items.addItem(index.toLong(), row.toViews(context)) }
+                rows.forEachIndexed { index, row -> items.addItem(index.toLong(), row.toViews(context)) }
                 views.setRemoteAdapter(R.id.board_list, items.build())
             } else {
                 views.setRemoteAdapter(R.id.board_list, Intent(context, SecretaryBoardWidgetService::class.java))
@@ -152,6 +184,11 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
             if (Build.VERSION.SDK_INT < 35) manager.notifyAppWidgetViewDataChanged(ids, R.id.board_list)
         }
 
+        // Explicit, and a request code per tab, so the two tabs keep separate extras.
+        private fun selectTab(context: Context, tab: BoardTab): PendingIntent = PendingIntent.getBroadcast(context, 10 + tab.ordinal,
+            Intent(context, SecretaryBoardWidgetProvider::class.java).setAction(SelectTab).putExtra(TabExtra, tab.name),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
         // Request code 0 is shared; each button's own data URI keeps its PendingIntent distinct.
         private fun open(context: Context, link: String? = null): PendingIntent {
             val intent = Intent(context, MainActivity::class.java).setData(link?.let(Uri::parse))
@@ -160,6 +197,8 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
         }
     }
 }
+
+private data class TabButton(val tab: BoardTab, val id: Int, val label: String, val count: Int)
 
 /** Applies the check at once in the widget, then completes the task on the Mac in the background. */
 internal fun Context.completeTaskFromWidget(id: String) {
@@ -200,7 +239,7 @@ class WidgetTaskActivity : Activity() {
         super.onCreate(savedInstanceState)
         val id = taskDoneId(intent.dataString)
         if (id != null) applicationContext.completeTaskFromWidget(id)
-        else startActivity(Intent(this, MainActivity::class.java).setData(Uri.parse(TasksLink))
+        else startActivity(Intent(this, MainActivity::class.java).setData(Uri.parse(intent.dataString?.takeIf(::appLink) ?: TasksLink))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
         finish()
     }
