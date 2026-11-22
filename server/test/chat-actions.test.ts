@@ -176,6 +176,48 @@ test('short model aliases with the same label are dropped from /model and new-ch
   assert.deepEqual(promoted.map(m => [m.id, m.isDefault]), [['claude-opus-5-5', true]]);
 });
 
+test('only the newest Claude model of each family is offered, keeping current and default', () => {
+  const efforts = [{ value: 'high', label: 'High' }];
+  const row = (id: string, extra = {}) => ({ id, resolvedModel: id, label: id, efforts, ...extra });
+  const alias = (id: string, to: string) => ({ id, resolvedModel: to, label: to, efforts });
+  const real = [
+    row('claude-opus-5-5', { isDefault: true }), row('claude-opus-5'), row('claude-opus-4-8'), row('claude-opus-4-7'), row('claude-opus-4-6'),
+    row('claude-fable-5-2'), row('claude-fable-5-1'), row('claude-fable-5'),
+    row('claude-sonnet-5-5'), row('claude-sonnet-5'), row('claude-sonnet-4-6'),
+    row('claude-haiku-5-5'), row('claude-haiku-4-5-20251001'),
+    row('claude-mythos-5-2'), row('claude-mythos-5-1'),
+    alias('opus', 'claude-opus-5-5'), alias('sonnet', 'claude-sonnet-5-5'), alias('haiku', 'claude-haiku-5-5'), alias('fable', 'claude-fable-5-2')
+  ];
+  assert.equal(real.length, 19);
+  const latest = ['claude-opus-5-5', 'claude-fable-5-2', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-mythos-5-2'];
+  const ids = (list: { id: string }[]) => list.map(m => m.id);
+  assert.deepEqual(ids(modelOptions({ models: real }).models), latest);
+  assert.deepEqual(commandMenu({}, { models: real, current: { model: 'opus' } }).options.model?.choices.map(c => c.value), latest);
+
+  // An older current or default model stays, in its original place.
+  assert.deepEqual(ids(modelOptions({ models: real, current: { model: 'claude-opus-4-7' } }).models),
+    ['claude-opus-5-5', 'claude-opus-4-7', ...latest.slice(1)]);
+  assert.deepEqual(commandMenu({}, { models: real, current: { model: 'claude-fable-5' } }).options.model,
+    { current: 'claude-fable-5', choices: ['claude-opus-5-5', 'claude-fable-5-2', 'claude-fable-5', ...latest.slice(2)].map(value => ({ value, label: value })) });
+  const oldDefault = real.map(m => ({ ...m, isDefault: m.id === 'claude-sonnet-4-6' }));
+  const options = modelOptions({ models: oldDefault });
+  assert.deepEqual(ids(options.models), [...latest.slice(0, 3), 'claude-sonnet-4-6', ...latest.slice(3)]);
+  assert.equal(options.defaultModel, 'claude-sonnet-4-6');
+
+  // Versions compare as numbers; an undated id beats a dated one, a newer date beats an older one.
+  const latestOf = (...list: string[]) => ids(dedupeModels(list.map(id => row(id))).models);
+  assert.deepEqual(latestOf('claude-opus-5', 'claude-opus-5-5'), ['claude-opus-5-5']);
+  assert.deepEqual(latestOf('claude-opus-4-10', 'claude-opus-4-8'), ['claude-opus-4-10']);
+  assert.deepEqual(latestOf('claude-opus-9', 'claude-opus-10'), ['claude-opus-10']);
+  assert.deepEqual(latestOf('claude-haiku-4-5-20251001', 'claude-haiku-4-5'), ['claude-haiku-4-5']);
+  assert.deepEqual(latestOf('claude-haiku-4-5-20251001', 'claude-haiku-4-5-20260101'), ['claude-haiku-4-5-20260101']);
+  assert.deepEqual(latestOf('claude-3-5-sonnet-20241022', 'claude-3-7-sonnet-20250219', 'claude-sonnet-4-6'), ['claude-sonnet-4-6']);
+
+  // Other providers' models and other families are untouched.
+  const others = ['gpt-6.2-sol', 'gpt-6.1', 'gemini-4-neon', 'gemini-3', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-code'];
+  assert.deepEqual(latestOf(...others), others);
+});
+
 test('command mutations use current fence, operation ID and exact fingerprint fields', async t => {
   const expected = [
     { command: 'clear' }, { command: 'compact' }, { command: 'compact', instructions: 'keep context' },

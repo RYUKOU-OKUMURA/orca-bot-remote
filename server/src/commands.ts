@@ -94,11 +94,43 @@ export function dedupeModels(list: unknown, current?: string) {
     if (current === model.id) current = target;
     if (model.isDefault === true) promoted.add(target);
   }
-  return {
-    models: promoted.size && !models.some(m => m.isDefault === true)
-      ? models.map(m => promoted.has(m.id) ? { ...m, isDefault: true } : m) : models,
-    current
-  };
+  const deduped = promoted.size && !models.some(m => m.isDefault === true)
+    ? models.map(m => promoted.has(m.id) ? { ...m, isDefault: true } : m) : models;
+  return { models: latestClaude(deduped, current), current };
+}
+
+// claude-<family>-<version>[-YYYYMMDD], or the older claude-<version>-<family>[-YYYYMMDD].
+const claudeId = /^claude-(?:([a-z]+)((?:-\d{1,4})+)|((?:\d{1,4}-)+)([a-z]+))(?:-(\d{8}))?$/;
+
+function claudeVersion(id: string) {
+  const m = claudeId.exec(id);
+  if (!m) return undefined;
+  const family = m[1] ?? m[4];
+  const version = (m[2] ?? m[3]).split('-').filter(Boolean).map(Number);
+  // An undated id is the alias for the newest snapshot of that version.
+  return { family, key: [...version, m[5] ? Number(m[5]) : Infinity] };
+}
+
+function newer(a: number[], b: number[]) {
+  // The date is always last, so pad the shorter version with zeros before it.
+  const length = Math.max(a.length, b.length);
+  const pad = (v: number[]) => [...v.slice(0, -1), ...Array(length - v.length).fill(0), v[v.length - 1]];
+  const [x, y] = [pad(a), pad(b)];
+  for (let i = 0; i < length; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+
+// Orca lists every Claude release; keep only the newest of each family, plus the current and default models.
+function latestClaude(models: Model[], current?: string) {
+  const best = new Map<string, number[]>();
+  for (const model of models) {
+    const v = claudeVersion(model.id);
+    if (v && (!best.has(v.family) || newer(v.key, best.get(v.family)!))) best.set(v.family, v.key);
+  }
+  return models.filter(model => {
+    const v = claudeVersion(model.id);
+    return !v || model.id === current || model.isDefault === true || !newer(best.get(v.family)!, v.key);
+  });
 }
 
 export function modelOptions(session?: Partial<SessionOptions>) {
