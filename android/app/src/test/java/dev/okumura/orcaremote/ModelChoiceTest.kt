@@ -27,11 +27,37 @@ class ModelChoiceTest {
     }
 
     @Test fun changingModelDropsUnsupportedEffort() {
-        assertEquals(ModelChoice("sonnet", "low"), options.choose("sonnet", "low"))
-        assertEquals(ModelChoice("sonnet", null), options.choose("sonnet", "high"))
+        assertEquals(ModelChoice("opus", "low"), options.choose("opus", "low"))
+        assertEquals(ModelChoice("opus", "high"), options.choose("opus", "high"))
         assertEquals(ModelChoice("haiku", null), options.choose("haiku", "low"))
         assertEquals(ModelChoice(null, "low"), options.choose(null, "low"))
         assertEquals(ModelChoice(), options.choose(null, "high"))
+    }
+
+    @Test fun pickingTheDefaultModelAgainSendsNull() {
+        // sonnet is the default model, so the menu (which has no separate 既定 row) maps it back to null.
+        assertEquals(ModelChoice(null, "low"), options.choose("sonnet", "low"))
+        assertEquals(ModelChoice(), options.choose("sonnet", "high"))
+    }
+
+    @Test fun pickingTheDefaultEffortAgainSendsNull() {
+        val withDefault = options.copy(defaultEffort = "low")
+        assertEquals(ModelChoice(), withDefault.chooseEffort(ModelChoice(), "low"))
+        assertEquals(ModelChoice(effort = "high"), withDefault.chooseEffort(ModelChoice(), "high"))
+        // The default effort belongs to the default model; with another model it is an explicit choice.
+        assertEquals(ModelChoice("opus", "low"), withDefault.chooseEffort(ModelChoice("opus"), "low"))
+        assertEquals(ModelChoice(effort = "low", agent = "codex"), options.chooseEffort(ModelChoice(agent = "codex"), "low"))
+    }
+
+    @Test fun agentsShowTheirCliNames() {
+        fun name(id: String, label: String) = BotAgentOption(id, label).displayName()
+        assertEquals("Claude Code", name("claude", "claude"))
+        assertEquals("Claude Code", name("claude-x", "Claude"))
+        assertEquals("Codex", name("codex", "codex"))
+        assertEquals("Antigravity", name("antigravity", "agy"))
+        assertEquals("OpenCode", name("opencode", "opencode"))
+        assertEquals("Hermes", name("hermes", "hermes"))
+        assertEquals("Devin", name("devin", "Devin"))
     }
 
     @Test fun choiceIsKeptPerBotAndDefaultsToNothing() {

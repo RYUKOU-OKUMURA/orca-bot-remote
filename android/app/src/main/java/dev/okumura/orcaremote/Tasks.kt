@@ -81,19 +81,9 @@ internal fun taskAskTarget(assigned: String?, bots: List<Bot>) = assigned ?: mem
 
 @Composable
 internal fun TaskBotButton(bot: String?, bots: List<Bot>, enabled: Boolean, change: (String?) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        OrcaOutlinedButton({ open = true }, enabled = enabled) { Text("担当: " + (bot ?: "未指定")) }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            // Keeps an assignment to a bot that is gone or not loaded, so it can be seen and cleared.
-            (listOf(null) + (bots.map { it.name } + listOfNotNull(bot)).distinct()).forEach { name ->
-                DropdownMenuItem(text = { Text(name ?: "未指定") }, onClick = {
-                    open = false
-                    change(name)
-                })
-            }
-        }
-    }
+    // Keeps an assignment to a bot that is gone or not loaded, so it can be seen and cleared.
+    val names = (bots.map { it.name } + listOfNotNull(bot)).distinct()
+    ChoiceMenu(bot ?: "担当なし", listOf(null to "担当なし") + names.map { it to it }, bot, enabled, change)
 }
 
 internal fun taskInputValid(title: String, note: String) =
@@ -142,9 +132,7 @@ internal const val TaskUnknown = "反映されたか確認できませんでし�
 internal fun DueButton(due: String?, enabled: Boolean, change: (String?) -> Unit) {
     var picking by rememberSaveable { mutableStateOf(false) }
     val today = LocalDate.now()
-    OrcaOutlinedButton({ picking = true }, enabled = enabled) {
-        Text(dueLabel(due, today)?.first ?: "期限なし")
-    }
+    ValueChip(dueLabel(due, today)?.first ?: "期限なし", enabled) { picking = true }
     if (picking) {
         val state = rememberDatePickerState(parseDue(due)?.atStartOfDay(ZoneOffset.UTC)?.toInstant()?.toEpochMilli())
         DatePickerDialog(
