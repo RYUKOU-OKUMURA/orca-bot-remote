@@ -115,32 +115,19 @@ internal fun QuickMemoScreen(
                 }
             }
             if (!task) DataContent(Modifier.fillMaxWidth(), bots, settings) {
-                var menu by remember { mutableStateOf(false) }
-                Box {
-                    OrcaOutlinedButton({ menu = true }, enabled = canSelect && mode != MemoMode.Inbox && list.isNotEmpty()) {
-                        Text(bot ?: "送信先のボットがありません")
-                    }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        list.forEach { item ->
-                            DropdownMenuItem(text = { Text(item.name) }, onClick = {
-                                menu = false
-                                if (item.name != bot && chat.changeDestination(chat.limits)) destination["bot"] = item.name
-                            })
-                        }
-                    }
+                ChoiceMenu(bot ?: "送信先のボットがありません", list.map { it.name to it.name }, bot,
+                    canSelect && mode != MemoMode.Inbox && list.isNotEmpty()) { name ->
+                    if (name != null && name != bot && chat.changeDestination(chat.limits)) destination["bot"] = name
                 }
             }
             when (mode) {
-                MemoMode.Task -> {
-                    Text("1行目がタイトル、2行目以降は補足メモとしてタスクリストに入ります")
-                    // Bots that fail to load leave only 未指定, which still adds the task.
-                    TaskBotButton(taskBot, list, enabled) { destination["taskBot"] = it }
-                }
-                MemoMode.Inbox -> Text("長いメモを送るとメインBotがタスクに分けて整理し、ボード＆リマインドに反映します")
+                // Bots that fail to load leave only 担当なし, which still adds the task.
+                MemoMode.Task -> TaskBotButton(taskBot, list, enabled) { destination["taskBot"] = it }
+                MemoMode.Inbox -> Unit
                 MemoMode.New -> if (bot != null) ModelPicker(api, bot, destination, canSelect)
                 MemoMode.Home -> Unit
             }
-            DraftField(sender, "メモ", Modifier.fillMaxWidth(), minLines = 4)
+            DraftField(sender, if (task) "タイトル（2行目以降は補足）" else "メモ", Modifier.fillMaxWidth(), minLines = 4)
             AttachmentPreview(chat, enabled)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (!task) AttachmentPicker(chat, enabled)
