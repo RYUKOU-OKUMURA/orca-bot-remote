@@ -180,6 +180,9 @@ test('one poller broadcasts only changed fields and retains good values across C
   // A task written by the bot itself is picked up by the poll and also flags board.
   writeFileSync(tasksFile, JSON.stringify({ version: 1, tasks: [{ id: 'a', title: 'Botが追加', done: false, createdAt: 1 }] }));
   await expectChange(false, false, false, true, true);
+  // Assigning a bot alone is a change too.
+  writeFileSync(tasksFile, JSON.stringify({ version: 1, tasks: [{ id: 'a', title: 'Botが追加', done: false, createdAt: 1, bot: 'メインBot' }] }));
+  await expectChange(false, false, false, true, true);
   writeFileSync(tasksFile, '{broken');
   const unchanged = polls();
   await until(() => polls() >= unchanged + 2);

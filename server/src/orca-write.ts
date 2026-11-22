@@ -14,10 +14,12 @@ import {
 export const DEVICE_FILE = join(homedir(), '.config/orca-bot-remote/orca-device.json');
 
 export type Device = { endpoint: string; publicKeyB64: string; deviceToken: string };
-export type ModelChoice = { model?: string; effort?: string };
+export type ModelChoice = { agent?: string; model?: string; effort?: string };
 export type OrcaWrite = {
   start: (botId: string, text: string, signal: AbortSignal, uploads?: Upload[], choice?: ModelChoice) => Promise<string>;
   options: (chatId: string, signal: AbortSignal) => Promise<SessionOptions>;
+  agentChoices: (signal: AbortSignal) => Promise<string[]>;
+  modelCatalog: (agent: string, signal: AbortSignal) => Promise<Partial<SessionOptions>>;
   send: (chatId: string, text: string, signal: AbortSignal, extras?: MessageExtras) => Promise<void>;
   commands: (chatId: string, signal: AbortSignal) => Promise<ReturnType<typeof commandMenu>>;
   command: (chatId: string, command: Command, signal: AbortSignal) => Promise<void>;
@@ -312,7 +314,8 @@ export function createOrcaWrite(file = DEVICE_FILE): OrcaWrite {
     async start(botId, text, signal, uploads = [], choice = {}) {
       const device = readDevice(file);
       return withOrcaDevice(device, signal, async call => {
-        const result = await call<{ sessionId: string }>('bots.session.start', { botId }, true);
+        const { agent } = choice;
+        const result = await call<{ sessionId: string }>('bots.session.start', { botId, ...(agent ? { agent } : {}) }, true);
         if (typeof result?.sessionId !== 'string' || !result.sessionId) throw new OrcaWriteError('unknown_result');
         try {
           await applyChoice(call, result.sessionId, choice);
@@ -327,6 +330,17 @@ export function createOrcaWrite(file = DEVICE_FILE): OrcaWrite {
         }
         return result.sessionId;
       });
+    },
+    agentChoices(signal) {
+      return withOrcaDevice(readDevice(file), signal, async call => {
+        const result = await call<{ agents?: unknown }>('bots.agentChoices', {});
+        if (!Array.isArray(result?.agents) || !result.agents.every(id => typeof id === 'string')) throw new OrcaWriteError('orca_failed');
+        return result.agents as string[];
+      });
+    },
+    modelCatalog(agent, signal) {
+      return withOrcaDevice(readDevice(file), signal, call =>
+        call<Partial<SessionOptions>>('agentSession.modelCatalog', { agent, waitForListing: true }));
     },
     send(chatId, text, signal, extras) {
       return withChat(chatId, signal, (call, id) => sendMessage(call, id, text, extras));

@@ -8,14 +8,14 @@ export const DEFAULT_TASKS_FILE = join(homedir(), '.orca', 'bots', 'bot', 'memor
 export const maxTasks = 500;
 
 export type MemoTask = {
-  id: string; title: string; note: string | null; due: string | null; done: boolean;
+  id: string; title: string; note: string | null; due: string | null; bot: string | null; done: boolean;
   createdAt: number; updatedAt: number; doneAt: number | null;
 };
 type Stored = { tasks: Record<string, unknown>[]; [key: string]: unknown };
 
 export class TasksError extends Error {}
 
-const fields = ['title', 'note', 'due', 'done'];
+const fields = ['title', 'note', 'due', 'bot', 'done'];
 
 function title(value: unknown) {
   if (typeof value !== 'string') throw new BadInput('title は文字列で指定してください。');
@@ -31,6 +31,15 @@ function note(value: unknown) {
   const text = value.trim();
   if ([...text].length > 2000) throw new BadInput('note は 2000 文字以内で指定してください。');
   return text || null;
+}
+
+// Only the shape is checked so a renamed or future bot can still be assigned.
+function bot(value: unknown) {
+  if (value === null) return null;
+  if (typeof value !== 'string') throw new BadInput('bot は文字列か null で指定してください。');
+  const name = value.replace(/\p{Cc}+/gu, ' ').trim();
+  if ([...name].length > 100) throw new BadInput('bot は前後の空白を除いて 100 文字以内で指定してください。');
+  return name || null;
 }
 
 function isDate(value: unknown): value is string {
@@ -54,12 +63,13 @@ function parse(body: Record<string, unknown>, patch: boolean) {
   const keys = Object.keys(body);
   if (keys.some(key => !fields.includes(key) || (!patch && key === 'done')) || (patch && !keys.length) ||
       (!patch && !keys.includes('title'))) {
-    throw new BadInput(patch ? 'title、note、due、done のいずれかを指定してください。' : 'title と任意の note、due を指定してください。');
+    throw new BadInput(patch ? 'title、note、due、bot、done のいずれかを指定してください。' : 'title と任意の note、due、bot を指定してください。');
   }
   return {
     ...('title' in body ? { title: title(body.title) } : {}),
     ...('note' in body ? { note: note(body.note) } : {}),
     ...('due' in body ? { due: due(body.due) } : {}),
+    ...('bot' in body ? { bot: bot(body.bot) } : {}),
     ...('done' in body ? { done: done(body.done) } : {})
   };
 }
@@ -74,6 +84,7 @@ function view(raw: Record<string, unknown>): MemoTask | null {
     id: raw.id, title: raw.title,
     note: typeof raw.note === 'string' && raw.note.trim() ? raw.note : null,
     due: isDate(raw.due) ? raw.due : null,
+    bot: typeof raw.bot === 'string' && raw.bot.trim() ? raw.bot : null,
     done: isDone, createdAt, updatedAt: time(raw.updatedAt) ?? createdAt,
     doneAt: isDone ? time(raw.doneAt) : null
   };
@@ -143,7 +154,7 @@ export function createTasks(file = process.env.ORCA_TASKS_FILE || DEFAULT_TASKS_
         const now = Date.now();
         const task: MemoTask = {
           id: randomUUID(), title: input.title!, note: input.note ?? null, due: input.due ?? null,
-          done: false, createdAt: now, updatedAt: now, doneAt: null
+          bot: input.bot ?? null, done: false, createdAt: now, updatedAt: now, doneAt: null
         };
         data.tasks.push(task);
         await save(data);

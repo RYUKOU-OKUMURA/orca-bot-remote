@@ -263,6 +263,45 @@ test('新規チャットは開始後に選択肢を確かめて model と effort
   assert.ok(!host.calls.some(call => call.method === 'agentSession.send'));
 });
 
+test('エージェント指定の新規チャットは agent を渡し、model と effort が無ければ選択肢を読まずに送る', async t => {
+  const chatId = randomUUID();
+  const host = fakeHost(t, ({ method, params }) => {
+    switch (method) {
+      case 'bots.session.start':
+        assert.deepEqual(params, { botId: 'main', agent: 'hermes' });
+        return { result: { sessionId: chatId } };
+      case 'agentSession.history':
+        return { result: { ok: true, page: { fence: 1 } } };
+      case 'agentSession.send': {
+        const { envelope } = params as ReturnType<typeof messageParams>;
+        return { result: { ok: true, value: { clientMessageId: envelope.clientOperationId, submission: { reason: null } } } };
+      }
+      default: throw new Error('unexpected RPC');
+    }
+  });
+  assert.equal(await createOrcaWrite(deviceFile(t)).start('main', '入力', AbortSignal.timeout(1000), [], { agent: 'hermes' }), chatId);
+  assert.deepEqual(host.calls.map(call => call.method), ['bots.session.start', 'agentSession.history', 'agentSession.send']);
+});
+
+test('エージェント一覧とモデル一覧は Orca の RPC から読む', async t => {
+  const catalog = { origin: 'probe', models: [{ id: 'gpt', label: 'GPT', efforts: [] }] };
+  let agents: unknown = ['claude', 'codex'];
+  fakeHost(t, ({ method, params }) => {
+    if (method === 'bots.agentChoices') {
+      assert.deepEqual(params, {});
+      return { result: { agents } };
+    }
+    assert.equal(method, 'agentSession.modelCatalog');
+    assert.deepEqual(params, { agent: 'codex', waitForListing: true });
+    return { result: catalog };
+  });
+  const write = createOrcaWrite(deviceFile(t));
+  assert.deepEqual(await write.agentChoices(AbortSignal.timeout(1000)), ['claude', 'codex']);
+  assert.deepEqual(await write.modelCatalog('codex', AbortSignal.timeout(1000)), catalog);
+  agents = ['claude', 1];
+  await assert.rejects(write.agentChoices(AbortSignal.timeout(1000)), { code: 'orca_failed' });
+});
+
 test('モデル選択肢はチャットの現在のセッションから読む', async t => {
   const options = { current: { model: 'm' }, models: [{ id: 'm', label: 'M', efforts: [] }] };
   fakeHost(t, ({ method, params }) => {

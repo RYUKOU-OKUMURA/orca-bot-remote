@@ -18,7 +18,7 @@ function writeFrame(client: ServerResponse, frame: string) {
 }
 
 function memoDigest(tasks: MemoTask[]) {
-  return digest(tasks.map(task => [task.id, task.done, task.title, task.note, task.due, task.updatedAt]));
+  return digest(tasks.map(task => [task.id, task.done, task.title, task.note, task.due, task.bot, task.updatedAt]));
 }
 
 export function createEvents(orcaBin: string, summaryId: string | undefined, readTimeoutMs: number,

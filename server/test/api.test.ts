@@ -1148,16 +1148,55 @@ test('新規チャットの model と effort は検証してから start に渡�
     assert.equal((await post(chats, JSON.stringify({ text: '進める', ...extra }))).status, 201);
   }
   assert.deepEqual(choices, [
-    { model: undefined, effort: undefined }, { model: undefined, effort: undefined },
-    { model: 'claude-fable-5-2', effort: 'max' }, { model: undefined, effort: 'low' }
+    { agent: undefined, model: undefined, effort: undefined }, { agent: undefined, model: undefined, effort: undefined },
+    { agent: undefined, model: 'claude-fable-5-2', effort: 'max' }, { agent: undefined, model: undefined, effort: 'low' }
   ]);
 });
 
-test('Bot のモデル選択肢は Home チャットから取り、取得できなければ空で返す', async t => {
-  const asked: string[] = [];
-  let failure: OrcaWriteError['code'] | undefined;
+test('新規チャットの agent は選べるエージェントか確かめてから start に渡す', async t => {
+  const choices: unknown[] = [];
   const write: OrcaWrite = {
     ...createOrcaWrite(join(tokenDir, 'missing-device')),
+    agentChoices: async () => ['claude', 'codex', 'grok'],
+    async start(_id, _text, _signal, _uploads, choice) {
+      choices.push(choice);
+      return openChat;
+    }
+  };
+  const post = await writeApi(t, write);
+  // grok is offered by Orca but not installed here; droid is installed but not offered for bots.
+  for (const agent of ['', ' ', 1, 'a\nb', 'x'.repeat(129), 'grok', 'droid', 'unknown']) {
+    const response = await post(chats, JSON.stringify({ text: '進める', agent }));
+    assert.equal(response.status, 400, JSON.stringify(agent));
+    assert.equal((await response.json()).error, 'bad_request');
+  }
+  assert.deepEqual(choices, []);
+  for (const extra of [{ agent: null }, { agent: 'codex' }, { agent: 'claude', model: 'claude-opus-5-5', effort: 'high' }]) {
+    assert.equal((await post(chats, JSON.stringify({ text: '進める', ...extra }))).status, 201);
+  }
+  assert.deepEqual(choices, [
+    { agent: undefined, model: undefined, effort: undefined },
+    { agent: 'codex', model: undefined, effort: undefined },
+    { agent: 'claude', model: 'claude-opus-5-5', effort: 'high' }
+  ]);
+});
+
+test('Bot のエージェントとモデル選択肢を返し、モデルが取れなければ Home チャットか空で返す', async t => {
+  const asked: string[] = [];
+  let failure: OrcaWriteError['code'] | undefined;
+  let choicesFailure: OrcaWriteError['code'] | undefined;
+  let catalogs: Record<string, object> = {};
+  const write: OrcaWrite = {
+    ...createOrcaWrite(join(tokenDir, 'missing-device')),
+    async agentChoices() {
+      if (choicesFailure) throw new OrcaWriteError(choicesFailure);
+      return ['claude', 'codex', 'hermes', 'grok'];
+    },
+    async modelCatalog(agent) {
+      asked.push('catalog:' + agent);
+      if (!catalogs[agent]) throw new OrcaWriteError('orca_failed');
+      return catalogs[agent];
+    },
     async options(chatId) {
       asked.push(chatId);
       if (failure) throw new OrcaWriteError(failure);
@@ -1175,15 +1214,29 @@ test('Bot のモデル選択肢は Home チャットから取り、取得でき�
     assert.equal(response.status, status, path);
     return response.json();
   };
+  // メインBot runs codex; grok is not installed and droid is not offered for bots.
+  const agents = [
+    { id: 'codex', label: 'Codex', isDefault: true },
+    { id: 'claude', label: 'Claude', isDefault: false },
+    { id: 'hermes', label: 'Hermes', isDefault: false }
+  ];
+  const head = { agents, agent: 'codex', defaultAgent: 'codex' };
   const empty = { models: [], defaultModel: null, defaultEffort: null };
+  choicesFailure = 'write_unavailable';
+  assert.equal((await get(`/api/bots/${bot}/options`, 503)).error, 'write_unavailable');
+  choicesFailure = undefined;
   failure = 'write_unavailable';
   assert.equal((await get(`/api/bots/${bot}/options`, 503)).error, 'write_unavailable');
   failure = 'not_found';
-  assert.deepEqual(await get(`/api/bots/${bot}/options`), empty);
+  assert.deepEqual(await get(`/api/bots/${bot}/options`), { ...head, ...empty });
   failure = 'orca_failed';
-  assert.deepEqual(await get(`/api/bots/${bot}/options`), empty);
+  assert.deepEqual(await get(`/api/bots/${bot}/options`), { ...head, ...empty });
+  choicesFailure = 'orca_failed'; // Only the bot's own agent is offered.
+  assert.deepEqual(await get(`/api/bots/${bot}/options`), { ...head, agents: agents.slice(0, 1), ...empty });
+  choicesFailure = undefined;
   failure = undefined;
   const expected = {
+    ...head,
     models: [
       { id: 'm1', label: 'Model 1', isDefault: true, efforts: [{ value: 'high', label: 'High' }] },
       { id: 'm2', label: 'm2', isDefault: false, efforts: [] }
@@ -1192,8 +1245,41 @@ test('Bot のモデル選択肢は Home チャットから取り、取得でき�
   };
   assert.deepEqual(await get(`/api/bots/${bot}/options`), expected);
   assert.deepEqual(await get(`/api/bots/${bot}/options`), expected); // Cached.
-  assert.deepEqual(asked, ['new', 'new', 'new', 'new']);
-  assert.deepEqual(await get(`/api/bots/${other}/options`), empty); // No open chats.
+  assert.deepEqual(asked, Array(5).fill(['catalog:codex', 'new']).flat());
+
+  const efforts = [{ value: 'low', label: 'Low' }, { value: 'high', label: 'High' }];
+  catalogs = {
+    claude: { origin: 'probe', models: [
+      { id: 'claude-opus-5-5', resolvedModel: 'claude-opus-5-5', label: 'Opus 5.5', isDefault: true, efforts, declaredDefaultEffort: 'high' },
+      { id: 'claude-sonnet-5-5', resolvedModel: 'claude-sonnet-5-5', label: 'Sonnet 5.5', isDefault: false, efforts },
+      { id: 'opus', resolvedModel: 'claude-opus-5-5', label: 'Opus 5.5', isDefault: false, efforts },
+      { id: 'sonnet', resolvedModel: 'claude-sonnet-5-5', label: 'Sonnet 5.5', isDefault: false, efforts }
+    ] },
+    hermes: { origin: 'unknown' }
+  };
+  assert.deepEqual(await get(`/api/bots/${bot}/options?agent=claude`), {
+    ...head, agent: 'claude',
+    models: [
+      { id: 'claude-opus-5-5', label: 'Opus 5.5', isDefault: true, efforts },
+      { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', isDefault: false, efforts }
+    ],
+    defaultModel: 'claude-opus-5-5', defaultEffort: 'high'
+  });
+  asked.length = 0;
+  // A non-default agent without a catalog is still selectable, without models and without a chat fallback.
+  assert.deepEqual(await get(`/api/bots/${bot}/options?agent=hermes`), { ...head, agent: 'hermes', ...empty });
+  assert.deepEqual(asked, ['catalog:hermes']);
+  for (const agent of ['', '%20', '%0A', 'x'.repeat(129), 'grok', 'droid', 'unknown']) {
+    assert.equal((await get(`/api/bots/${bot}/options?agent=${agent}`, 400)).error, 'bad_request', agent);
+  }
+  choicesFailure = 'orca_failed';
+  assert.equal((await get(`/api/bots/${bot}/options?agent=hermes`, 400)).error, 'bad_request');
+  choicesFailure = undefined;
+
+  assert.deepEqual(await get(`/api/bots/${other}/options`), {
+    agents: [agents[1], { ...agents[0], isDefault: false }, agents[2]],
+    agent: null, defaultAgent: null, ...empty
+  }); // No agent recorded and no open chats.
   assert.equal((await get('/api/bots/unknown/options', 404)).error, 'not_found');
   const wrong = await fetch(base + `/api/bots/${bot}/options`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
   assert.equal(wrong.status, 405);

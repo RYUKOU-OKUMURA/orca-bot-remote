@@ -43,6 +43,26 @@ test('validation rejects bad titles, notes, dates, flags and unknown fields', as
   for (const body of [{}, { done: 'yes' }, { id: 'x' }]) await assert.rejects(tasks.update(id, body), BadInput);
 });
 
+test('bot is an optional free-form name: blank means none, control characters become spaces', async t => {
+  const file = tempFile(t);
+  const tasks = createTasks(file);
+  for (const body of [{ title: 'x', bot: 1 }, { title: 'x', bot: 'あ'.repeat(101) }, { title: 'x', bot: ['a'] }]) {
+    await assert.rejects(tasks.create(body), BadInput, JSON.stringify(body));
+  }
+  const plain = await tasks.create({ title: 'x' });
+  assert.equal(plain.bot, null);
+  assert.equal((await tasks.create({ title: 'x', bot: '  ' })).bot, null);
+  assert.equal((await tasks.create({ title: 'x', bot: null })).bot, null);
+  assert.equal((await tasks.create({ title: 'x', bot: ' まだ無い\nBot ' })).bot, 'まだ無い Bot');
+  assert.equal((await tasks.create({ title: 'x', bot: '😀'.repeat(100) })).bot, '😀'.repeat(100));
+  assert.equal((await tasks.update(plain.id, { bot: 'メインBot' }))!.bot, 'メインBot');
+  assert.equal((await tasks.update(plain.id, { bot: '' }))!.bot, null);
+  await assert.rejects(tasks.update(plain.id, { bot: 2 }), BadInput);
+  // Rows written before the field existed, or by the bot with a non-string value, read as none.
+  writeFileSync(file, JSON.stringify({ version: 1, tasks: [{ id: 'a', title: '古い行' }, { id: 'b', title: 'b', bot: 3 }] }));
+  assert.deepEqual((await tasks.list()).map(task => task.bot), [null, null]);
+});
+
 test('done toggles doneAt, updates keep unknown fields, and sorting follows the spec', async t => {
   const file = tempFile(t);
   const tasks = createTasks(file);
@@ -118,8 +138,10 @@ test('REST endpoints create, list, patch and delete tasks and board shows open o
   };
   assert.equal((await fetch(base + '/api/tasks')).status, 401);
   assert.deepEqual(await call('/api/tasks'), { tasks: [] });
-  const { task } = await call('/api/tasks', 'POST', { title: '牛乳', due: '2026-11-23' }, 201);
+  const { task } = await call('/api/tasks', 'POST', { title: '牛乳', due: '2026-11-23', bot: 'メインBot' }, 201);
   assert.equal(task.title, '牛乳');
+  assert.equal(task.bot, 'メインBot');
+  assert.equal((await call('/api/tasks', 'POST', { title: 'x', bot: 1 }, 400)).error, 'bad_request');
   assert.equal((await call('/api/tasks', 'POST', { title: '' }, 400)).error, 'bad_request');
   assert.equal((await call('/api/tasks', 'POST', [1], 400)).error, 'bad_request');
   assert.equal((await call('/api/tasks/' + task.id, 'PATCH', {}, 400)).error, 'bad_request');
@@ -130,6 +152,9 @@ test('REST endpoints create, list, patch and delete tasks and board shows open o
   const board = await call('/api/board');
   assert.deepEqual(board.memoTasks, [task]);
   assert.ok(Array.isArray(board.bots) && Array.isArray(board.tasks) && Array.isArray(board.sessions));
+  const reassigned = (await call('/api/tasks/' + task.id, 'PATCH', { bot: null })).task;
+  assert.equal(reassigned.bot, null);
+  assert.deepEqual((await call('/api/board')).memoTasks, [reassigned]);
   const patched = (await call('/api/tasks/' + task.id, 'PATCH', { done: true })).task;
   assert.equal(patched.done, true);
   assert.deepEqual((await call('/api/board')).memoTasks, []);
