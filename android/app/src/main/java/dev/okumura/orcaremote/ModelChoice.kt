@@ -177,19 +177,25 @@ internal fun ChoiceMenu(
 internal fun OptionDescriptor.labelOf(value: String? = current, fallback: String = ""): String =
     choices.firstOrNull { it.value == value }?.label ?: value ?: fallback
 
+/** The model and effort options that have choices to show, in chip order. */
+internal fun ChatOptions?.chipMenus(): List<Pair<String, OptionDescriptor>> =
+    listOfNotNull(this?.model?.let { "model" to it }, this?.effort?.let { "effort" to it })
+        .filter { (_, option) -> option.choices.isNotEmpty() }
+
+/** The value to send for a pick, or null when it is already current. */
+internal fun OptionDescriptor.switchTarget(value: String?): String? = value?.takeIf { it != current }
+
 /** Model and effort chips of an open chat; a pick that is already current sends nothing. */
 @Composable
 internal fun ChatOptionChips(options: ChatOptions?, enabled: Boolean, switch: (name: String, value: String) -> Unit) {
-    val menus = listOf("model" to options?.model, "effort" to options?.effort)
-        .filter { (_, option) -> !option?.choices.isNullOrEmpty() }
+    val menus = options.chipMenus()
     if (menus.isEmpty()) return
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
         menus.forEach { (name, option) ->
-            option!!
             ChoiceMenu(
                 option.labelOf(fallback = if (name == "model") "モデル" else "推論"),
                 option.choices.map { it.value to it.label }, option.current, enabled,
-            ) { value -> if (value != null && value != option.current) switch(name, value) }
+            ) { value -> option.switchTarget(value)?.let { switch(name, it) } }
         }
     }
 }

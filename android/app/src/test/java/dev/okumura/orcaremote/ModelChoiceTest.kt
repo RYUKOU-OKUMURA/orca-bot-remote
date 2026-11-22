@@ -94,4 +94,15 @@ class ModelChoiceTest {
         assertEquals("max", option.copy(current = "max").labelOf(fallback = "推論"))
         assertEquals("モデル", option.copy(current = null).labelOf(fallback = "モデル"))
     }
+
+    @Test fun chatOptionChipsSkipEmptyOptionsAndCurrentPicks() {
+        val effort = OptionDescriptor("high", listOf(OptionChoice("high", "高"), OptionChoice("low", "低")))
+        assertEquals(listOf("effort"), ChatOptions(OptionDescriptor("opus"), effort).chipMenus().map { it.first })
+        assertEquals(listOf("model", "effort"), ChatOptions(effort, effort).chipMenus().map { it.first })
+        assertTrue(ChatOptions().chipMenus().isEmpty())
+        assertTrue((null as ChatOptions?).chipMenus().isEmpty())
+        assertNull(effort.switchTarget("high"))
+        assertNull(effort.switchTarget(null))
+        assertEquals("low", effort.switchTarget("low"))
+    }
 }

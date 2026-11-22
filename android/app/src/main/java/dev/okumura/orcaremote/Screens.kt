@@ -417,8 +417,10 @@ internal fun NewChatScreen(
             val chat = requireNotNull(sender.chat)
             val enabled = !sender.sending && sender.result == null
             ModelPicker(api, bot, sender.savedState, enabled && !sender.deliveryUncertain) {
-                AttachmentPicker(chat, enabled)
-                VoiceInput(sender, enabled)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AttachmentPicker(chat, enabled)
+                    VoiceInput(sender, enabled)
+                }
             }
             AttachmentPreview(chat, enabled)
             DraftField(sender, "Bot に頼みたいこと", Modifier.fillMaxWidth(), minLines = 5)
@@ -588,7 +590,8 @@ internal fun ConversationScreen(
                     // Switches without touching the draft, attachments or skills; the slash command path rewrites the draft.
                     ChatOptionChips(
                         catalog?.options,
-                        enabled = !switching && !sender.sending && sender.result == null &&
+                        // While the catalog reloads, the effort list may still belong to the previous model.
+                        enabled = !switching && !commands.loading && !sender.sending && sender.result == null &&
                             !sender.deliveryUncertain && sender.chat?.reading != true,
                     ) { name, value ->
                         switching = true
@@ -597,7 +600,6 @@ internal fun ConversationScreen(
                             val label = option?.labelOf(value) ?: value
                             val message = try {
                                 api.runCommand(bot, chatId, name, value)
-                                commands.refresh(afterCurrent = true)
                                 if (name == "model") "モデルを $label に変更しました" else "推論強度を $label に変更しました"
                             } catch (failure: ApiFailure) {
                                 val what = if (name == "model") "モデル" else "推論強度"
@@ -609,11 +611,13 @@ internal fun ConversationScreen(
                                 }
                             } finally {
                                 switching = false
+                                // Also after a failure: the switch may have landed even when the reply was lost.
+                                commands.refresh(afterCurrent = true)
                             }
                             snackbar.showSnackbar(message)
                         }
                     }
-                    ConversationInput(sender, catalog) { cmd, confirmed ->
+                    ConversationInput(sender, catalog, busy = switching) { cmd, confirmed ->
                         sender.submit(sender.draft, confirmed) {
                             api.runCommand(bot, chatId, cmd.name, cmd.argument)
                             when (cmd.name) {
