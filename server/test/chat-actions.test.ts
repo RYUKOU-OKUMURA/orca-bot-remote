@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { attachmentStore, maxUploadBytes, inlineUploads } from '../src/attachments.ts';
-import { commandMenu } from '../src/commands.ts';
+import { commandMenu, dedupeModels, modelOptions } from '../src/commands.ts';
 import { tokenDigest } from '../src/config.ts';
 import { createApi } from '../src/http.ts';
 import { createOrcaWrite, type messageParams } from '../src/orca-write.ts';
@@ -132,6 +132,48 @@ test('placeholder choices do not become selectable models or efforts', () => {
   const empty = commandMenu({}, { current, models: [placeholder] });
   assert.deepEqual(empty.options, {});
   assert.deepEqual(empty.commands, []);
+});
+
+test('short model aliases with the same label are dropped from /model and new-chat choices', () => {
+  const efforts = [{ value: 'high', label: 'High' }];
+  const models = [
+    { id: 'claude-opus-5-5', resolvedModel: 'claude-opus-5-5', label: 'Opus 5.5', isDefault: true, efforts, defaultEffort: 'high' },
+    { id: 'claude-fable-5-1', resolvedModel: 'claude-fable-5-1', label: 'Fable 5.1', efforts },
+    { id: 'opus', resolvedModel: 'claude-opus-5-5', label: 'Opus 5.5', efforts },
+    { id: 'fable', resolvedModel: 'claude-fable-5-1', label: 'Fable 5.1', efforts },
+    // An alias whose target is not listed is the only way to pick that model.
+    { id: 'mythos', resolvedModel: 'claude-mythos-9', label: 'Mythos', efforts },
+    { id: 'claude-opus-5-5', label: 'Opus 5.5 again', efforts }
+  ];
+  const ids = (list: { id: string }[]) => list.map(m => m.id);
+  assert.deepEqual(ids(dedupeModels(models).models), ['claude-opus-5-5', 'claude-fable-5-1', 'mythos']);
+  // A session running the alias reports it as the full id.
+  const menu = commandMenu({}, { current: { model: 'opus', effort: 'high' }, models });
+  assert.deepEqual(menu.options.model, { current: 'claude-opus-5-5', choices: [
+    { value: 'claude-opus-5-5', label: 'Opus 5.5' }, { value: 'claude-fable-5-1', label: 'Fable 5.1' }, { value: 'mythos', label: 'Mythos' }
+  ] });
+  assert.deepEqual(menu.options.effort, { current: 'high', choices: efforts });
+  assert.deepEqual(modelOptions({ models }).defaultEffort, 'high');
+  assert.equal(modelOptions({ models, current: { model: 'fable', effort: 'low' } }).defaultModel, 'claude-fable-5-1');
+
+  // Without resolvedModel: a later shorter id with the same label and efforts is an alias,
+  // unless it is the default, the current model, or has different efforts.
+  const bare = [
+    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', efforts },
+    { id: 'sonnet', label: 'Sonnet 5.5', efforts },
+    { id: 'haiku-long-id', label: 'Haiku', efforts },
+    { id: 'haiku', label: 'Haiku', efforts: [] },
+    { id: 'gpt-x', label: 'GPT', efforts },
+    { id: 'gpt', label: 'GPT', efforts, isDefault: true }
+  ];
+  assert.deepEqual(ids(dedupeModels(bare).models), ['claude-sonnet-5-5', 'haiku-long-id', 'haiku', 'gpt-x', 'gpt']);
+  assert.deepEqual(ids(dedupeModels(bare, 'sonnet').models), ids(bare));
+  // A dropped default alias moves the default flag to its target.
+  const promoted = dedupeModels([
+    { id: 'claude-opus-5-5', resolvedModel: 'claude-opus-5-5', label: 'Opus 5.5', efforts },
+    { id: 'opus', resolvedModel: 'claude-opus-5-5', label: 'Opus 5.5', isDefault: true, efforts }
+  ]).models;
+  assert.deepEqual(promoted.map(m => [m.id, m.isDefault]), [['claude-opus-5-5', true]]);
 });
 
 test('command mutations use current fence, operation ID and exact fingerprint fields', async t => {

@@ -78,7 +78,7 @@ function parseResult(stdout: string): {
   }
 }
 
-type Bot = { id: string; name: string; specialty?: string; paused: boolean };
+export type Bot = { id: string; name: string; agent?: string; specialty?: string; paused: boolean };
 type Chat = {
   id: string; title?: string; home: boolean; closed?: boolean; lastActivityAt?: number;
   lastAsked?: string; lastSaid?: string;
@@ -238,6 +238,11 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
       () => true, 'bot', 'list');
   }
 
+  function installedAgents() {
+    return readList<{ id: string; name?: string }>('agents', 30_000, agents => agents.every(agent => typeof agent?.id === 'string'),
+      () => true, 'agent', 'installed');
+  }
+
   function listChats(bot: Bot) {
     return readList<Chat>('chats', 3_000, validChats, () => true, 'bot', 'chats', `--bot=${bot.name}`);
   }
@@ -365,6 +370,7 @@ export function createOrca(orcaBin: string, summaryId: string | undefined, signa
 
   return {
     listBots,
+    installedAgents,
     findChat,
     async optionsChat(bot: Bot) {
       const chats = openChats(await listChats(bot));

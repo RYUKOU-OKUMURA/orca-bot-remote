@@ -13,6 +13,9 @@ case "$*" in
         result='{"worktrees":[]}'
         if [ -f "$0.ps-result" ]; then result=$(/bin/cat "$0.ps-result"); fi
         ;;
+    'agent installed --json')
+        result='{"agents":[{"id":"claude","name":"Claude","default":true},{"id":"codex","name":"Codex","default":false},{"id":"hermes","name":"Hermes","default":false},{"id":"droid","name":"Droid","default":false}]}'
+        ;;
     'bot list --json')
         result='{"bots":[{"id":"main","name":"メインBot","specialty":"総合","paused":false,"agent":"codex"},{"id":"other","name":"専門Bot","paused":true}]}'
         ;;

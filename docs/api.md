@@ -40,7 +40,7 @@
 | フレーム | 送信条件とデータ |
 | --- | --- |
 | `event: ready` | 接続直後に `data: {"at":1795299000000}` を送ります。再接続までの変更履歴は配信しないため、現在値は各読み取り API で取得します |
-| `event: change` | 約10秒ごとに判断待ち一覧（`items`）、最新まとめの予定時刻（`summary`）、Bot の返答・作業状態等（`bots`）、アクティブな項目（`board`）、タスクリスト（`memoTasks`）の変化を調べ、例として `data: {"items":false,"summary":false,"bots":false,"board":true,"memoTasks":false,"at":1795299010000}` を送ります。秘書ボードは `board` または `bots` が `true` のときに再取得します。`memoTasks` が `true` のときは `board` も `true` にし、タスクリスト（`GET /api/tasks`）も再取得します。このサーバー経由のタスクの作成・更新・削除は、次の確認を待たずにすぐ通知します。Bot が `tasks.json` を直接書き換えた場合は次の確認で通知します |
+| `event: change` | 約10秒ごとに判断待ち一覧（`items`）、最新まとめの予定時刻（`summary`）、Bot の返答・作業状態等（`bots`）、アクティブな項目（`board`）、タスクリスト（`memoTasks`。担当 Bot の変更を含む）の変化を調べ、例として `data: {"items":false,"summary":false,"bots":false,"board":true,"memoTasks":false,"at":1795299010000}` を送ります。秘書ボードは `board` または `bots` が `true` のときに再取得します。`memoTasks` が `true` のときは `board` も `true` にし、タスクリスト（`GET /api/tasks`）も再取得します。このサーバー経由のタスクの作成・更新・削除は、次の確認を待たずにすぐ通知します。Bot が `tasks.json` を直接書き換えた場合は次の確認で通知します |
 | `: ping` | 接続維持のため約25秒ごとに送るコメントです |
 
 接続中の全端末で監視を共有します。最初の正常な取得は比較の基準とし、取得失敗時はその対象の直前の正常値を保持します。最後の端末が切断すると監視を停止します。
@@ -72,7 +72,7 @@
 
 | メソッドとパス | 本文 | 成功応答 |
 | --- | --- | --- |
-| `POST /api/bots/{botName}/chats` | `{"text":string,"model":string?,"effort":string?}` | `201 {"chatId":string}`。新規チャットを開いて本人として入力します。Orca が開いている空のチャットを再利用する場合があります。`model` と `effort` は後述 |
+| `POST /api/bots/{botName}/chats` | `{"text":string,"agent":string?,"model":string?,"effort":string?}` | `201 {"chatId":string}`。新規チャットを開いて本人として入力します。Orca が開いている空のチャットを再利用する場合があります。`agent`、`model`、`effort` は後述 |
 | `POST /api/bots/{botName}/chats/{chatId}/messages` | `{"text":string}` | `202 {"ok":true}`。指定した Bot のチャットに本人として入力します |
 | `POST /api/items/{botName}/{number}/answer` | `{"text":string}` | `200 {"ok":true}`。判断待ちに本人として回答します。選択肢ボタンの場合はラベルをそのまま指定します |
 
@@ -99,15 +99,19 @@ Pi エージェントを使う Bot は書き込みの対象外です。
 
 | メソッドとパス | 成功応答 |
 | --- | --- |
-| `GET /api/bots/{botName}/options` | `200 {"models":[{"id":string,"label":string,"isDefault":boolean,"efforts":[{"value":string,"label":string}]}],"defaultModel":string?,"defaultEffort":string?}` |
+| `GET /api/bots/{botName}/options[?agent={agentId}]` | `200 {"agents":[{"id":string,"label":string,"isDefault":boolean}],"agent":string?,"defaultAgent":string?,"models":[{"id":string,"label":string,"isDefault":boolean,"efforts":[{"value":string,"label":string}]}],"defaultModel":string?,"defaultEffort":string?}` |
 
-- 選択肢は、その Bot の開いている Home チャット（なければ最新のチャット）の Orca `agentSession.options` から取ります。`defaultModel` はそのチャットの現在のモデル、未設定なら `isDefault` のモデル ID です。`defaultEffort` はそのチャットの現在の推論の強さで、未設定なら `null` です。空の ID・値の行は除き、`label` が空なら ID・値を使います。
-- 開いているチャットが無い場合、または Orca が選択肢を返さない場合（`not_found`、選択肢に対応しないエージェント、その他の Orca エラー）は `200 {"models":[],"defaultModel":null,"defaultEffort":null}` を返します。アプリは選択欄を出さずに既定のモデルで作成します。ペアリング資格情報が無い・無効な場合だけ 503 `write_unavailable` です。Bot 一覧・チャット一覧の CLI 読み取りに失敗した場合は他の読み取りと同じく 502 です。
-- 選択肢が1件以上ある結果は Bot ごとに30秒キャッシュします。405 の `Allow` は `GET` です。
+- `agents` は新規チャットで選べるエージェントです。Orca の `bots.agentChoices` のうち、`orca agent installed` でこの Mac に入っているものを、その順で返します。Bot の既定エージェント（`orca bot list` の `agent`、`defaultAgent`）は必ず先頭に入り、`isDefault: true` です。`label` は `orca agent installed` の `name`（無ければ ID）です。`bots.agentChoices` が失敗した場合は既定エージェント1件だけです。
+- `agent` は今回のモデル一覧の対象です。省略時は既定エージェントです。指定が空・空白だけ・129文字以上・制御文字を含む、または `agents` に無い場合は 400 `bad_request` です。
+- モデルは Orca の `agentSession.modelCatalog({agent, waitForListing: true})` から取ります。既定エージェントで一覧が空・失敗のときは、その Bot の開いている Home チャット（なければ最新のチャット）の `agentSession.options` から取ります。既定以外のエージェントで一覧が無い場合（例: `hermes`）は `models: []` の 200 で、アプリはモデルを選ばずにそのエージェントで作成できます。
+- `defaultModel` はチャットの現在のモデル、無ければ `isDefault` のモデル ID です。`defaultEffort` はチャットの現在の推論の強さ、無ければそのモデルの `defaultEffort`、`declaredDefaultEffort` の順で、どれも無ければ `null` です。空の ID・値の行は除き、`label` が空なら ID・値を使います。
+- Orca は短い別名（例: `id: "opus"`, `resolvedModel: "claude-opus-5-5"`）も同じ `label` で返すため、`resolvedModel` の正式 ID が一覧にある別名は除きます。`resolvedModel` の無い行は、先に出た同じ `label`・同じ `efforts` の行より ID が短く、既定でも現在のモデルでもないものを別名として除きます。同じ ID の2行目も除きます。現在のモデルが除いた別名なら、正式 ID として返します。この規則は `GET {chat}/commands` の `/model` の選択肢にも使います。
+- Orca が選択肢を返さない場合（`not_found`、選択肢に対応しないエージェント、その他の Orca エラー）は `models: []`、`defaultModel`・`defaultEffort` は `null` です。アプリは選択欄を出さずに既定のモデルで作成します。ペアリング資格情報が無い・無効な場合だけ 503 `write_unavailable` です。Bot 一覧・チャット一覧の CLI 読み取りに失敗した場合は他の読み取りと同じく 502 です。
+- モデルが1件以上ある結果は Bot とエージェントの組ごとに30秒キャッシュします。405 の `Allow` は `GET` です。
 
-`POST /api/bots/{botName}/chats` の `model` と `effort` は任意です。省略または `null` は既定のままです。指定する場合は前後の空白を除いて空でない、512 UTF-16 コード単位以内の、制御文字を含まない文字列です。違反は 400 で、チャットは作られません。
+`POST /api/bots/{botName}/chats` の `agent`、`model`、`effort` は任意です。省略または `null` は既定のままです。`model` と `effort` は前後の空白を除いて空でない、512 UTF-16 コード単位以内の、制御文字を含まない文字列です。`agent` は同じ条件で128文字以内で、さらにチャットを開始する前に `GET /api/bots/{botName}/options` の `agents` と同じ一覧にあることを確かめます。違反は 400 で、チャットは作られません。
 
-Orca の `bots.session.start` は `botId`（と `agent`）しか受け取らないため、サーバーはチャットを開始した直後に新しいセッションの `agentSession.options` を読み、`model` はその ID が選択肢にあること、`effort` は対象モデル（`model` 指定時はそのモデル、省略時はセッションの現在のモデル、なければ既定のモデル）の `efforts` にあることを確かめます。その後 `agentSession.setOption` を `model` → `effort` の順に送り、最初のメッセージを送ります。`effort` だけの指定もこの規則で受け付けます。
+Orca の `bots.session.start` には `botId` と、指定時だけ `agent` を渡します。`model` も `effort` も無ければ、そのまま最初のメッセージを送ります。どちらかがあれば、サーバーはチャットを開始した直後に新しいセッションの `agentSession.options` を読み、`model` はその ID が選択肢にあること、`effort` は対象モデル（`model` 指定時はそのモデル、省略時はセッションの現在のモデル、なければ既定のモデル）の `efforts` にあることを確かめます。その後 `agentSession.setOption` を `model` → `effort` の順に送り、最初のメッセージを送ります。`effort` だけの指定もこの規則で受け付けます。
 
 - 選択肢に無い値は 400 `{"error":"bad_request","message":"モデルまたは推論の強さを選択肢から選び直してください。"}` です。このときメッセージは送りませんが、開始済みの空のチャットが残ります。
 - 開始後に選択肢の取得や `setOption` が失敗・拒否された場合は、添付の失敗と同じく 502 `unknown_result` を返します（認証エラー 503 と対象消失 404 を除く）。チャットは作成済みのため自動では再送しません。
@@ -119,18 +123,18 @@ Orca の `bots.session.start` は `botId`（と `agent`）しか受け取らな�
 | メソッドとパス | 本文 | 成功応答 |
 | --- | --- | --- |
 | `GET /api/tasks` | なし | `200 {"tasks":[MemoTask]}` |
-| `POST /api/tasks` | `{"title":string,"note":string?,"due":string?}` | `201 {"task":MemoTask}` |
-| `PATCH /api/tasks/{id}` | `{"title"?,"note"?,"due"?,"done"?}`（1つ以上） | `200 {"task":MemoTask}` |
+| `POST /api/tasks` | `{"title":string,"note":string?,"due":string?,"bot":string?}` | `201 {"task":MemoTask}` |
+| `PATCH /api/tasks/{id}` | `{"title"?,"note"?,"due"?,"bot"?,"done"?}`（1つ以上） | `200 {"task":MemoTask}` |
 | `DELETE /api/tasks/{id}` | なし | `200 {"ok":true,"id":string}` |
 
-`MemoTask` は `{"id":string,"title":string,"note":string?,"due":"YYYY-MM-DD"?,"done":boolean,"createdAt":number,"updatedAt":number,"doneAt":number?}` です。
+`MemoTask` は `{"id":string,"title":string,"note":string?,"due":"YYYY-MM-DD"?,"bot":string?,"done":boolean,"createdAt":number,"updatedAt":number,"doneAt":number?}` です。
 
-- `title` は改行を含む制御文字を半角スペースに置き換え、前後の空白を除いて 1〜200 文字（コードポイント数）です。`note` は前後の空白を除いて最大 2000 文字で、空なら `null` です。`due` は実在する日付の `YYYY-MM-DD` か `null` です。`done` は真偽値です。未知のフィールドや、作成時の `done` は 400 です。
+- `title` は改行を含む制御文字を半角スペースに置き換え、前後の空白を除いて 1〜200 文字（コードポイント数）です。`note` は前後の空白を除いて最大 2000 文字で、空なら `null` です。`due` は実在する日付の `YYYY-MM-DD` か `null` です。`bot` は担当 Bot の名前で、改行を含む制御文字を半角スペースに置き換え、前後の空白を除いて最大 100 文字（コードポイント数）、空なら `null` です。Bot が実在するかは確かめません（名前の変更や後から作る Bot にも使えるように）。`done` は真偽値です。未知のフィールドや、作成時の `done` は 400 です。
 - `done` を `false` から `true` にすると `doneAt` に現在時刻、`true` から `false` にすると `null` を入れます。更新のたびに `updatedAt` を現在時刻にします。
 - 並び順は未完了が先で、期限ありを期限の早い順、その後に期限なしを作成の新しい順に並べます。完了済みは後ろで、`doneAt`（無ければ `updatedAt`）の新しい順です。
 - 件数の上限は 500 件で、超える作成は 400 です。存在しない `id` は 404 です。`/api/tasks` の `Allow` は `GET, POST`、`/api/tasks/{id}` は `PATCH, DELETE` です。
 - ファイルが無い場合は空のリストとして扱い、最初の書き込みでディレクトリ（`700`）とファイル（`600`）を作ります。書き込みは同じディレクトリの一時ファイルから `rename` で置き換えます。JSON が壊れている場合は上書きせず、`500 {"error":"tasks_failed","message":"タスクリストを読み書きできませんでした。"}` を返します。
-- Bot が書いた行は、`id` と `title` が文字列なら表示します。それ以外の項目は読み替え（不正な `due` は `null` など）、未知のフィールドは更新時もそのまま残します。`id` か `title` が無い行は表示せず、ファイルには残します。
+- Bot が書いた行は、`id` と `title` が文字列なら表示します。それ以外の項目は読み替え（不正な `due` や、無い・文字列でない `bot` は `null` など）、未知のフィールドは更新時もそのまま残します。`id` か `title` が無い行は表示せず、ファイルには残します。
 - 書き込みはこのサーバー内で順番に処理します。Bot が同じ瞬間にファイルを直接書き換えた場合の競合は防げません。
 
 ## チャットのコマンドとスキル

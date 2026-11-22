@@ -23,9 +23,12 @@ export function parseCommand(body: Record<string, unknown>): Command {
 }
 
 type Choice = { value: string; label: string };
-type Model = { id: string; label: string; efforts: Choice[]; isDefault?: boolean };
+type Model = {
+  id: string; label: string; efforts: Choice[]; isDefault?: boolean;
+  resolvedModel?: string; defaultEffort?: string; declaredDefaultEffort?: string;
+};
 export type SessionOptions = {
-  models: Model[]; current: { model?: string; effort?: string };
+  models: Model[]; current?: { model?: string; effort?: string };
   conversationCommands?: string[]; compactInstructions?: boolean;
 };
 type ReportedCommand = { name: string; description?: string; kind?: string; argumentHint?: string; path?: string };
@@ -45,14 +48,14 @@ export function commandMenu(report: CommandReport, session: SessionOptions) {
       argumentHint: name === 'compact' && session.compactInstructions ? '[指示]' : null
     });
   }
-  const models = session.models.filter(model => model.id.trim());
+  const { models, current } = dedupeModels(session.models, session.current?.model);
   if (models.length) {
-    options.model = { current: session.current.model || null, choices: models.map(m => ({ value: m.id, label: m.label })) };
+    options.model = { current: current || null, choices: models.map(m => ({ value: m.id, label: m.label })) };
     commands.push({ name: 'model', kind: 'option', description: 'モデルを変更', argumentHint: '<モデル>' });
-    const model = session.current.model ? models.find(m => m.id === session.current.model) : models.find(m => m.isDefault);
+    const model = current ? models.find(m => m.id === current) : models.find(m => m.isDefault);
     const efforts = model?.efforts?.filter(choice => choice.value.trim());
     if (efforts?.length) {
-      options.effort = { current: session.current.effort || null, choices: efforts.map(({ value, label }) => ({ value, label })) };
+      options.effort = { current: session.current?.effort || null, choices: efforts.map(({ value, label }) => ({ value, label })) };
       commands.push({ name: 'effort', kind: 'option', description: '推論の強さを変更', argumentHint: '<強さ>' });
     }
   }
@@ -65,16 +68,48 @@ export function commandMenu(report: CommandReport, session: SessionOptions) {
 }
 
 const text = (value: unknown): value is string => typeof value === 'string' && !!value.trim();
+const effortValues = (model: Model) => JSON.stringify((Array.isArray(model.efforts) ? model.efforts : []).map(c => c?.value));
 
-export function modelOptions(session?: SessionOptions) {
-  const models = (Array.isArray(session?.models) ? session.models : []).filter(model => text(model?.id)).map(model => ({
-    id: model.id, label: text(model.label) ? model.label : model.id, isDefault: model.isDefault === true,
+// Orca also lists short aliases (opus -> claude-opus-5-5) under the same label; keep only the full ids.
+// A current model that is a dropped alias is mapped to its full id.
+export function dedupeModels(list: unknown, current?: string) {
+  const rows = (Array.isArray(list) ? list as Model[] : []).filter(model => text(model?.id));
+  const ids = new Set(rows.map(model => model.id));
+  const models: Model[] = [];
+  const promoted = new Set<string>();
+  for (const model of rows) {
+    if (models.some(kept => kept.id === model.id)) continue;
+    const label = text(model.label) ? model.label : model.id;
+    const target = typeof model.resolvedModel === 'string' && model.resolvedModel !== model.id && ids.has(model.resolvedModel)
+      ? model.resolvedModel
+      // Without resolvedModel: a shorter id after an entry with the same label and efforts.
+      : model.resolvedModel === undefined && model.isDefault !== true && model.id !== current
+        ? models.find(kept => kept.label === label && kept.id.length > model.id.length &&
+          effortValues(kept) === effortValues(model))?.id
+        : undefined;
+    if (target === undefined) {
+      models.push({ ...model, label });
+      continue;
+    }
+    if (current === model.id) current = target;
+    if (model.isDefault === true) promoted.add(target);
+  }
+  return {
+    models: promoted.size && !models.some(m => m.isDefault === true)
+      ? models.map(m => promoted.has(m.id) ? { ...m, isDefault: true } : m) : models,
+    current
+  };
+}
+
+export function modelOptions(session?: Partial<SessionOptions>) {
+  const { models: rows, current } = dedupeModels(session?.models, session?.current?.model || undefined);
+  const models = rows.map(model => ({
+    id: model.id, label: model.label, isDefault: model.isDefault === true,
     efforts: (Array.isArray(model.efforts) ? model.efforts : []).filter(choice => text(choice?.value))
       .map(({ value, label }) => ({ value, label: text(label) ? label : value }))
   }));
-  return {
-    models,
-    defaultModel: session?.current?.model || models.find(model => model.isDefault)?.id || null,
-    defaultEffort: session?.current?.effort || null
-  };
+  const defaultModel = current || models.find(model => model.isDefault)?.id || null;
+  const model = rows.find(row => row.id === defaultModel);
+  const effort = [session?.current?.effort, model?.defaultEffort, model?.declaredDefaultEffort].find(text);
+  return { models, defaultModel, defaultEffort: effort ?? null };
 }

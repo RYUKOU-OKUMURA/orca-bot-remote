@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { tokenDigest } from './config.ts';
-import { clearReadCache, createOrca, OrcaError } from './orca.ts';
+import { clearReadCache, createOrca, OrcaError, type Bot } from './orca.ts';
 import { createOrcaWrite, OrcaWriteError, type OrcaWrite } from './orca-write.ts';
 import { BadInput, inlineJsonLimit, inlineUploads, jsonLimit, messageExtras, uuid, withRawUpload } from './attachments.ts';
 import { modelOptions, parseCommand } from './commands.ts';
@@ -29,6 +29,16 @@ function modelChoice(value: unknown) {
   }
   return value;
 }
+
+function agentChoice(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || !value.trim() || value.length > 128 || /\p{Cc}/u.test(value)) {
+    throw new BadInput('agent は制御文字を含まない 1〜128 文字で指定してください。');
+  }
+  return value;
+}
+
+const unknownAgent = 'このボットでは選べないエージェントです。選び直してください。';
 
 const notFound = { error: 'not_found', message: '対象が見つかりません。' };
 const timedOut = { error: 'orca_failed', message: 'Orca の読み取りが制限時間内に終わりませんでした。' };
@@ -132,7 +142,29 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
   const appRelease = createAppRelease(appDir);
   const tasks = createTasks(tasksFile);
   const events = createEvents(orcaBin, summaryId, requestTimeoutMs, tasks.list, pollIntervalMs, keepaliveIntervalMs);
-  const optionsCache = new Map<string, { value: ReturnType<typeof modelOptions>; expires: number }>();
+  type BotOptions = ReturnType<typeof modelOptions> & {
+    agents: { id: string; label: string; isDefault: boolean }[]; agent: string | null; defaultAgent: string | null;
+  };
+  const optionsCache = new Map<string, { value: BotOptions; expires: number }>();
+
+  // Agents a new chat may use: Orca's bot choices that are installed here. The bot's own agent is always offered.
+  async function botAgents(bot: Bot, orca: ReturnType<typeof createOrca>, signal: AbortSignal) {
+    const defaultAgent = typeof bot.agent === 'string' && bot.agent ? bot.agent : null;
+    const [installed, choices] = await Promise.all([
+      orca.installedAgents().catch(() => []),
+      write.agentChoices(signal).catch(error => {
+        if (error instanceof OrcaWriteError && error.code === 'write_unavailable') throw error;
+        return [];
+      })
+    ]);
+    const name = (id: string) => installed.find(agent => agent.id === id)?.name;
+    const ids = choices.filter(id => id !== defaultAgent && name(id) !== undefined);
+    if (defaultAgent) ids.unshift(defaultAgent);
+    return {
+      defaultAgent,
+      agents: [...new Set(ids)].map(id => ({ id, label: name(id) || id, isDefault: id === defaultAgent }))
+    };
+  }
   const pendingAnswers = new Map<string, Promise<'unknown_result' | undefined>>();
   const server = createServer({ keepAliveTimeout: 65_000, headersTimeout: 66_000 }, async (request, response) => {
     const started = performance.now();
@@ -297,24 +329,51 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       if (answer && text !== null && text.length > maxAnswerLength) {
         return send(400, { error: 'bad_request', message: '判断待ちへの回答は前後の空白を含め、8000 UTF-16 コード単位以内で指定してください。' });
       }
-      const choice = posting && chats ? { model: modelChoice(body.model), effort: modelChoice(body.effort) } : undefined;
+      const choice = posting && chats
+        ? { agent: agentChoice(body.agent), model: modelChoice(body.model), effort: modelChoice(body.effort) } : undefined;
       const name = decode((chats ?? action ?? itemRoute ?? botOptions)![1]);
       const bot = name && (await orca.listBots(!posting)).find(bot => bot.name === name);
       if (!bot) return send(404, notFound);
       if (botOptions) {
-        const cached = optionsCache.get(bot.id);
-        if (cached && cached.expires > performance.now()) return send(200, cached.value);
-        const target = await orca.optionsChat(bot);
-        let value: ReturnType<typeof modelOptions> = noOptions;
+        const requested = new URLSearchParams(query).get('agent');
+        let agent: string | null;
         try {
-          if (target) value = modelOptions(await write.options(target.id, signal));
+          agent = requested === null ? bot.agent || null : agentChoice(requested)!;
         } catch (error) {
-          if (error instanceof OrcaWriteError && error.code === 'write_unavailable') {
-            return send(503, { error: error.code, message: writeErrors[error.code] });
+          return send(400, { error: 'bad_request', message: (error as Error).message });
+        }
+        const key = JSON.stringify([bot.id, agent]);
+        const cached = optionsCache.get(key);
+        if (cached && cached.expires > performance.now()) return send(200, cached.value);
+        let found;
+        try {
+          found = await botAgents(bot, orca, signal);
+        } catch (error) {
+          if (error instanceof OrcaWriteError) return send(503, { error: error.code, message: writeErrors[error.code] });
+          throw error;
+        }
+        const { agents, defaultAgent } = found;
+        if (agent !== null && !agents.some(choice => choice.id === agent)) {
+          return send(400, { error: 'bad_request', message: unknownAgent });
+        }
+        let models: ReturnType<typeof modelOptions> = noOptions;
+        try {
+          if (agent) models = modelOptions(await write.modelCatalog(agent, signal).catch(error => {
+            if (error instanceof OrcaWriteError && error.code === 'write_unavailable') throw error;
+            return undefined;
+          }));
+          if (!models.models.length && agent === defaultAgent) {
+            // The catalog may be empty before a listing; an open chat of the bot's own agent still reports its models.
+            const target = await orca.optionsChat(bot);
+            if (target) models = modelOptions(await write.options(target.id, signal));
           }
+        } catch (error) {
+          if (!(error instanceof OrcaWriteError)) throw error;
+          if (error.code === 'write_unavailable') return send(503, { error: error.code, message: writeErrors[error.code] });
           // Not offered (not_found, unsupported agent, Orca error): the app falls back to the default model.
         }
-        if (value.models.length) optionsCache.set(bot.id, { value, expires: performance.now() + optionsTtlMs });
+        const value: BotOptions = { agents, agent, defaultAgent, ...models };
+        if (value.models.length) optionsCache.set(key, { value, expires: performance.now() + optionsTtlMs });
         return send(200, value);
       }
       if (action && (posting || menu)) {
@@ -336,7 +395,13 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       }
       if (text !== null) {
         signal.throwIfAborted();
-        if (chats) return send(201, { chatId: await write.start(bot.id, text, signal, uploads, choice) });
+        if (chats) {
+          if (choice?.agent !== undefined && !(await botAgents(bot, orca, signal)).agents.some(a => a.id === choice.agent)) {
+            throw new BadInput(unknownAgent);
+          }
+          signal.throwIfAborted();
+          return send(201, { chatId: await write.start(bot.id, text, signal, uploads, choice) });
+        }
         const uid = await orca.findItemUid(bot, number);
         if (!uid) return send(404, notFound);
         const previous = pendingAnswers.get(uid);
