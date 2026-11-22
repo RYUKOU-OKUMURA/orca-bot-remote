@@ -105,7 +105,7 @@ Pi エージェントを使う Bot は書き込みの対象外です。
 - `agent` は今回のモデル一覧の対象です。省略時は既定エージェントです。指定が空・空白だけ・129文字以上・制御文字を含む、または `agents` に無い場合は 400 `bad_request` です。
 - モデルは Orca の `agentSession.modelCatalog({agent, waitForListing: true})` から取ります。既定エージェントで一覧が空・失敗のときは、その Bot の開いている Home チャット（なければ最新のチャット）の `agentSession.options` から取ります。既定以外のエージェントで一覧が無い場合（例: `hermes`）は `models: []` の 200 で、アプリはモデルを選ばずにそのエージェントで作成できます。
 - `defaultModel` はチャットの現在のモデル、無ければ `isDefault` のモデル ID です。`defaultEffort` はチャットの現在の推論の強さ、無ければそのモデルの `defaultEffort`、`declaredDefaultEffort` の順で、どれも無ければ `null` です。空の ID・値の行は除き、`label` が空なら ID・値を使います。
-- Orca は短い別名（例: `id: "opus"`, `resolvedModel: "claude-opus-5-5"`）も同じ `label` で返すため、`resolvedModel` の正式 ID が一覧にある別名は除きます。`resolvedModel` の無い行は、先に出た同じ `label`・同じ `efforts` の行より ID が短く、既定でも現在のモデルでもないものを別名として除きます。同じ ID の2行目も除きます。現在のモデルが除いた別名なら、正式 ID として返します。この規則は `GET {chat}/commands` の `/model` の選択肢にも使います。
+- Orca は短い別名（例: `id: "opus"`, `resolvedModel: "claude-opus-5-5"`）も同じ `label` で返すため、`resolvedModel` の正式 ID が一覧にある別名は除きます。`resolvedModel` の無い行は、先に出た同じ `label`・同じ `efforts` の行より ID が短く、既定でも現在のモデルでもないものを別名として除きます。同じ ID の2行目も除きます。現在のモデルが除いた別名なら、正式 ID として返します。そのうえで `claude-<系列>-<版>[-YYYYMMDD]`（旧形式 `claude-<版>-<系列>[-YYYYMMDD]` も含む）の ID は系列ごとに最新版だけを残します。版は数値で比べ、同じ版なら日付なしを最新、次に新しい日付を優先します。現在のモデルと既定のモデルは旧版でも残し、並び順は Orca の順のままです。この規則は `GET {chat}/commands` の `/model` の選択肢にも使います。
 - Orca が選択肢を返さない場合（`not_found`、選択肢に対応しないエージェント、その他の Orca エラー）は `models: []`、`defaultModel`・`defaultEffort` は `null` です。アプリは選択欄を出さずに既定のモデルで作成します。ペアリング資格情報が無い・無効な場合だけ 503 `write_unavailable` です。Bot 一覧・チャット一覧の CLI 読み取りに失敗した場合は他の読み取りと同じく 502 です。
 - モデルが1件以上ある結果は Bot とエージェントの組ごとに30秒キャッシュします。405 の `Allow` は `GET` です。
 
