@@ -28,4 +28,16 @@ class IncomingIntentTest {
         assertNull(sharedDraft(Intent.ACTION_VIEW, "件名", null, emptyList(), emptyList()))
         assertNull(sharedDraft(Intent.ACTION_SEND, null, "", emptyList(), emptyList()))
     }
+
+    @Test fun widgetAndNotificationLinksAreAccepted() {
+        assertTrue(appLink(HomeLink))
+        assertTrue(appLink(TasksLink))
+        assertTrue(appLink("orcaremote://items"))
+        assertTrue(appLink("orcaremote://quick-memo?inbox=1&voice=1"))
+        assertTrue(appLink("orca-notification://chats/A%2FB"))
+        assertFalse(appLink("orcaremote://settings"))
+        assertFalse(appLink("orcaremote://task-done/a"))
+        assertFalse(appLink("https://home"))
+        assertFalse(appLink("not a uri"))
+    }
 }

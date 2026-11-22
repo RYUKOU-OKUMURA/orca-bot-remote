@@ -41,6 +41,7 @@ internal fun QuickMemoScreen(
     val selected by destination.getStateFlow<String?>("bot", null).collectAsState()
     val mode by destination.getStateFlow("memoMode", MemoMode.Task).collectAsState()
     val due by destination.getStateFlow<String?>("due", null).collectAsState()
+    val taskBot by destination.getStateFlow<String?>("taskBot", null).collectAsState()
     val list = bots.data.orEmpty()
     fun target(mode: MemoMode, selectedBot: String?): String? {
         val previous = if (mode == MemoMode.Inbox) null else selectedBot ?: prefs.getString("lastMemoBot", null)
@@ -54,8 +55,9 @@ internal fun QuickMemoScreen(
             val currentMode = destination.get<MemoMode>("memoMode") ?: MemoMode.Task
             if (currentMode == MemoMode.Task) {
                 if (chat.attachments.isNotEmpty()) throw AttachmentProblem("タスクリストには添付できません。添付を外すか、ほかの送り先を選んでください")
-                api.createTask(memoTask(draft, destination["due"]) ?: throw ApiFailure(ApiError.BAD_REQUEST))
+                api.createTask(memoTask(draft, destination["due"], destination["taskBot"]) ?: throw ApiFailure(ApiError.BAD_REQUEST))
                 destination["due"] = null
+                destination["taskBot"] = null
                 SecretaryBoardWidgetProvider.requestRefresh(context)
                 return@SendModel MemoResult.Task
             }
@@ -71,7 +73,7 @@ internal fun QuickMemoScreen(
                 currentMode == MemoMode.Home -> throw AttachmentProblem("Homeチャットがありません。新規チャットを選んでください")
                 else -> {
                     val choice = destination.modelChoice(target)
-                    api.startChat(target, text, chat.inline { it.open(resolver) }, choice.model, choice.effort)
+                    api.startChat(target, text, chat.inline { it.open(resolver) }, choice.model, choice.effort, choice.agent)
                 }
             }
             if (currentMode != MemoMode.Inbox) prefs.edit().putString("lastMemoBot", target).apply()
@@ -129,7 +131,11 @@ internal fun QuickMemoScreen(
                 }
             }
             when (mode) {
-                MemoMode.Task -> Text("1行目がタイトル、2行目以降は補足メモとしてタスクリストに入ります")
+                MemoMode.Task -> {
+                    Text("1行目がタイトル、2行目以降は補足メモとしてタスクリストに入ります")
+                    // Bots that fail to load leave only 未指定, which still adds the task.
+                    TaskBotButton(taskBot, list, enabled) { destination["taskBot"] = it }
+                }
                 MemoMode.Inbox -> Text("長いメモを送るとメインBotがタスクに分けて整理し、ボード＆リマインドに反映します")
                 MemoMode.New -> if (bot != null) ModelPicker(api, bot, destination, canSelect)
                 MemoMode.Home -> Unit

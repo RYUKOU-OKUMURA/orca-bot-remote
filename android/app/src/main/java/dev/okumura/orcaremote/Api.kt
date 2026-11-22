@@ -148,7 +148,17 @@ data class OptionDescriptor(val current: String? = null, val choices: List<Optio
 data class OptionChoice(val value: String, val label: String)
 
 @Serializable
-data class BotOptions(val models: List<BotModelOption> = emptyList(), val defaultModel: String? = null, val defaultEffort: String? = null)
+data class BotOptions(
+    val models: List<BotModelOption> = emptyList(),
+    val defaultModel: String? = null,
+    val defaultEffort: String? = null,
+    val agents: List<BotAgentOption> = emptyList(),
+    val agent: String? = null,
+    val defaultAgent: String? = null,
+)
+
+@Serializable
+data class BotAgentOption(val id: String, val label: String, val isDefault: Boolean = false)
 
 @Serializable
 data class BotModelOption(val id: String, val label: String, val isDefault: Boolean = false, val efforts: List<OptionChoice> = emptyList())
@@ -159,6 +169,7 @@ data class MemoTask(
     val title: String,
     val note: String? = null,
     val due: String? = null,
+    val bot: String? = null,
     val done: Boolean = false,
     val createdAt: Long = 0,
     val updatedAt: Long = 0,
@@ -169,11 +180,11 @@ data class MemoTask(
 data class MemoTasks(val tasks: List<MemoTask>)
 
 @Serializable
-internal data class NewTask(val title: String, val note: String? = null, val due: String? = null)
+internal data class NewTask(val title: String, val note: String? = null, val due: String? = null, val bot: String? = null)
 
 // No defaults: null is sent explicitly so the server clears the field.
 @Serializable
-internal data class TaskEdit(val title: String, val note: String?, val due: String?)
+internal data class TaskEdit(val title: String, val note: String?, val due: String?, val bot: String?)
 
 @Serializable
 private data class TaskDone(val done: Boolean)
@@ -199,6 +210,7 @@ private data class WriteInput(
     val skills: List<SkillRef> = emptyList(),
     val attachments: List<AttachmentRef> = emptyList(),
     val inlineAttachments: List<InlineAttachment> = emptyList(),
+    val agent: String? = null,
     val model: String? = null,
     val effort: String? = null,
 )
@@ -341,7 +353,7 @@ internal class OrcaApi(
     suspend fun bots(): Bots = get("bots")
     suspend fun chats(bot: String): Chats = get("bots", bot, "chats")
     suspend fun messages(bot: String, chatId: String): Messages =
-        get("bots", bot, "chats", chatId, "messages", limit = 100)
+        get("bots", bot, "chats", chatId, "messages", query = "limit" to "100")
     suspend fun board(): BoardSnapshot? = try {
         get<BoardSnapshot>("board")
     } catch (failure: ApiFailure) {
@@ -377,7 +389,8 @@ internal class OrcaApi(
             .header("X-File-Name", name).post(body))
     }
 
-    suspend fun botOptions(bot: String): BotOptions = get("bots", bot, "options", commands = true)
+    suspend fun botOptions(bot: String, agent: String? = null): BotOptions =
+        get("bots", bot, "options", query = agent?.let { "agent" to it }, commands = true)
 
     suspend fun tasks(): MemoTasks = get("tasks")
 
@@ -396,9 +409,9 @@ internal class OrcaApi(
 
     suspend fun startChat(
         bot: String, text: String, inlineAttachments: List<InlineAttachment> = emptyList(),
-        model: String? = null, effort: String? = null,
+        model: String? = null, effort: String? = null, agent: String? = null,
     ): String {
-        val input = WriteInput(text, inlineAttachments = inlineAttachments, model = model, effort = effort)
+        val input = WriteInput(text, inlineAttachments = inlineAttachments, agent = agent, model = model, effort = effort)
         val body = if (inlineAttachments.isEmpty()) jsonBody(apiJson.encodeToString(input)) else inlineBody(input)
         val result = post<NewChat>(201, request("bots", bot, "chats").post(body))
         if (result.chatId.isBlank()) throw ApiFailure(ApiError.UNKNOWN_RESULT)
@@ -419,16 +432,16 @@ internal class OrcaApi(
         if (!result.ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
     }
 
-    private fun request(vararg path: String, limit: Int? = null): Request.Builder {
+    private fun request(vararg path: String, query: Pair<String, String>? = null): Request.Builder {
         val url = connection.url.newBuilder().addPathSegment("api")
         path.forEach { url.addPathSegment(it) }
-        if (limit != null) url.addQueryParameter("limit", limit.toString())
+        if (query != null) url.addQueryParameter(query.first, query.second)
         return Request.Builder().url(url.build())
             .header("Authorization", "Bearer ${connection.token}")
     }
 
-    private suspend inline fun <reified T> get(vararg path: String, limit: Int? = null, commands: Boolean = false): T {
-        val request = request(*path, limit = limit).build()
+    private suspend inline fun <reified T> get(vararg path: String, query: Pair<String, String>? = null, commands: Boolean = false): T {
+        val request = request(*path, query = query).build()
         return try {
             val body = client.newCall(request).readBody(commands = commands)
             withContext(Dispatchers.Default) { apiJson.decodeFromString(body) }

@@ -22,12 +22,14 @@ class BoardSnapshotTest {
     @Test fun widgetListsOpenMemoTasksSeparatelyFromPendingItems() {
         val today = LocalDate.of(2026, 11, 22)
         val board = BoardSnapshot(
-            bots = listOf(Bot("1", "A", needsYou = 2), Bot("2", "B", needsYou = 1), Bot("3", "C")),
+            bots = listOf(Bot("1", "A", needsYou = 2), Bot("2", "B", needsYou = 1, avatar = "mascot:T1"), Bot("3", "C")),
             memoTasks = listOf(
                 MemoTask("t1", "期限切れ", note = "\n  補足の1行目\n2行目", due = "2026-11-20"),
                 MemoTask("t2", "あした", due = "2026-11-23"),
                 MemoTask("t3", "期限なし"),
                 MemoTask("t4", "完了", done = true),
+                MemoTask("t5", "担当つき", due = "2026-11-25", bot = "B"),
+                MemoTask("t6", "消えたBot", bot = "Z"),
             ),
         )
         assertEquals(3, board.pendingCount)
@@ -36,6 +38,8 @@ class BoardSnapshotTest {
             TaskRow("t1", "期限切れ", "期限切れ 11/20 · 補足の1行目", true),
             TaskRow("t2", "あした", "明日まで", false),
             TaskRow("t3", "期限なし", "", false),
+            TaskRow("t5", "担当つき", "B · 11/25まで", false, "B", "mascot:T1"),
+            TaskRow("t6", "消えたBot", "Z", false, "Z", null),
         ), board.taskRows(today))
     }
 

@@ -40,5 +40,24 @@ class ModelChoiceTest {
         state.setModelChoice("A", ModelChoice("opus", "high"))
         assertEquals(ModelChoice("opus", "high"), state.modelChoice("A"))
         assertEquals(ModelChoice(), state.modelChoice("B"))
+        state.setModelChoice("A", ModelChoice(agent = "codex"))
+        assertEquals(ModelChoice(agent = "codex"), state.modelChoice("A"))
+        state.setModelChoice("B", ModelChoice("gpt", agent = "codex"))
+        assertEquals(ModelChoice(), state.modelChoice("A"))
+    }
+
+    @Test fun agentsParseAndChangingAgentResetsModel() {
+        val agents = apiJson.decodeFromString<BotOptions>("""{"agents":[{"id":"claude","label":"Claude","isDefault":true},
+            {"id":"codex","label":"Codex","isDefault":false},{"id":"hermes","label":"hermes","isDefault":false}],
+            "agent":"codex","defaultAgent":"claude","models":[],"defaultModel":null,"defaultEffort":null}""")
+        assertEquals(listOf("claude", "codex", "hermes"), agents.agents.map { it.id })
+        assertEquals("codex", agents.agent)
+        assertEquals("Claude", agents.defaultAgentOption?.label)
+        assertEquals(ModelChoice(agent = "codex"), agents.chooseAgent("codex"))
+        // The bot's own agent is the default and is not sent.
+        assertEquals(ModelChoice(), agents.chooseAgent("claude"))
+        assertEquals(ModelChoice(), agents.chooseAgent(null))
+        assertEquals(ModelChoice(), agents.copy(agents = emptyList()).chooseAgent("claude"))
+        assertEquals(emptyList<BotAgentOption>(), options.agents)
     }
 }

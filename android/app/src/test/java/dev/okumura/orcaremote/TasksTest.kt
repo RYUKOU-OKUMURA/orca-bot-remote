@@ -12,7 +12,21 @@ class TasksTest {
         assertEquals(MemoTask("b", "最小"), apiJson.decodeFromString<MemoTask>("""{"id":"b","title":"最小"}"""))
         // Creation omits empty fields; edits send null so the server clears them.
         assertEquals("""{"title":"t"}""", apiJson.encodeToString(NewTask("t")))
-        assertEquals("""{"title":"t","note":null,"due":null}""", apiJson.encodeToString(TaskEdit("t", null, null)))
+        assertEquals("""{"title":"t","note":null,"due":null,"bot":null}""", apiJson.encodeToString(TaskEdit("t", null, null, null)))
+        assertEquals("""{"title":"t","bot":"整体院発信"}""", apiJson.encodeToString(NewTask("t", bot = "整体院発信")))
+        assertEquals("B", apiJson.decodeFromString<MemoTask>("""{"id":"c","title":"担当","bot":"B"}""").bot)
+    }
+
+    @Test fun askingABotUsesTheTaskAsDraft() {
+        assertEquals("見積もり\n金額を確認", taskRequest(" 見積もり ", "\n金額を確認 "))
+        assertEquals("見積もり", taskRequest("見積もり", "  "))
+        assertEquals("見積もり", taskRequest("見積もり", null))
+        val bots = listOf(Bot("1", "整体院発信"), Bot("2", "メインBot"))
+        assertEquals("整体院発信", taskAskTarget("整体院発信", bots))
+        assertEquals("消えたBot", taskAskTarget("消えたBot", bots))
+        assertEquals("メインBot", taskAskTarget(null, bots))
+        assertEquals("整体院発信", taskAskTarget(null, bots.take(1)))
+        assertNull(taskAskTarget(null, emptyList()))
     }
 
     @Test fun quickMemoSplitsTitleAndNote() {
@@ -20,6 +34,7 @@ class TasksTest {
         assertEquals(NewTask("牛乳を買う"), memoTask("\n  牛乳を買う  \n\n"))
         assertEquals(NewTask("見積もり", "金額を確認\n先方に返信", "2026-12-01"),
             memoTask("見積もり\n金額を確認\n先方に返信\n", "2026-12-01"))
+        assertEquals(NewTask("頼む", bot = "B"), memoTask("頼む", bot = "B"))
         val long = "あ".repeat(199) + "😀😀"
         val split = requireNotNull(memoTask("$long\n続き"))
         assertEquals(MaxTaskTitle, split.title.codePointCount(0, split.title.length))

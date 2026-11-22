@@ -35,6 +35,8 @@ internal fun sharedDraft(action: String?, subject: String?, text: String?, strea
     return SharedDraft(bounded, uris, truncated)
 }
 
+internal const val HomeLink = "orcaremote://home"
+
 @Serializable
 internal data class QuickMemoRoute(val voice: Boolean = false, val inbox: Boolean = false)
 
@@ -43,6 +45,13 @@ internal fun quickMemoLink(link: String): QuickMemoRoute? {
     if (uri.scheme != "orcaremote" || uri.rawAuthority != "quick-memo" || !uri.path.isNullOrEmpty()) return null
     val flags = uri.rawQuery.orEmpty().split('&')
     return QuickMemoRoute(voice = "voice=1" in flags, inbox = "inbox=1" in flags)
+}
+
+/** Links the app opens: notifications, and the widget's quick memo, pending items, tasks and home. */
+internal fun appLink(link: String): Boolean {
+    val uri = runCatching { URI(link) }.getOrNull() ?: return false
+    return uri.scheme == NotificationScheme ||
+        (uri.scheme == "orcaremote" && (quickMemoLink(link) != null || uri.rawAuthority in setOf("items", "tasks", "home")))
 }
 
 internal fun Intent.externalOpen(coldStart: Boolean): ExternalOpen? {
@@ -64,5 +73,5 @@ internal fun Intent.externalOpen(coldStart: Boolean): ExternalOpen? {
             null
         }
     }
-    return data?.takeIf { it.scheme == NotificationScheme || (it.scheme == "orcaremote" && (quickMemoLink(it.toString()) != null || it.authority in setOf("items", "tasks"))) }?.let { ExternalOpen(link = it.toString(), coldStart = coldStart) }
+    return dataString?.takeIf(::appLink)?.let { ExternalOpen(link = it, coldStart = coldStart) }
 }
