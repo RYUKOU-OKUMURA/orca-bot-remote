@@ -62,11 +62,12 @@ private fun Suggestion(name: String, hint: String?, description: String, skill: 
 internal fun ColumnScope.ConversationInput(
     sender: SendModel<String>,
     catalog: ChatCommands?,
+    busy: Boolean = false,
     run: (CommandInput, Boolean) -> Unit,
 ) {
     val focus = LocalFocusManager.current
     val chat = requireNotNull(sender.chat)
-    val enabled = !sender.sending && sender.result == null && !chat.reading
+    val enabled = !busy && !sender.sending && sender.result == null && !chat.reading
     var dialog by remember { mutableStateOf<String?>(null) }
     var resend by remember { mutableStateOf<(() -> Unit)?>(null) }
 

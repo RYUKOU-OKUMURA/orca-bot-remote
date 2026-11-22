@@ -416,13 +416,14 @@ internal fun NewChatScreen(
             Text(bot, style = MaterialTheme.typography.titleMedium)
             val chat = requireNotNull(sender.chat)
             val enabled = !sender.sending && sender.result == null
-            ModelPicker(api, bot, sender.savedState, enabled && !sender.deliveryUncertain)
-            AttachmentPreview(chat, enabled)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AttachmentPicker(chat, enabled)
-                VoiceInput(sender, enabled)
-                DraftField(sender, "Bot に頼みたいこと", Modifier.weight(1f), minLines = 5)
+            ModelPicker(api, bot, sender.savedState, enabled && !sender.deliveryUncertain) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AttachmentPicker(chat, enabled)
+                    VoiceInput(sender, enabled)
+                }
             }
+            AttachmentPreview(chat, enabled)
+            DraftField(sender, "Bot に頼みたいこと", Modifier.fillMaxWidth(), minLines = 5)
             SendButton(sender, Modifier.fillMaxWidth())
             SendStatus(
                 sender, settings,
@@ -484,6 +485,7 @@ internal fun ConversationScreen(
     val catalog = commands.data.takeIf { commands.error == null }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var switching by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val pending = sender.pendingMessage
     val pendingStatus = pendingState(
@@ -585,7 +587,37 @@ internal fun ConversationScreen(
                     }
                 }
                 if (model.data != null) {
-                    ConversationInput(sender, catalog) { cmd, confirmed ->
+                    // Switches without touching the draft, attachments or skills; the slash command path rewrites the draft.
+                    ChatOptionChips(
+                        catalog?.options,
+                        // While the catalog reloads, the effort list may still belong to the previous model.
+                        enabled = !switching && !commands.loading && !sender.sending && sender.result == null &&
+                            !sender.deliveryUncertain && sender.chat?.reading != true,
+                    ) { name, value ->
+                        switching = true
+                        scope.launch {
+                            val option = if (name == "model") catalog?.options?.model else catalog?.options?.effort
+                            val label = option?.labelOf(value) ?: value
+                            val message = try {
+                                api.runCommand(bot, chatId, name, value)
+                                if (name == "model") "モデルを $label に変更しました" else "推論強度を $label に変更しました"
+                            } catch (failure: ApiFailure) {
+                                val what = if (name == "model") "モデル" else "推論強度"
+                                "${what}を変更できませんでした: " + when (failure.error) {
+                                    ApiError.CONFLICT -> "このチャットは閉じています"
+                                    ApiError.BAD_REQUEST -> "選択肢を選び直してください"
+                                    ApiError.UNKNOWN_RESULT -> "変わったか確認できません。更新して確かめてください"
+                                    else -> failure.error.text
+                                }
+                            } finally {
+                                switching = false
+                                // Also after a failure: the switch may have landed even when the reply was lost.
+                                commands.refresh(afterCurrent = true)
+                            }
+                            snackbar.showSnackbar(message)
+                        }
+                    }
+                    ConversationInput(sender, catalog, busy = switching) { cmd, confirmed ->
                         sender.submit(sender.draft, confirmed) {
                             api.runCommand(bot, chatId, cmd.name, cmd.argument)
                             when (cmd.name) {
