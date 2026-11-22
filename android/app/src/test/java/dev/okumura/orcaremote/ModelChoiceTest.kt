@@ -86,4 +86,12 @@ class ModelChoiceTest {
         assertEquals(ModelChoice(), agents.copy(agents = emptyList()).chooseAgent("claude"))
         assertEquals(emptyList<BotAgentOption>(), options.agents)
     }
+
+    @Test fun chatOptionLabelFallsBackToValueThenName() {
+        val option = OptionDescriptor("high", listOf(OptionChoice("high", "高"), OptionChoice("low", "低")))
+        assertEquals("高", option.labelOf(fallback = "推論"))
+        assertEquals("低", option.labelOf("low"))
+        assertEquals("max", option.copy(current = "max").labelOf(fallback = "推論"))
+        assertEquals("モデル", option.copy(current = null).labelOf(fallback = "モデル"))
+    }
 }

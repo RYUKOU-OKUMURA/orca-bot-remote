@@ -75,7 +75,10 @@ internal fun SavedStateHandle.setModelChoice(bot: String, choice: ModelChoice) {
 internal const val ModelBadRequest = "エージェント・モデル・推論の強さを選択肢から選び直してください。空のチャットが作られている場合があります"
 
 @Composable
-internal fun ModelPicker(api: OrcaApi, bot: String, state: SavedStateHandle, enabled: Boolean) {
+internal fun ModelPicker(
+    api: OrcaApi, bot: String, state: SavedStateHandle, enabled: Boolean,
+    trailing: @Composable () -> Unit = {},
+) {
     val modelBot by state.getStateFlow<String?>("modelBot", null).collectAsState()
     val model by state.getStateFlow<String?>("model", null).collectAsState()
     val effort by state.getStateFlow<String?>("effort", null).collectAsState()
@@ -98,6 +101,7 @@ internal fun ModelPicker(api: OrcaApi, bot: String, state: SavedStateHandle, ena
             options == null -> if (chosen != null && chosen.error == null) ValueChip("…", enabled = false, menu = false) {}
             options.models.isNotEmpty() -> ModelMenus(options, choice, enabled) { state.setModelChoice(bot, it) }
         }
+        trailing()
     }
 }
 
@@ -165,6 +169,27 @@ internal fun ChoiceMenu(
                     },
                 )
             }
+        }
+    }
+}
+
+/** The label of [value] (the current value by default), falling back to the raw value, then to [fallback]. */
+internal fun OptionDescriptor.labelOf(value: String? = current, fallback: String = ""): String =
+    choices.firstOrNull { it.value == value }?.label ?: value ?: fallback
+
+/** Model and effort chips of an open chat; a pick that is already current sends nothing. */
+@Composable
+internal fun ChatOptionChips(options: ChatOptions?, enabled: Boolean, switch: (name: String, value: String) -> Unit) {
+    val menus = listOf("model" to options?.model, "effort" to options?.effort)
+        .filter { (_, option) -> !option?.choices.isNullOrEmpty() }
+    if (menus.isEmpty()) return
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+        menus.forEach { (name, option) ->
+            option!!
+            ChoiceMenu(
+                option.labelOf(fallback = if (name == "model") "モデル" else "推論"),
+                option.choices.map { it.value to it.label }, option.current, enabled,
+            ) { value -> if (value != null && value != option.current) switch(name, value) }
         }
     }
 }
