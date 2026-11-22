@@ -205,6 +205,7 @@ internal fun HomeScreen(
     openBot: (String) -> Unit,
     openItems: () -> Unit,
     openSummary: () -> Unit,
+    openTasks: () -> Unit,
     openChat: (String, String, String) -> Unit,
 ) {
     val context = LocalContext.current.applicationContext
@@ -216,6 +217,7 @@ internal fun HomeScreen(
         }
     }
     val summary = screenModel("summary") { api.summary() }
+    val openTaskCount = screenModel("home tasks", refreshOnEnter = true) { api.tasks().tasks.count { !it.done } }
     var expandedBot by rememberSaveable { mutableStateOf<String?>(null) }
     val inlineChats = expandedBot?.let { bot ->
         viewModel<ScreenModel<Chats>>(key = "inline chats: $bot") { ScreenModel { api.chats(bot).also { meta.observeChats(bot, it.chats) } } }
@@ -226,6 +228,7 @@ internal fun HomeScreen(
     val refresh = {
         bots.refresh()
         summary.refresh()
+        openTaskCount.refresh()
         inlineChats?.refresh()
         Unit
     }
@@ -343,6 +346,14 @@ internal fun HomeScreen(
                             },
                         )
                     }
+                    item {
+                        val count = openTaskCount.data
+                        ListRow(
+                            title = if (count == null || count == 0) "タスクリスト" else "タスクリスト ${count}件",
+                            onClick = openTasks,
+                            leading = { OrcaIcon(R.drawable.ic_task) },
+                        )
+                    }
                 }
             }
         }
@@ -392,6 +403,7 @@ internal fun ChatsScreen(
 
 @Composable
 internal fun NewChatScreen(
+    api: OrcaApi,
     sender: SendModel<String>,
     bot: String,
     back: () -> Unit,
@@ -404,6 +416,7 @@ internal fun NewChatScreen(
             Text(bot, style = MaterialTheme.typography.titleMedium)
             val chat = requireNotNull(sender.chat)
             val enabled = !sender.sending && sender.result == null
+            ModelPicker(api, bot, sender.savedState, enabled && !sender.deliveryUncertain)
             AttachmentPreview(chat, enabled)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AttachmentPicker(chat, enabled)
@@ -413,7 +426,8 @@ internal fun NewChatScreen(
             SendButton(sender, Modifier.fillMaxWidth())
             SendStatus(
                 sender, settings,
-                badRequest = "本文や添付の形式・サイズを確認してください",
+                badRequest = if (sender.savedState.modelChoice(bot) != ModelChoice()) ModelBadRequest
+                else "本文や添付の形式・サイズを確認してください",
                 unknown = "送れたか確認できませんでした。チャット一覧を更新して、新しいチャットができていないか確かめてください",
             )
             if (sender.deliveryUncertain) {
@@ -885,6 +899,7 @@ internal fun DraftField(
 @Composable
 internal fun SendButton(
     sender: SendModel<*>, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: (() -> Unit)? = null,
+    label: String = "送信",
 ) {
     val focus = LocalFocusManager.current
     var resendText by remember { mutableStateOf<String?>(null) }
@@ -911,7 +926,7 @@ internal fun SendButton(
                 strokeWidth = 2.dp,
             )
         } else {
-            Text("送信")
+            Text(label)
         }
     }
 }
@@ -980,6 +995,6 @@ private fun EntryList(
 }
 
 @Composable
-private fun RefreshAction(model: ScreenModel<*>) {
+internal fun RefreshAction(model: ScreenModel<*>) {
     OrcaTextButton(onClick = { model.refresh() }, enabled = !model.loading) { Text("更新") }
 }

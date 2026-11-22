@@ -1,5 +1,6 @@
 package dev.okumura.orcaremote
 
+import android.app.Activity
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -8,13 +9,18 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.view.View
 import android.widget.RemoteViews
+import androidx.work.Constraints
 import androidx.work.CoroutineWorker
+import androidx.work.NetworkType
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
+import java.time.LocalDate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -91,7 +97,7 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
         }
 
         @Suppress("DEPRECATION")
-        private fun renderCached(context: Context) {
+        internal fun renderCached(context: Context) {
             val ids = context.boardIds()
             if (ids.isEmpty()) return
             val connection = context.connectionPreferences().savedConnection()
@@ -114,26 +120,32 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
                 tile.setOnClickPendingIntent(R.id.board_bot, open(context, boardLink(bot.name)))
                 views.addView(R.id.board_bots, tile)
             }
+            val pending = board?.pendingCount ?: 0
+            // Shown only when needed so the task list keeps the space.
+            views.setViewVisibility(R.id.board_pending, if (pending > 0) View.VISIBLE else View.GONE)
+            views.setTextViewText(R.id.board_pending, "判断待ち ${pending}件 ›")
+            views.setOnClickPendingIntent(R.id.board_pending, open(context, "orcaremote://items"))
             val empty = when {
                 connection == null -> "アプリで Mac mini に接続してください"
                 board == null -> "ボードを取得できません。接続先を確認してください"
-                else -> "進行中の作業・タスクはありません"
+                board.memoTasks == null -> "タスクリストを読めませんでした"
+                else -> "タスクリストは空です（上の「メモ」から追加）"
             }
             views.setTextViewText(R.id.board_empty, empty)
-            views.setOnClickPendingIntent(R.id.board_empty, open(context))
+            views.setOnClickPendingIntent(R.id.board_empty, open(context, TasksLink))
             views.setEmptyView(R.id.board_list, R.id.board_empty)
             if (Build.VERSION.SDK_INT >= 35) {
                 // Publish rows and header together. A separate legacy invalidation can republish an older header.
                 val items = RemoteViews.RemoteCollectionItems.Builder().setViewTypeCount(1)
-                board?.rows()?.forEachIndexed { index, row -> items.addItem(index.toLong(), row.toViews(context)) }
+                board?.taskRows(LocalDate.now())?.forEachIndexed { index, row -> items.addItem(index.toLong(), row.toViews(context)) }
                 views.setRemoteAdapter(R.id.board_list, items.build())
             } else {
                 views.setRemoteAdapter(R.id.board_list, Intent(context, SecretaryBoardWidgetService::class.java))
             }
-            // Only the URI is filled in by the launcher; the activity component stays fixed.
-            val template = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            views.setPendingIntentTemplate(R.id.board_list, PendingIntent.getActivity(context, 1, template,
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+            // Collection items may only fill in one template, so a check (background write) and a body tap
+            // (open the app) both go to WidgetTaskActivity, which needs no broadcast-started activity.
+            views.setPendingIntentTemplate(R.id.board_list, PendingIntent.getActivity(context, 1,
+                Intent(context, WidgetTaskActivity::class.java), PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             val manager = AppWidgetManager.getInstance(context)
             manager.updateAppWidget(ids, views)
             if (Build.VERSION.SDK_INT < 35) manager.notifyAppWidgetViewDataChanged(ids, R.id.board_list)
@@ -144,6 +156,51 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             return PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         }
+    }
+}
+
+/** Applies the check at once in the widget, then completes the task on the Mac in the background. */
+internal fun Context.completeTaskFromWidget(id: String) {
+    val connection = connectionPreferences().savedConnection() ?: return
+    boardSnapshot(connection)?.let { board ->
+        replaceBoardCache(connection, apiJson.encodeToString(board.copy(memoTasks = board.memoTasks?.filter { it.id != id })))
+        SecretaryBoardWidgetProvider.renderCached(this)
+    }
+    WorkManager.getInstance(this).enqueueUniqueWork("task-done:$id", ExistingWorkPolicy.KEEP,
+        OneTimeWorkRequestBuilder<TaskDoneWorker>()
+            .setInputData(workDataOf("id" to id))
+            .setConstraints(Constraints(requiredNetworkType = NetworkType.CONNECTED))
+            .build())
+}
+
+class TaskDoneWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
+    override suspend fun doWork(): Result {
+        val id = inputData.getString("id") ?: return Result.success()
+        val connection = applicationContext.connectionPreferences().savedConnection()
+        if (connection != null) {
+            try {
+                OrcaApi(connection).setTaskDone(id, true)
+            } catch (failure: ApiFailure) {
+                // Marking done is idempotent, so an uncertain write can be repeated.
+                val retry = failure.error in setOf(ApiError.CONNECTION, ApiError.TIMEOUT, ApiError.UNKNOWN_RESULT)
+                if (retry && runAttemptCount < 3) return Result.retry()
+            }
+        }
+        // Brings the row back if the write failed for good.
+        SecretaryBoardWidgetProvider.refresh(applicationContext)
+        return Result.success()
+    }
+}
+
+/** Invisible target of widget rows. Activity starts from a widget tap are allowed; from a broadcast they are not. */
+class WidgetTaskActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val id = taskDoneId(intent.dataString)
+        if (id != null) applicationContext.completeTaskFromWidget(id)
+        else startActivity(Intent(this, MainActivity::class.java).setData(Uri.parse(TasksLink))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        finish()
     }
 }
 

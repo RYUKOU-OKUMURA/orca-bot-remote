@@ -21,6 +21,10 @@ internal class ScreenModel<T>(private val fetch: suspend () -> T) : ViewModel() 
     var error by mutableStateOf<ApiError?>(null)
         private set
 
+    fun update(transform: (T) -> T) {
+        data = data?.let(transform)
+    }
+
     fun refresh(afterCurrent: Boolean = false) {
         viewModelScope.launch { load(afterCurrent) }
     }
@@ -53,7 +57,7 @@ internal fun pendingState(sending: Boolean, error: Boolean, deliveryUncertain: B
 }
 
 internal class SendModel<T>(
-    private val savedState: SavedStateHandle,
+    val savedState: SavedStateHandle,
     val chat: ChatDraft? = null,
     private val onFailure: suspend (ApiError) -> Unit = {},
     private val showPendingMessage: Boolean = false,

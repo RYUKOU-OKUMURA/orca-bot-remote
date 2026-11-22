@@ -34,6 +34,8 @@
             </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/secretary_board_widget_info" />
         </receiver>
+        <activity android:name=".WidgetTaskActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay"
+            android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity="" />
         <service android:name=".SecretaryBoardWidgetService" android:permission="android.permission.BIND_REMOTEVIEWS" android:exported="false" />
         <receiver android:name=".QuickMemoWidgetProvider" android:label="@string/quick_memo" android:exported="false">
             <intent-filter>

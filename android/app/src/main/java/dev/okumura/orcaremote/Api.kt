@@ -148,6 +148,40 @@ data class OptionDescriptor(val current: String? = null, val choices: List<Optio
 data class OptionChoice(val value: String, val label: String)
 
 @Serializable
+data class BotOptions(val models: List<BotModelOption> = emptyList(), val defaultModel: String? = null, val defaultEffort: String? = null)
+
+@Serializable
+data class BotModelOption(val id: String, val label: String, val isDefault: Boolean = false, val efforts: List<OptionChoice> = emptyList())
+
+@Serializable
+data class MemoTask(
+    val id: String,
+    val title: String,
+    val note: String? = null,
+    val due: String? = null,
+    val done: Boolean = false,
+    val createdAt: Long = 0,
+    val updatedAt: Long = 0,
+    val doneAt: Long? = null,
+)
+
+@Serializable
+data class MemoTasks(val tasks: List<MemoTask>)
+
+@Serializable
+internal data class NewTask(val title: String, val note: String? = null, val due: String? = null)
+
+// No defaults: null is sent explicitly so the server clears the field.
+@Serializable
+internal data class TaskEdit(val title: String, val note: String?, val due: String?)
+
+@Serializable
+private data class TaskDone(val done: Boolean)
+
+@Serializable
+private data class TaskReceipt(val task: MemoTask)
+
+@Serializable
 data class SkillRef(val name: String, val path: String)
 
 @Serializable
@@ -165,6 +199,8 @@ private data class WriteInput(
     val skills: List<SkillRef> = emptyList(),
     val attachments: List<AttachmentRef> = emptyList(),
     val inlineAttachments: List<InlineAttachment> = emptyList(),
+    val model: String? = null,
+    val effort: String? = null,
 )
 
 @Serializable
@@ -212,6 +248,7 @@ internal enum class ApiError(val text: String) {
     WRITE_FAILED("Bot に送れませんでした"),
     WRITE_UNAVAILABLE("Mac mini の書き込み設定が済んでいません。"),
     UNKNOWN_RESULT("送れたか確認できませんでした。会話を更新して確かめてください。"),
+    TASKS("タスクリストを読み書きできませんでした"),
 }
 
 internal class ApiFailure(val error: ApiError) : Exception()
@@ -340,9 +377,29 @@ internal class OrcaApi(
             .header("X-File-Name", name).post(body))
     }
 
-    suspend fun startChat(bot: String, text: String, inlineAttachments: List<InlineAttachment> = emptyList()): String {
-        val input = WriteInput(text, inlineAttachments = inlineAttachments)
-        val body = if (inlineAttachments.isEmpty()) writeBody(text) else inlineBody(input)
+    suspend fun botOptions(bot: String): BotOptions = get("bots", bot, "options", commands = true)
+
+    suspend fun tasks(): MemoTasks = get("tasks")
+
+    suspend fun createTask(task: NewTask): MemoTask =
+        post<TaskReceipt>(201, request("tasks").post(jsonBody(apiJson.encodeToString(task)))).task
+
+    suspend fun editTask(id: String, edit: TaskEdit): MemoTask =
+        post<TaskReceipt>(200, request("tasks", id).patch(jsonBody(apiJson.encodeToString(edit)))).task
+
+    suspend fun setTaskDone(id: String, done: Boolean): MemoTask =
+        post<TaskReceipt>(200, request("tasks", id).patch(jsonBody(apiJson.encodeToString(TaskDone(done))))).task
+
+    suspend fun deleteTask(id: String) {
+        if (!post<OkReceipt>(200, request("tasks", id).delete()).ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
+    }
+
+    suspend fun startChat(
+        bot: String, text: String, inlineAttachments: List<InlineAttachment> = emptyList(),
+        model: String? = null, effort: String? = null,
+    ): String {
+        val input = WriteInput(text, inlineAttachments = inlineAttachments, model = model, effort = effort)
+        val body = if (inlineAttachments.isEmpty()) jsonBody(apiJson.encodeToString(input)) else inlineBody(input)
         val result = post<NewChat>(201, request("bots", bot, "chats").post(body))
         if (result.chatId.isBlank()) throw ApiFailure(ApiError.UNKNOWN_RESULT)
         return result.chatId
@@ -454,6 +511,7 @@ internal fun writeResponseError(status: Int, body: String = ""): ApiError = when
     401 -> ApiError.UNAUTHORIZED
     404 -> ApiError.NOT_FOUND
     409 -> ApiError.CONFLICT
+    500 -> ApiError.TASKS
     502 -> {
         val code = try {
             apiJson.decodeFromString<WriteError>(body).error
@@ -484,6 +542,7 @@ private suspend fun Call.readBody(writeStatus: Int? = null, commands: Boolean = 
                         throw ApiFailure(when (it.code) {
                             401 -> ApiError.UNAUTHORIZED
                             404 -> ApiError.NOT_FOUND
+                            500 -> ApiError.TASKS
                             502 -> ApiError.ORCA
                             503 -> if (commands) ApiError.WRITE_UNAVAILABLE else ApiError.RESPONSE
                             else -> ApiError.RESPONSE

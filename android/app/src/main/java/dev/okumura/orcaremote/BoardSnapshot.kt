@@ -1,6 +1,8 @@
 package dev.okumura.orcaremote
 
+import java.net.URLDecoder
 import java.net.URLEncoder
+import java.time.LocalDate
 import kotlinx.serialization.Serializable
 import okio.ByteString.Companion.encodeUtf8
 
@@ -8,59 +10,33 @@ import okio.ByteString.Companion.encodeUtf8
 internal data class BoardSnapshot(
     val updatedAt: Long? = null,
     val bots: List<Bot> = emptyList(),
-    val sessions: List<BoardSession> = emptyList(),
-    val tasks: List<PendingItem> = emptyList(),
+    // null: the server could not read tasks.json.
+    val memoTasks: List<MemoTask>? = emptyList(),
 )
 
-@Serializable
-internal data class BoardSession(
-    val bot: String,
-    val title: String,
-    val kind: String = "chat",
-    val tool: String? = null,
-    val chatId: String? = null,
-    val avatar: String? = null,
-)
-
-internal enum class BoardStatus(val label: String, val background: Int) {
-    Active("進行中", R.drawable.board_active),
-    NeedsYou("判断待ち", R.drawable.board_pending),
-    Working("作業中", R.drawable.board_working),
-    Planned("予定", R.drawable.board_planned),
+internal fun boardLink(bot: String): String {
+    val segment = URLEncoder.encode(bot, "UTF-8").replace("+", "%20")
+    return "$NotificationScheme://chats/$segment"
 }
 
-internal data class BoardRow(val title: String, val subtitle: String, val icon: Int, val status: BoardStatus, val link: String)
+internal const val TasksLink = "orcaremote://tasks"
+private const val TaskDonePrefix = "orcaremote://task-done/"
 
-internal fun boardLink(bot: String, chatId: String? = null, item: Long? = null): String {
-    fun segment(value: String) = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
-    val route = when {
-        item != null -> "item/${segment(bot)}/$item"
-        !chatId.isNullOrBlank() -> "chat/${segment(bot)}/${segment(chatId)}"
-        else -> "chats/${segment(bot)}"
-    }
-    return "$NotificationScheme://$route"
+internal fun taskDoneLink(id: String) = TaskDonePrefix + URLEncoder.encode(id, "UTF-8").replace("+", "%20")
+
+internal fun taskDoneId(link: String?): String? = link?.takeIf { it.startsWith(TaskDonePrefix) }
+    ?.let { runCatching { URLDecoder.decode(it.removePrefix(TaskDonePrefix).replace("+", "%2B"), "UTF-8") }.getOrNull() }
+    ?.takeIf { it.isNotEmpty() }
+
+internal data class TaskRow(val id: String, val title: String, val detail: String, val urgent: Boolean)
+
+internal fun BoardSnapshot.taskRows(today: LocalDate): List<TaskRow> = memoTasks.orEmpty().filter { !it.done }.map { task ->
+    val due = dueLabel(task.due, today)
+    TaskRow(task.id, task.title, listOfNotNull(due?.first, task.note?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim())
+        .joinToString(" · "), due?.second == true)
 }
 
-internal fun BoardSnapshot.rows(): List<BoardRow> {
-    val avatars = bots.associate { it.name to it.avatar }
-    fun icon(bot: String, avatar: String?) = boardIcon(avatar ?: avatars[bot])
-    val active = sessions.map {
-        val detail = it.tool ?: if (it.kind == "worker") "ワーカー" else "チャット"
-        BoardRow(it.title, "${it.bot} · $detail", icon(it.bot, it.avatar), BoardStatus.Active, boardLink(it.bot, it.chatId))
-    }
-    val taskRows = tasks.mapNotNull {
-        val status = when (it.status) {
-            "needs_you" -> BoardStatus.NeedsYou
-            "in_progress" -> BoardStatus.Working
-            "planned" -> BoardStatus.Planned
-            else -> return@mapNotNull null
-        }
-        val subtitle = listOfNotNull(it.bot, relativeTime(it.lastActivityAt)).joinToString(" · ")
-        BoardRow(it.title, subtitle, icon(it.bot, it.avatar), status,
-            boardLink(it.bot, it.chatId, it.number.takeIf { number -> status == BoardStatus.NeedsYou && number > 0 }))
-    }
-    return active + taskRows.sortedBy { it.status }
-}
+internal val BoardSnapshot.pendingCount: Int get() = bots.sumOf { it.needsYou }
 
 internal fun boardIcon(avatar: String?): Int = avatarDrawable(avatar) ?: R.drawable.mascot_a1
 

@@ -400,6 +400,51 @@ class WriteApiTest {
         }
     }
 
+    @Test
+    fun modelOptionsAndTaskListFollowTheContract() {
+        val task = """{"id":"t 1","title":"牛乳","note":null,"due":null,"done":false,"createdAt":1,"updatedAt":1,"doneAt":null}"""
+        val requests = mutableListOf<String>()
+        withServer({ e ->
+            val body = e.requestBody.bufferedReader().readText()
+            requests += "${e.requestMethod} ${e.requestURI.rawPath} $body".trim()
+            when ("${e.requestMethod} ${e.requestURI.rawPath}") {
+                "GET /api/bots/a%2Fb/options" -> e.reply(200, """{"models":[{"id":"m","label":"M","isDefault":true,"efforts":[{"value":"high","label":"高"}]}],"defaultModel":"m","defaultEffort":null}""")
+                "POST /api/bots/a%2Fb/chats" -> e.reply(201, """{"chatId":"c"}""")
+                "GET /api/tasks" -> e.reply(200, """{"tasks":[$task]}""")
+                "POST /api/tasks" -> e.reply(201, """{"task":$task}""")
+                "PATCH /api/tasks/t%201" -> e.reply(200, """{"task":${task.replace("\"done\":false", "\"done\":true")}}""")
+                "DELETE /api/tasks/t%201" -> e.reply(200, """{"ok":true,"id":"t 1"}""")
+                "PATCH /api/tasks/broken" -> e.reply(500, """{"error":"tasks_failed"}""")
+                else -> e.reply(404, "{}")
+            }
+        }) { api ->
+            val options = api.botOptions("a/b")
+            assertEquals("m", options.defaultModel)
+            assertEquals(listOf(OptionChoice("high", "高")), options.models.single().efforts)
+            assertEquals("c", api.startChat("a/b", "頼む", model = "m", effort = "high"))
+            assertEquals("c", api.startChat("a/b", "頼む", model = null, effort = "high"))
+            assertEquals("t 1", api.tasks().tasks.single().id)
+            assertEquals("牛乳", api.createTask(NewTask("牛乳", due = "2026-12-01")).title)
+            assertTrue(api.setTaskDone("t 1", true).done)
+            api.editTask("t 1", TaskEdit("牛乳", null, null))
+            api.deleteTask("t 1")
+            assertEquals(ApiError.TASKS, failureFrom { api.setTaskDone("broken", false) })
+            assertEquals(ApiError.NOT_FOUND, failureFrom { api.deleteTask("missing") })
+        }
+        assertEquals(listOf(
+            "GET /api/bots/a%2Fb/options",
+            """POST /api/bots/a%2Fb/chats {"text":"頼む","model":"m","effort":"high"}""",
+            """POST /api/bots/a%2Fb/chats {"text":"頼む","effort":"high"}""",
+            "GET /api/tasks",
+            """POST /api/tasks {"title":"牛乳","due":"2026-12-01"}""",
+            """PATCH /api/tasks/t%201 {"done":true}""",
+            """PATCH /api/tasks/t%201 {"title":"牛乳","note":null,"due":null}""",
+            "DELETE /api/tasks/t%201",
+            """PATCH /api/tasks/broken {"done":false}""",
+            "DELETE /api/tasks/missing",
+        ), requests)
+    }
+
     private fun withServer(
         handle: (HttpExchange) -> Unit,
         client: OkHttpClient = OrcaApi.writeClient,
