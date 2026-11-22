@@ -28,12 +28,16 @@ internal fun taskDoneId(link: String?): String? = link?.takeIf { it.startsWith(T
     ?.let { runCatching { URLDecoder.decode(it.removePrefix(TaskDonePrefix).replace("+", "%2B"), "UTF-8") }.getOrNull() }
     ?.takeIf { it.isNotEmpty() }
 
-internal data class TaskRow(val id: String, val title: String, val detail: String, val urgent: Boolean)
+/** [bot] is the assigned bot; [avatar] is its mascot when the board knows the bot. */
+internal data class TaskRow(
+    val id: String, val title: String, val detail: String, val urgent: Boolean,
+    val bot: String? = null, val avatar: String? = null,
+)
 
 internal fun BoardSnapshot.taskRows(today: LocalDate): List<TaskRow> = memoTasks.orEmpty().filter { !it.done }.map { task ->
     val due = dueLabel(task.due, today)
-    TaskRow(task.id, task.title, listOfNotNull(due?.first, task.note?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim())
-        .joinToString(" · "), due?.second == true)
+    TaskRow(task.id, task.title, listOfNotNull(task.bot, due?.first, task.note?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim())
+        .joinToString(" · "), due?.second == true, task.bot, bots.firstOrNull { it.name == task.bot }?.avatar)
 }
 
 internal val BoardSnapshot.pendingCount: Int get() = bots.sumOf { it.needsYou }

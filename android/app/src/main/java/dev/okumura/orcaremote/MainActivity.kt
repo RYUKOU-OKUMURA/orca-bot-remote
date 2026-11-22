@@ -34,6 +34,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import androidx.navigation.NavDestination.Companion.hasRoute
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -162,7 +163,7 @@ private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String, m
         val chat = ChatDraft(state, AttachmentLimits.NewChat)
         SendModel(state, chat) {
             val choice = state.modelChoice(bot)
-            api.startChat(bot, it, chat.inline { file -> file.open(resolver) }, choice.model, choice.effort)
+            api.startChat(bot, it, chat.inline { file -> file.open(resolver) }, choice.model, choice.effort, choice.agent)
                 .also { id -> meta.markRead(bot, id) }
         }
     }
@@ -306,8 +307,13 @@ private fun RemoteApp(
         composable<SummaryRoute> {
             if (api != null) SummaryScreen(api, back, openSettings, openConversation)
         }
-        composable<TasksRoute> {
-            if (api != null) TasksScreen(api, back, openSettings)
+        composable<TasksRoute> { entry ->
+            if (api != null) TasksScreen(api, back, openSettings) { bot, text ->
+                // Same hand-off as sharing: the new-chat form starts with the task as an editable draft.
+                nav.navigate(ChatsRoute(bot, entry.id))
+                nav.navigate(NewChatRoute(bot, entry.id))
+                nav.currentBackStackEntry?.savedStateHandle?.set(SharedDraftKey, apiJson.encodeToString(SharedDraft(text, emptyList())))
+            }
         }
     }
 
@@ -354,6 +360,12 @@ private fun RemoteApp(
             it.getOrNull(0).orEmpty() to it.getOrNull(1)?.toLongOrNull()
         }
         when (screen) {
+            // Whatever is open, show home. The stack is cleared to it; a missing home is recreated as the only entry.
+            "home" -> if (nav.currentBackStackEntry?.destination?.hasRoute<HomeRoute>() != true &&
+                !nav.popBackStack<HomeRoute>(inclusive = false)
+            ) {
+                nav.navigate(HomeRoute()) { popUpTo(nav.graph.id) { inclusive = true } }
+            }
             "summary" -> nav.navigate(SummaryRoute) { launchSingleTop = true }
             "items" -> nav.navigate(ItemsRoute) { launchSingleTop = true }
             "tasks" -> nav.navigate(TasksRoute) { launchSingleTop = true }

@@ -34,6 +34,8 @@ private class BoardFactory(private val context: Context) : RemoteViewsService.Re
 
 internal fun TaskRow.toViews(context: Context) = RemoteViews(context.packageName, R.layout.widget_board_row).apply {
     setTextViewText(R.id.row_title, title)
+    setViewVisibility(R.id.row_icon, if (bot == null) View.GONE else View.VISIBLE)
+    if (bot != null) setImageViewResource(R.id.row_icon, boardIcon(avatar))
     setTextViewText(R.id.row_subtitle, if (urgent) SpannableString("⚠ $detail").apply {
         setSpan(StyleSpan(Typeface.BOLD), 0, length, 0)
     } else detail)

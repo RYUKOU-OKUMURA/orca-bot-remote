@@ -104,6 +104,7 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
             val board = context.boardSnapshot(connection)
             val views = RemoteViews(context.packageName, R.layout.widget_secretary_board)
             views.setTextViewText(R.id.board_time, board?.updatedAt?.let { localClock(it) }.orEmpty())
+            views.setOnClickPendingIntent(R.id.board_header, open(context, HomeLink))
             views.setOnClickPendingIntent(R.id.board_memo, open(context, "orcaremote://quick-memo?inbox=1"))
             views.setOnClickPendingIntent(R.id.board_voice, open(context, "orcaremote://quick-memo?inbox=1&voice=1"))
             val refresh = Intent(context, SecretaryBoardWidgetProvider::class.java).setAction(RefreshBoard)
@@ -151,6 +152,7 @@ class SecretaryBoardWidgetProvider : AppWidgetProvider() {
             if (Build.VERSION.SDK_INT < 35) manager.notifyAppWidgetViewDataChanged(ids, R.id.board_list)
         }
 
+        // Request code 0 is shared; each button's own data URI keeps its PendingIntent distinct.
         private fun open(context: Context, link: String? = null): PendingIntent {
             val intent = Intent(context, MainActivity::class.java).setData(link?.let(Uri::parse))
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
