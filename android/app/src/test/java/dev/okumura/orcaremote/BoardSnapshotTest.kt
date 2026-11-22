@@ -1,5 +1,6 @@
 package dev.okumura.orcaremote
 
+import java.time.LocalDate
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -8,29 +9,43 @@ class BoardSnapshotTest {
         assertNull(cachedBoard(null))
         assertNull(cachedBoard("{broken"))
         assertEquals(BoardSnapshot(), cachedBoard("{}"))
-        val json = """{"updatedAt":123,"bots":[{"id":"1","name":"Bot","avatar":"mascot:T1"}],
-            "sessions":[{"bot":"Bot","title":"Review"}],"extra":42}"""
+        val json = """{"updatedAt":123,"bots":[{"id":"1","name":"Bot","avatar":"mascot:T1","needsYou":2}],
+            "sessions":[{"bot":"Bot","title":"Review"}],"tasks":[],"memoTasks":null,"extra":42}"""
         val board = requireNotNull(cachedBoard(json))
         assertEquals(123L, board.updatedAt)
         assertFalse(board.bots.single().working)
-        assertEquals(R.drawable.mascot_t1, board.rows().single().icon)
+        assertNull(board.memoTasks)
+        assertEquals(emptyList<TaskRow>(), board.taskRows(LocalDate.of(2026, 11, 22)))
         assertEquals(board, cachedBoard(apiJson.encodeToString(board)))
     }
 
-    @Test fun rowsAreGroupedAndRouteToSpecificScreens() {
-        val bot = "A/B"
+    @Test fun widgetListsOpenMemoTasksSeparatelyFromPendingItems() {
+        val today = LocalDate.of(2026, 11, 22)
         val board = BoardSnapshot(
-            sessions = listOf(BoardSession(bot, "Worker", "worker", "execute"), BoardSession(bot, "Chat", chatId = "a b")),
-            tasks = listOf(PendingItem(bot, 1, "Later", "planned"), PendingItem(bot, 2, "Doing", "in_progress", "c"),
-                PendingItem(bot, 3, "Ask", "needs_you", "c", avatar = "mascot:T1"), PendingItem(bot, 4, "Done", "done"))
+            bots = listOf(Bot("1", "A", needsYou = 2), Bot("2", "B", needsYou = 1), Bot("3", "C")),
+            memoTasks = listOf(
+                MemoTask("t1", "期限切れ", note = "\n  補足の1行目\n2行目", due = "2026-11-20"),
+                MemoTask("t2", "あした", due = "2026-11-23"),
+                MemoTask("t3", "期限なし"),
+                MemoTask("t4", "完了", done = true),
+            ),
         )
-        val rows = board.rows()
-        assertEquals(listOf("Worker", "Chat", "Ask", "Doing", "Later"), rows.map { it.title })
-        assertEquals(listOf("chats/A%2FB", "chat/A%2FB/a%20b", "item/A%2FB/3", "chat/A%2FB/c", "chats/A%2FB")
-            .map { "orca-notification://$it" }, rows.map { it.link })
-        assertEquals("A/B · execute", rows.first().subtitle)
-        assertEquals(R.drawable.mascot_a1, rows.first().icon)
-        assertEquals(R.drawable.mascot_t1, rows[2].icon)
+        assertEquals(3, board.pendingCount)
+        assertEquals(0, BoardSnapshot(memoTasks = board.memoTasks).pendingCount)
+        assertEquals(listOf(
+            TaskRow("t1", "期限切れ", "期限切れ 11/20 · 補足の1行目", true),
+            TaskRow("t2", "あした", "明日まで", false),
+            TaskRow("t3", "期限なし", "", false),
+        ), board.taskRows(today))
+    }
+
+    @Test fun widgetLinksRoundTripTaskIds() {
+        for (id in listOf("abc", "a b/c+d?e", "日本語")) assertEquals(id, taskDoneId(taskDoneLink(id)))
+        assertEquals("orcaremote://task-done/a%20b%2Fc%2Bd", taskDoneLink("a b/c+d"))
+        assertNull(taskDoneId(TasksLink))
+        assertNull(taskDoneId("orcaremote://task-done/"))
+        assertNull(taskDoneId(null))
+        assertEquals("orca-notification://chats/A%2FB%20C", boardLink("A/B C"))
     }
 
     @Test fun removesOnlyRetiredBoardKeysOrAllOnDisable() {

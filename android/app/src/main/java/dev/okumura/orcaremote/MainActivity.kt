@@ -147,6 +147,7 @@ internal fun SharedPreferences.savedConnection(): Connection? =
 @Serializable private data class ItemRoute(val bot: String, val number: Long)
 @Serializable private object ShareRoute
 @Serializable private object SummaryRoute
+@Serializable private object TasksRoute
 
 private const val RefreshCounts = "refreshCounts"
 private const val RefreshChats = "refreshChats"
@@ -160,7 +161,9 @@ private fun newChatSender(entry: NavBackStackEntry, api: OrcaApi, bot: String, m
         val state = createSavedStateHandle()
         val chat = ChatDraft(state, AttachmentLimits.NewChat)
         SendModel(state, chat) {
-            api.startChat(bot, it, chat.inline { file -> file.open(resolver) }).also { id -> meta.markRead(bot, id) }
+            val choice = state.modelChoice(bot)
+            api.startChat(bot, it, chat.inline { file -> file.open(resolver) }, choice.model, choice.effort)
+                .also { id -> meta.markRead(bot, id) }
         }
     }
 }
@@ -217,12 +220,14 @@ private fun RemoteApp(
                     { nav.navigate(ChatsRoute(it)) },
                     { nav.navigate(ItemsRoute) },
                     { nav.navigate(SummaryRoute) },
+                    { nav.navigate(TasksRoute) },
                     openConversation,
                 )
             }
         }
         composable<QuickMemoRoute> { entry ->
-            if (api != null) QuickMemoScreen(api, meta, entry.savedStateHandle, entry.toRoute<QuickMemoRoute>(), back, openSettings) { bot, chatId ->
+            if (api != null) QuickMemoScreen(api, meta, entry.savedStateHandle, entry.toRoute<QuickMemoRoute>(), back, openSettings,
+                { nav.navigate(TasksRoute) { launchSingleTop = true } }) { bot, chatId ->
                 nav.navigate(ConversationRoute(bot, chatId, bot)) { popUpTo<QuickMemoRoute> { inclusive = true } }
             }
         }
@@ -254,7 +259,7 @@ private fun RemoteApp(
                 val sender = newChatSender(chatsEntry, api, bot, meta)
                 ApplySharedDraft(entry.savedStateHandle, sender)
                 NewChatScreen(
-                    sender, bot, back, openSettings,
+                    api, sender, bot, back, openSettings,
                     checkChats = {
                         chatsEntry.savedStateHandle[RefreshChats] = true
                         nav.popBackStack()
@@ -300,6 +305,9 @@ private fun RemoteApp(
         }
         composable<SummaryRoute> {
             if (api != null) SummaryScreen(api, back, openSettings, openConversation)
+        }
+        composable<TasksRoute> {
+            if (api != null) TasksScreen(api, back, openSettings)
         }
     }
 
@@ -348,6 +356,7 @@ private fun RemoteApp(
         when (screen) {
             "summary" -> nav.navigate(SummaryRoute) { launchSingleTop = true }
             "items" -> nav.navigate(ItemsRoute) { launchSingleTop = true }
+            "tasks" -> nav.navigate(TasksRoute) { launchSingleTop = true }
             "chats" -> if (bot.isNotBlank()) nav.navigate(ChatsRoute(bot)) { launchSingleTop = true }
             "chat" -> uri.pathSegments.getOrNull(1)?.takeIf { it.isNotBlank() && bot.isNotBlank() }?.let {
                 nav.navigate(ConversationRoute(bot, it, bot)) { launchSingleTop = true }

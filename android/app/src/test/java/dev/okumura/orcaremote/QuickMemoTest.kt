@@ -9,7 +9,8 @@ class QuickMemoTest {
         assertEquals(QuickMemoRoute(inbox = true, voice = true), quickMemoLink("orcaremote://quick-memo?voice=1&inbox=1"))
         assertEquals(QuickMemoRoute(), quickMemoLink("orcaremote://quick-memo?inbox=10"))
         assertEquals("【秘書メモ・自動整理】\n買い物", MemoMode.Inbox.message("買い物"))
-        for (mode in listOf(MemoMode.Home, MemoMode.New)) assertEquals("本文", mode.message("本文"))
+        for (mode in listOf(MemoMode.Task, MemoMode.Home, MemoMode.New)) assertEquals("本文", mode.message("本文"))
+        assertEquals(MemoMode.Task, MemoMode.entries.first())
     }
 
     @Test fun linksAndVoiceText() {

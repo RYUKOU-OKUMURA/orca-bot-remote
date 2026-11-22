@@ -64,5 +64,5 @@ internal fun Intent.externalOpen(coldStart: Boolean): ExternalOpen? {
             null
         }
     }
-    return data?.takeIf { it.scheme == NotificationScheme || (it.scheme == "orcaremote" && (quickMemoLink(it.toString()) != null || it.authority == "items")) }?.let { ExternalOpen(link = it.toString(), coldStart = coldStart) }
+    return data?.takeIf { it.scheme == NotificationScheme || (it.scheme == "orcaremote" && (quickMemoLink(it.toString()) != null || it.authority in setOf("items", "tasks"))) }?.let { ExternalOpen(link = it.toString(), coldStart = coldStart) }
 }
