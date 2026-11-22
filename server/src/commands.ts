@@ -63,3 +63,18 @@ export function commandMenu(report: CommandReport, session: SessionOptions) {
   }
   return { commands, skills, options };
 }
+
+const text = (value: unknown): value is string => typeof value === 'string' && !!value.trim();
+
+export function modelOptions(session?: SessionOptions) {
+  const models = (Array.isArray(session?.models) ? session.models : []).filter(model => text(model?.id)).map(model => ({
+    id: model.id, label: text(model.label) ? model.label : model.id, isDefault: model.isDefault === true,
+    efforts: (Array.isArray(model.efforts) ? model.efforts : []).filter(choice => text(choice?.value))
+      .map(({ value, label }) => ({ value, label: text(label) ? label : value }))
+  }));
+  return {
+    models,
+    defaultModel: session?.current?.model || models.find(model => model.isDefault)?.id || null,
+    defaultEffort: session?.current?.effort || null
+  };
+}

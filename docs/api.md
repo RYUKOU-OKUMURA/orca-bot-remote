@@ -9,7 +9,7 @@
 | メソッドとパス | 応答 |
 | --- | --- |
 | `GET /api/health` | `{"ok":true}`。Orca CLI を起動せず、サーバーへの接続と認証を確認します |
-| `GET /api/board` | `{"updatedAt":number,"bots":[…],"sessions":[…],"tasks":[…]}`。秘書ボードの取得時刻、全 Bot、稼働中セッション、アクティブな項目をまとめて返します |
+| `GET /api/board` | `{"updatedAt":number,"bots":[…],"sessions":[…],"tasks":[…],"memoTasks":[…]?}`。秘書ボードの取得時刻、全 Bot、稼働中セッション、アクティブな項目、未完了のタスクリストをまとめて返します |
 | `GET /api/bots` | `{"bots":[{"id":string,"name":string,"specialty":string?,"paused":boolean,"needsYou":number,"avatar":string?,"lastActivityAt":number?,"lastSaid":string?,"working":boolean,"activeWork":string?}]}` |
 | `GET /api/bots/{botName}/chats` | `{"chats":[{"id":string,"title":string?,"home":boolean,"lastActivityAt":number?,"lastAsked":string?,"lastSaid":string?,"working":boolean}]}` |
 | `GET /api/bots/{botName}/chats/{chatId}/messages?limit=N` | `{"state":string?,"entries":[{"kind":"message","role":string,"text":string} \| {"kind":"tool","name":string,"state":string?}],"activeWorkers":[{"title":string,"tool":string?}]}` |
@@ -31,6 +31,7 @@
 - `bots` は一覧順に `id, name, avatar, working, activeWork, needsYou, paused` を返します。`needsYou` は表示上限を適用する前の判断待ち件数です。
 - `sessions` は稼働中の最大20件で、各行に `bot, avatar, kind, title, tool, chatId` が入ります。`kind` は配下ワーカーの `worker` または本体チャットの `chat` です。ワーカーの `chatId` と不明なツール名は `null` です。`worktree ps` 失敗時は 200 で空の `sessions` と各 Bot の `working: false, activeWork: null` を返します。
 - `tasks` の各行は `bot, avatar, number, title, status, chatId, lastActivityAt` を持ちます。`needs_you` → `in_progress` → `planned`、同じ状態なら最終活動の新しい順（時刻不明は末尾）で最大30件です。
+- `memoTasks` は後述のタスクリストのうち未完了（`done: false`）の行を `GET /api/tasks` と同じ順で最大30件返します。判断待ち（`tasks`）とは別物です。`tasks.json` を読めない場合は他の項目を通常どおり返し、`memoTasks` だけ `null` にしてサーバーのログに記録します。
 
 ## リアルタイム通知
 
@@ -39,7 +40,7 @@
 | フレーム | 送信条件とデータ |
 | --- | --- |
 | `event: ready` | 接続直後に `data: {"at":1795299000000}` を送ります。再接続までの変更履歴は配信しないため、現在値は各読み取り API で取得します |
-| `event: change` | 約10秒ごとに判断待ち一覧（`items`）、最新まとめの予定時刻（`summary`）、Bot の返答・作業状態等（`bots`）、アクティブな項目（`board`）の変化を調べ、例として `data: {"items":false,"summary":false,"bots":false,"board":true,"at":1795299010000}` を送ります。秘書ボードは `board` または `bots` が `true` のときに再取得します |
+| `event: change` | 約10秒ごとに判断待ち一覧（`items`）、最新まとめの予定時刻（`summary`）、Bot の返答・作業状態等（`bots`）、アクティブな項目（`board`）、タスクリスト（`memoTasks`）の変化を調べ、例として `data: {"items":false,"summary":false,"bots":false,"board":true,"memoTasks":false,"at":1795299010000}` を送ります。秘書ボードは `board` または `bots` が `true` のときに再取得します。`memoTasks` が `true` のときは `board` も `true` にし、タスクリスト（`GET /api/tasks`）も再取得します。このサーバー経由のタスクの作成・更新・削除は、次の確認を待たずにすぐ通知します。Bot が `tasks.json` を直接書き換えた場合は次の確認で通知します |
 | `: ping` | 接続維持のため約25秒ごとに送るコメントです |
 
 接続中の全端末で監視を共有します。最初の正常な取得は比較の基準とし、取得失敗時はその対象の直前の正常値を保持します。最後の端末が切断すると監視を停止します。
@@ -71,7 +72,7 @@
 
 | メソッドとパス | 本文 | 成功応答 |
 | --- | --- | --- |
-| `POST /api/bots/{botName}/chats` | `{"text":string}` | `201 {"chatId":string}`。新規チャットを開いて本人として入力します。Orca が開いている空のチャットを再利用する場合があります |
+| `POST /api/bots/{botName}/chats` | `{"text":string,"model":string?,"effort":string?}` | `201 {"chatId":string}`。新規チャットを開いて本人として入力します。Orca が開いている空のチャットを再利用する場合があります。`model` と `effort` は後述 |
 | `POST /api/bots/{botName}/chats/{chatId}/messages` | `{"text":string}` | `202 {"ok":true}`。指定した Bot のチャットに本人として入力します |
 | `POST /api/items/{botName}/{number}/answer` | `{"text":string}` | `200 {"ok":true}`。判断待ちに本人として回答します。選択肢ボタンの場合はラベルをそのまま指定します |
 
@@ -93,6 +94,44 @@
 Pi エージェントを使う Bot は書き込みの対象外です。
 
 サーバーとアプリは書き込みを自動で再送しません。`unknown_result` のときはアプリで応答の文言を表示し、会話を更新して結果を確認します。
+
+## 新規チャットのモデルと推論の強さ
+
+| メソッドとパス | 成功応答 |
+| --- | --- |
+| `GET /api/bots/{botName}/options` | `200 {"models":[{"id":string,"label":string,"isDefault":boolean,"efforts":[{"value":string,"label":string}]}],"defaultModel":string?,"defaultEffort":string?}` |
+
+- 選択肢は、その Bot の開いている Home チャット（なければ最新のチャット）の Orca `agentSession.options` から取ります。`defaultModel` はそのチャットの現在のモデル、未設定なら `isDefault` のモデル ID です。`defaultEffort` はそのチャットの現在の推論の強さで、未設定なら `null` です。空の ID・値の行は除き、`label` が空なら ID・値を使います。
+- 開いているチャットが無い場合、または Orca が選択肢を返さない場合（`not_found`、選択肢に対応しないエージェント、その他の Orca エラー）は `200 {"models":[],"defaultModel":null,"defaultEffort":null}` を返します。アプリは選択欄を出さずに既定のモデルで作成します。ペアリング資格情報が無い・無効な場合だけ 503 `write_unavailable` です。Bot 一覧・チャット一覧の CLI 読み取りに失敗した場合は他の読み取りと同じく 502 です。
+- 選択肢が1件以上ある結果は Bot ごとに30秒キャッシュします。405 の `Allow` は `GET` です。
+
+`POST /api/bots/{botName}/chats` の `model` と `effort` は任意です。省略または `null` は既定のままです。指定する場合は前後の空白を除いて空でない、512 UTF-16 コード単位以内の、制御文字を含まない文字列です。違反は 400 で、チャットは作られません。
+
+Orca の `bots.session.start` は `botId`（と `agent`）しか受け取らないため、サーバーはチャットを開始した直後に新しいセッションの `agentSession.options` を読み、`model` はその ID が選択肢にあること、`effort` は対象モデル（`model` 指定時はそのモデル、省略時はセッションの現在のモデル、なければ既定のモデル）の `efforts` にあることを確かめます。その後 `agentSession.setOption` を `model` → `effort` の順に送り、最初のメッセージを送ります。`effort` だけの指定もこの規則で受け付けます。
+
+- 選択肢に無い値は 400 `{"error":"bad_request","message":"モデルまたは推論の強さを選択肢から選び直してください。"}` です。このときメッセージは送りませんが、開始済みの空のチャットが残ります。
+- 開始後に選択肢の取得や `setOption` が失敗・拒否された場合は、添付の失敗と同じく 502 `unknown_result` を返します（認証エラー 503 と対象消失 404 を除く）。チャットは作成済みのため自動では再送しません。
+
+## タスクリスト
+
+メインBot・アプリ・ウィジェットで共有するタスクリストです。判断待ち（`/api/items`）とは別に、Mac mini の `~/.orca/bots/bot/memory/tasks.json` に保存します。すべて Bearer 認証が必須です。書き込みの本文は `Content-Type: application/json` の最大 64 KiB の JSON オブジェクトです。
+
+| メソッドとパス | 本文 | 成功応答 |
+| --- | --- | --- |
+| `GET /api/tasks` | なし | `200 {"tasks":[MemoTask]}` |
+| `POST /api/tasks` | `{"title":string,"note":string?,"due":string?}` | `201 {"task":MemoTask}` |
+| `PATCH /api/tasks/{id}` | `{"title"?,"note"?,"due"?,"done"?}`（1つ以上） | `200 {"task":MemoTask}` |
+| `DELETE /api/tasks/{id}` | なし | `200 {"ok":true,"id":string}` |
+
+`MemoTask` は `{"id":string,"title":string,"note":string?,"due":"YYYY-MM-DD"?,"done":boolean,"createdAt":number,"updatedAt":number,"doneAt":number?}` です。
+
+- `title` は改行を含む制御文字を半角スペースに置き換え、前後の空白を除いて 1〜200 文字（コードポイント数）です。`note` は前後の空白を除いて最大 2000 文字で、空なら `null` です。`due` は実在する日付の `YYYY-MM-DD` か `null` です。`done` は真偽値です。未知のフィールドや、作成時の `done` は 400 です。
+- `done` を `false` から `true` にすると `doneAt` に現在時刻、`true` から `false` にすると `null` を入れます。更新のたびに `updatedAt` を現在時刻にします。
+- 並び順は未完了が先で、期限ありを期限の早い順、その後に期限なしを作成の新しい順に並べます。完了済みは後ろで、`doneAt`（無ければ `updatedAt`）の新しい順です。
+- 件数の上限は 500 件で、超える作成は 400 です。存在しない `id` は 404 です。`/api/tasks` の `Allow` は `GET, POST`、`/api/tasks/{id}` は `PATCH, DELETE` です。
+- ファイルが無い場合は空のリストとして扱い、最初の書き込みでディレクトリ（`700`）とファイル（`600`）を作ります。書き込みは同じディレクトリの一時ファイルから `rename` で置き換えます。JSON が壊れている場合は上書きせず、`500 {"error":"tasks_failed","message":"タスクリストを読み書きできませんでした。"}` を返します。
+- Bot が書いた行は、`id` と `title` が文字列なら表示します。それ以外の項目は読み替え（不正な `due` は `null` など）、未知のフィールドは更新時もそのまま残します。`id` か `title` が無い行は表示せず、ファイルには残します。
+- 書き込みはこのサーバー内で順番に処理します。Bot が同じ瞬間にファイルを直接書き換えた場合の競合は防げません。
 
 ## チャットのコマンドとスキル
 

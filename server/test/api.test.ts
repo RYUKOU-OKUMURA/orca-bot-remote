@@ -50,7 +50,7 @@ async function listenApi(t: TestContext, summaryId?: string, bin = orcaBin, requ
     HOST: '100.113.115.59', TOKEN_FILE: join(tokenDir, 'token'),
     ORCA_BIN: bin, SUMMARY_AUTOMATION_ID: summaryId
   });
-  const server = createApi({ ...config, write }, requestTimeoutMs);
+  const server = createApi({ ...config, write, tasksFile: join(tokenDir, 'missing', 'tasks.json') }, requestTimeoutMs);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
@@ -1127,4 +1127,75 @@ test('失敗したチャット一覧をキャッシュしない', async t => {
   rmSync(`${bin}.fail-chats`);
   await get(chats);
   assert.equal(calls().filter(call => call === 'bot chats --bot=メインBot --json').length, 2);
+});
+
+test('新規チャットの model と effort は検証してから start に渡す', async t => {
+  const choices: unknown[] = [];
+  const write: OrcaWrite = {
+    ...createOrcaWrite(join(tokenDir, 'missing-device')),
+    async start(_id, _text, _signal, _uploads, choice) {
+      choices.push(choice);
+      return openChat;
+    }
+  };
+  const post = await writeApi(t, write);
+  for (const extra of [{ model: '' }, { model: '  ' }, { model: 1 }, { effort: 'a\nb' }, { model: 'x'.repeat(513) }]) {
+    const response = await post(chats, JSON.stringify({ text: '進める', ...extra }));
+    assert.equal(response.status, 400, JSON.stringify(extra));
+    assert.equal((await response.json()).error, 'bad_request');
+  }
+  for (const extra of [{}, { model: null, effort: null }, { model: 'claude-fable-5-2', effort: 'max' }, { effort: 'low' }]) {
+    assert.equal((await post(chats, JSON.stringify({ text: '進める', ...extra }))).status, 201);
+  }
+  assert.deepEqual(choices, [
+    { model: undefined, effort: undefined }, { model: undefined, effort: undefined },
+    { model: 'claude-fable-5-2', effort: 'max' }, { model: undefined, effort: 'low' }
+  ]);
+});
+
+test('Bot のモデル選択肢は Home チャットから取り、取得できなければ空で返す', async t => {
+  const asked: string[] = [];
+  let failure: OrcaWriteError['code'] | undefined;
+  const write: OrcaWrite = {
+    ...createOrcaWrite(join(tokenDir, 'missing-device')),
+    async options(chatId) {
+      asked.push(chatId);
+      if (failure) throw new OrcaWriteError(failure);
+      return { current: { model: '' }, models: [
+        { id: '', label: 'placeholder', efforts: [] },
+        { id: 'm1', label: 'Model 1', isDefault: true, efforts: [{ value: 'high', label: 'High' }, { value: '', label: '' }] },
+        { id: 'm2', label: '', efforts: [] }
+      ] };
+    }
+  };
+  const server = await listenApi(t, undefined, orcaBin, undefined, write);
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const get = async (path: string, status = 200) => {
+    const response = await fetch(base + path, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(response.status, status, path);
+    return response.json();
+  };
+  const empty = { models: [], defaultModel: null, defaultEffort: null };
+  failure = 'write_unavailable';
+  assert.equal((await get(`/api/bots/${bot}/options`, 503)).error, 'write_unavailable');
+  failure = 'not_found';
+  assert.deepEqual(await get(`/api/bots/${bot}/options`), empty);
+  failure = 'orca_failed';
+  assert.deepEqual(await get(`/api/bots/${bot}/options`), empty);
+  failure = undefined;
+  const expected = {
+    models: [
+      { id: 'm1', label: 'Model 1', isDefault: true, efforts: [{ value: 'high', label: 'High' }] },
+      { id: 'm2', label: 'm2', isDefault: false, efforts: [] }
+    ],
+    defaultModel: 'm1', defaultEffort: null
+  };
+  assert.deepEqual(await get(`/api/bots/${bot}/options`), expected);
+  assert.deepEqual(await get(`/api/bots/${bot}/options`), expected); // Cached.
+  assert.deepEqual(asked, ['new', 'new', 'new', 'new']);
+  assert.deepEqual(await get(`/api/bots/${other}/options`), empty); // No open chats.
+  assert.equal((await get('/api/bots/unknown/options', 404)).error, 'not_found');
+  const wrong = await fetch(base + `/api/bots/${bot}/options`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(wrong.status, 405);
+  assert.equal(wrong.headers.get('allow'), 'GET');
 });

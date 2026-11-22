@@ -15,7 +15,7 @@ const apk = Buffer.from([0, 1, 2, 255]);
 async function fixture(t: TestContext, timeout?: number) {
   const dir = await mkdtemp(join(tmpdir(), 'orca-app-release-'));
   t.after(() => rm(dir, { recursive: true }));
-  const server = createApi({ orcaBin: '/nonexistent', digest: tokenDigest('test-token'), appDir: dir }, timeout);
+  const server = createApi({ orcaBin: '/nonexistent', digest: tokenDigest('test-token'), appDir: dir, tasksFile: join(dir, 'tasks.json') }, timeout);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {

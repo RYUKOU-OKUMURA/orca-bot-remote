@@ -4,7 +4,8 @@ import { tokenDigest } from './config.ts';
 import { clearReadCache, createOrca, OrcaError } from './orca.ts';
 import { createOrcaWrite, OrcaWriteError, type OrcaWrite } from './orca-write.ts';
 import { BadInput, inlineJsonLimit, inlineUploads, jsonLimit, messageExtras, uuid, withRawUpload } from './attachments.ts';
-import { parseCommand } from './commands.ts';
+import { modelOptions, parseCommand } from './commands.ts';
+import { createTasks, TasksError } from './tasks.ts';
 import { createAppRelease } from './app-release.ts';
 import { createEvents } from './events.ts';
 
@@ -15,6 +16,19 @@ const ITEMS = /^\/api\/items$/;
 const ITEM = /^\/api\/items\/([^/]+)\/([^/]+)$/;
 const ANSWER = /^\/api\/items\/([^/]+)\/([^/]+)\/answer$/;
 const SUMMARY = /^\/api\/summary$/;
+const BOT_OPTIONS = /^\/api\/bots\/([^/]+)\/options$/;
+const TASK = /^\/api\/tasks\/([^/]+)$/;
+const optionsTtlMs = 30_000;
+const noOptions = { models: [], defaultModel: null, defaultEffort: null };
+const tasksFailed = { error: 'tasks_failed', message: 'タスクリストを読み書きできませんでした。' };
+
+function modelChoice(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || !value.trim() || value.length > 512 || /\p{Cc}/u.test(value)) {
+    throw new BadInput('model と effort は制御文字を含まない 1〜512 文字で指定してください。');
+  }
+  return value;
+}
 
 const notFound = { error: 'not_found', message: '対象が見つかりません。' };
 const timedOut = { error: 'orca_failed', message: 'Orca の読み取りが制限時間内に終わりませんでした。' };
@@ -111,12 +125,14 @@ function readJson(request: IncomingMessage, signal: AbortSignal, maxBodyBytes: n
 }
 
 export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(), shutdownSignal, appDir,
-  pollIntervalMs, keepaliveIntervalMs }: {
+  pollIntervalMs, keepaliveIntervalMs, tasksFile }: {
   orcaBin: string; digest: Buffer; summaryId?: string; write?: OrcaWrite; shutdownSignal?: AbortSignal; appDir?: string;
-  pollIntervalMs?: number; keepaliveIntervalMs?: number;
+  pollIntervalMs?: number; keepaliveIntervalMs?: number; tasksFile?: string;
 }, requestTimeoutMs = 55_000) {
   const appRelease = createAppRelease(appDir);
-  const events = createEvents(orcaBin, summaryId, requestTimeoutMs, pollIntervalMs, keepaliveIntervalMs);
+  const tasks = createTasks(tasksFile);
+  const events = createEvents(orcaBin, summaryId, requestTimeoutMs, tasks.list, pollIntervalMs, keepaliveIntervalMs);
+  const optionsCache = new Map<string, { value: ReturnType<typeof modelOptions>; expires: number }>();
   const pendingAnswers = new Map<string, Promise<'unknown_result' | undefined>>();
   const server = createServer({ keepAliveTimeout: 65_000, headersTimeout: 66_000 }, async (request, response) => {
     const started = performance.now();
@@ -163,8 +179,13 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     const summary = SUMMARY.test(path);
     const board = path === '/api/board';
     const health = path === '/api/health';
+    const botOptions = BOT_OPTIONS.exec(path);
+    const taskList = path === '/api/tasks';
+    const task = TASK.exec(path);
     if (health) logPath = '/api/health';
-    else if (app || apk || streaming || board) logPath = path;
+    else if (app || apk || streaming || board || taskList) logPath = path;
+    else if (task) logPath = '/api/tasks/:id';
+    else if (botOptions) logPath = '/api/bots/:bot/options';
     else if (bots) logPath = '/api/bots';
     else if (chats) logPath = '/api/bots/:bot/chats';
     else if (action) logPath = '/api/bots/:bot/chats/:chat/' + route;
@@ -176,7 +197,8 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       logPath = 'unknown';
       return send(404, notFound);
     }
-    const allowed = answer || command || upload ? 'POST' : chats || messages ? 'GET, POST' : 'GET';
+    const allowed = answer || command || upload ? 'POST' : chats || messages || taskList ? 'GET, POST'
+      : task ? 'PATCH, DELETE' : 'GET';
     if (!allowed.split(', ').includes(request.method ?? '')) {
       response.setHeader('Allow', allowed);
       return send(405, { error: 'bad_request', message: `${allowed} のみ使用できます。` });
@@ -209,9 +231,44 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
     response.once('close', () => {
       if (!response.writableEnded) stop();
     });
+    if (taskList || task) {
+      try {
+        const id = task ? decode(task[1]) : '';
+        if (task && !id) return send(404, notFound);
+        if (request.method === 'GET') return send(200, { tasks: await tasks.list() });
+        if (request.method === 'DELETE') {
+          if (!await tasks.remove(id)) return send(404, notFound);
+          void events.tasksChanged();
+          return send(200, { ok: true, id });
+        }
+        const json = await readJson(request, signal, jsonLimit);
+        if (!json) throw new BadInput('本文は最大 64 KiB の JSON オブジェクトで指定してください。');
+        const result = task ? await tasks.update(id, json.body) : await tasks.create(json.body);
+        if (!result) return send(404, notFound);
+        void events.tasksChanged();
+        return send(task ? 200 : 201, { task: result });
+      } catch (error) {
+        if (!request.readableEnded) response.setHeader('Connection', 'close');
+        if (error instanceof BadInput) return send(400, { error: 'bad_request', message: error.message || '本文の形式、値、またはサイズが無効です。' });
+        if (error instanceof TasksError) console.error(`tasks.json の${error.message === 'write' ? '書き込み' : '読み取り'}に失敗しました。`);
+        return send(500, tasksFailed);
+      } finally {
+        stop();
+      }
+    }
+
     const orca = createOrca(orcaBin, summaryId, signal, deadline);
     try {
-      if (board) return send(200, await orca.board());
+      if (board) {
+        const [result, memoTasks] = await Promise.all([
+          orca.board(),
+          tasks.list().then(list => list.filter(task => !task.done).slice(0, 30), () => {
+            console.error('tasks.json の読み取りに失敗しました。');
+            return null;
+          })
+        ]);
+        return send(200, { ...result, memoTasks });
+      }
       if (bots) return send(200, { bots: await orca.bots() });
       if (items) return send(200, { items: await orca.items() });
       if (summary) return send(200, { summary: await orca.summary() });
@@ -240,9 +297,26 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       if (answer && text !== null && text.length > maxAnswerLength) {
         return send(400, { error: 'bad_request', message: '判断待ちへの回答は前後の空白を含め、8000 UTF-16 コード単位以内で指定してください。' });
       }
-      const name = decode((chats ?? action ?? itemRoute)![1]);
+      const choice = posting && chats ? { model: modelChoice(body.model), effort: modelChoice(body.effort) } : undefined;
+      const name = decode((chats ?? action ?? itemRoute ?? botOptions)![1]);
       const bot = name && (await orca.listBots(!posting)).find(bot => bot.name === name);
       if (!bot) return send(404, notFound);
+      if (botOptions) {
+        const cached = optionsCache.get(bot.id);
+        if (cached && cached.expires > performance.now()) return send(200, cached.value);
+        const target = await orca.optionsChat(bot);
+        let value: ReturnType<typeof modelOptions> = noOptions;
+        try {
+          if (target) value = modelOptions(await write.options(target.id, signal));
+        } catch (error) {
+          if (error instanceof OrcaWriteError && error.code === 'write_unavailable') {
+            return send(503, { error: error.code, message: writeErrors[error.code] });
+          }
+          // Not offered (not_found, unsupported agent, Orca error): the app falls back to the default model.
+        }
+        if (value.models.length) optionsCache.set(bot.id, { value, expires: performance.now() + optionsTtlMs });
+        return send(200, value);
+      }
       if (action && (posting || menu)) {
         const chat = await orca.findChat(bot, chatId, !posting);
         if (!chat) return send(404, notFound);
@@ -262,7 +336,7 @@ export function createApi({ orcaBin, digest, summaryId, write = createOrcaWrite(
       }
       if (text !== null) {
         signal.throwIfAborted();
-        if (chats) return send(201, { chatId: await write.start(bot.id, text, signal, uploads) });
+        if (chats) return send(201, { chatId: await write.start(bot.id, text, signal, uploads, choice) });
         const uid = await orca.findItemUid(bot, number);
         if (!uid) return send(404, notFound);
         const previous = pendingAnswers.get(uid);

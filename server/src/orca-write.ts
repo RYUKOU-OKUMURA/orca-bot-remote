@@ -14,8 +14,10 @@ import {
 export const DEVICE_FILE = join(homedir(), '.config/orca-bot-remote/orca-device.json');
 
 export type Device = { endpoint: string; publicKeyB64: string; deviceToken: string };
+export type ModelChoice = { model?: string; effort?: string };
 export type OrcaWrite = {
-  start: (botId: string, text: string, signal: AbortSignal, uploads?: Upload[]) => Promise<string>;
+  start: (botId: string, text: string, signal: AbortSignal, uploads?: Upload[], choice?: ModelChoice) => Promise<string>;
+  options: (chatId: string, signal: AbortSignal) => Promise<SessionOptions>;
   send: (chatId: string, text: string, signal: AbortSignal, extras?: MessageExtras) => Promise<void>;
   commands: (chatId: string, signal: AbortSignal) => Promise<ReturnType<typeof commandMenu>>;
   command: (chatId: string, command: Command, signal: AbortSignal) => Promise<void>;
@@ -239,6 +241,30 @@ async function sendMessage(call: Call, sessionId: string, text: string, extras?:
   unsuccessful(result);
 }
 
+async function setOption(call: Call, sessionId: string, key: 'model' | 'effort', value: string) {
+  const fields = { key, value };
+  const envelope = mutationEnvelope('agentSession.setOption', sessionId, await runtimeFence(call, sessionId), fields);
+  const result = await call<MutationOutcome & { value?: { key?: string; value?: string } }>(
+    'agentSession.setOption', { envelope, ...fields }, true
+  );
+  if (result?.ok !== true || !result.value) unsuccessful(result);
+  if (result.value.key !== key || result.value.value !== value) throw new OrcaWriteError('unknown_result');
+}
+
+// bots.session.start takes only botId (and agent), so a picked model and effort are set before the first message.
+async function applyChoice(call: Call, sessionId: string, { model, effort }: ModelChoice) {
+  if (model === undefined && effort === undefined) return;
+  const offered = await call<SessionOptions>('agentSession.options', { sessionId });
+  const models = Array.isArray(offered?.models) ? offered.models : [];
+  const target = model !== undefined ? models.find(m => m.id === model)
+    : models.find(m => m.id === offered.current?.model) ?? models.find(m => m.isDefault);
+  if (!target || (effort !== undefined && !target.efforts?.some(choice => choice.value === effort))) {
+    throw new BadInput('モデルまたは推論の強さを選択肢から選び直してください。');
+  }
+  if (model !== undefined) await setOption(call, sessionId, 'model', model);
+  if (effort !== undefined) await setOption(call, sessionId, 'effort', effort);
+}
+
 async function uploadFile(device: Device, call: Call, sessionId: string, upload: Upload): Promise<Uploaded> {
   const { name, byteLength, mimeType, chunks } = upload;
   const start = await call<{ uploadId: string }>('agentSessionAttachment.uploadStart', { sessionId, name, byteLength }, true);
@@ -283,17 +309,19 @@ export function createOrcaWrite(file = DEVICE_FILE): OrcaWrite {
     });
   }
   return {
-    async start(botId, text, signal, uploads = []) {
+    async start(botId, text, signal, uploads = [], choice = {}) {
       const device = readDevice(file);
       return withOrcaDevice(device, signal, async call => {
         const result = await call<{ sessionId: string }>('bots.session.start', { botId }, true);
         if (typeof result?.sessionId !== 'string' || !result.sessionId) throw new OrcaWriteError('unknown_result');
         try {
+          await applyChoice(call, result.sessionId, choice);
           const attachments = [];
           for (const upload of uploads) attachments.push(await uploadFile(device, call, result.sessionId, upload));
           await sendMessage(call, result.sessionId, text, { attachments });
         } catch (error) {
-          if (error instanceof OrcaWriteError && (error.code === 'write_unavailable' || error.code === 'not_found')) throw error;
+          if (error instanceof BadInput ||
+              (error instanceof OrcaWriteError && (error.code === 'write_unavailable' || error.code === 'not_found'))) throw error;
           // The chat already exists; retrying the whole HTTP request may create another one.
           throw new OrcaWriteError('unknown_result');
         }
@@ -306,6 +334,9 @@ export function createOrcaWrite(file = DEVICE_FILE): OrcaWrite {
     upload(chatId, upload, signal) {
       return withChat(chatId, signal, (call, id, device) => uploadFile(device, call, id, upload));
     },
+    options(chatId, signal) {
+      return withChat(chatId, signal, (call, sessionId) => call<SessionOptions>('agentSession.options', { sessionId }));
+    },
     commands(chatId, signal) {
       return withChat(chatId, signal, async (call, sessionId) => {
         const report = await call<CommandReport>('agentSession.commands', { sessionId });
@@ -315,17 +346,16 @@ export function createOrcaWrite(file = DEVICE_FILE): OrcaWrite {
     },
     command(chatId, { name, argument }, signal) {
       return withChat(chatId, signal, async (call, sessionId) => {
-        const option = name === 'model' || name === 'effort';
-        const method = option ? 'agentSession.setOption' : 'agentSession.conversationCommand';
-        const fields = option ? { key: name, value: argument } : { command: name, ...(argument ? { instructions: argument } : {}) };
+        if (name === 'model' || name === 'effort') return setOption(call, sessionId, name, argument);
+        const method = 'agentSession.conversationCommand';
+        const fields = { command: name, ...(argument ? { instructions: argument } : {}) };
         const envelope = mutationEnvelope(method, sessionId, await runtimeFence(call, sessionId), fields);
         const result = await call<MutationOutcome & {
-          value?: { key?: string; value?: string; command?: string; state?: string; error?: string; operationId?: string }
+          value?: { command?: string; state?: string; error?: string; operationId?: string }
         }>(method, { envelope, ...fields }, true);
         const receipt = result?.value;
         if (result?.ok !== true || !receipt) unsuccessful(result);
-        if (option && receipt.key === name && receipt.value === argument) return;
-        if (!option && receipt.command === name && receipt.state === 'completed' &&
+        if (receipt.command === name && receipt.state === 'completed' &&
             (receipt.operationId === undefined || receipt.operationId === envelope.clientOperationId)) {
           if (receipt.error !== undefined) throw new OrcaWriteError('orca_failed');
           return;

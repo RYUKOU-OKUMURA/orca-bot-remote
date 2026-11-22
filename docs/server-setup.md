@@ -82,5 +82,6 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/dev.okumura.orca-
 | `ORCA_BIN` | 既定 `/Applications/Orca.app/Contents/Resources/bin/orca`。絶対パス |
 | `APP_DIR` | 既定 `~/Library/Application Support/orca-bot-remote/app`。`install.sh` はこの値を plist に書き込まないため、通常は既定値を使います。上書きはテスト用です |
 | `SUMMARY_AUTOMATION_ID` | まとめの自動化 ID。空の場合は `{"summary":null}` |
+| `ORCA_TASKS_FILE` | 既定 `~/.orca/bots/bot/memory/tasks.json`（メインBotと共有するタスクリスト）。`install.sh` は plist に書き込みません。上書きはテスト用です |
 
 サーバーは指定した Tailscale IP にだけバインドします。接続先は tailnet 内のサーバーを指定してください。

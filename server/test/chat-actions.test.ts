@@ -49,7 +49,8 @@ async function fixture(t: TestContext, handler: Parameters<typeof installFakeHos
   });
   t.after(host.restore);
   const server = createApi({
-    digest: tokenDigest('test'), orcaBin: fileURLToPath(new URL('./fixtures/orca', import.meta.url)), write: createOrcaWrite(file)
+    digest: tokenDigest('test'), orcaBin: fileURLToPath(new URL('./fixtures/orca', import.meta.url)), write: createOrcaWrite(file),
+    tasksFile: join(home, 'tasks.json')
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
