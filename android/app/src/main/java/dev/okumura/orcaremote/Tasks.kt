@@ -1,5 +1,7 @@
 package dev.okumura.orcaremote
 
+import android.content.SharedPreferences
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -15,6 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
@@ -23,9 +28,11 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberDatePickerState
@@ -40,10 +47,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -107,15 +118,43 @@ internal fun dueLabel(due: String?, today: LocalDate): Pair<String, Boolean>? {
     return label to (date <= today)
 }
 
-/** Same order as the server: open tasks by due date then newest, done tasks by completion. */
-internal fun sortTasks(tasks: List<MemoTask>): List<MemoTask> {
-    val (open, done) = tasks.partition { !it.done }
-    val (dated, undated) = open.partition { parseDue(it.due) != null }
-    return dated.sortedBy { it.due } + undated.sortedByDescending { it.createdAt } +
-        done.sortedByDescending { it.doneAt ?: it.updatedAt }
+internal enum class DueUrgency { OVERDUE, TODAY, TOMORROW, UPCOMING }
+
+internal fun dueUrgency(due: String?, today: LocalDate): DueUrgency? {
+    val date = parseDue(due) ?: return null
+    return when {
+        date < today -> DueUrgency.OVERDUE
+        date == today -> DueUrgency.TODAY
+        date == today.plusDays(1) -> DueUrgency.TOMORROW
+        else -> DueUrgency.UPCOMING
+    }
 }
 
-internal fun replaceTask(tasks: List<MemoTask>, task: MemoTask) = sortTasks(tasks.filter { it.id != task.id } + task)
+/** A second tap on the chosen day clears it. */
+internal fun toggleDue(current: String?, target: String): String? = if (current == target) null else target
+
+internal enum class TaskSortOrder(val label: String) { DUE("期限順"), CREATED("新しい順") }
+
+private const val TaskSortOrderKey = "taskSortOrder"
+
+internal fun taskSortOrder(name: String?) = TaskSortOrder.entries.firstOrNull { it.name == name } ?: TaskSortOrder.DUE
+
+internal fun SharedPreferences.taskSortOrder() = taskSortOrder(getString(TaskSortOrderKey, null))
+
+internal fun SharedPreferences.saveTaskSortOrder(order: TaskSortOrder) = edit().putString(TaskSortOrderKey, order.name).apply()
+
+/** [TaskSortOrder.DUE] is the server's order: open tasks by due date then newest, done tasks by completion. */
+internal fun sortTasks(tasks: List<MemoTask>, order: TaskSortOrder = TaskSortOrder.DUE): List<MemoTask> {
+    val (open, done) = tasks.partition { !it.done }
+    val sortedOpen = if (order == TaskSortOrder.CREATED) open.sortedByDescending { it.createdAt } else {
+        val (dated, undated) = open.partition { parseDue(it.due) != null }
+        dated.sortedWith(compareBy<MemoTask> { it.due }.thenByDescending { it.createdAt }) + undated.sortedByDescending { it.createdAt }
+    }
+    return sortedOpen + done.sortedByDescending { it.doneAt ?: it.updatedAt }
+}
+
+internal fun replaceTask(tasks: List<MemoTask>, task: MemoTask, order: TaskSortOrder = TaskSortOrder.DUE) =
+    sortTasks(tasks.filter { it.id != task.id } + task, order)
 
 private fun taskError(error: ApiError) = when (error) {
     ApiError.NOT_FOUND -> "タスクが見つかりません。ほかで削除された可能性があります"
@@ -127,36 +166,112 @@ private fun taskError(error: ApiError) = when (error) {
 internal const val TaskBadRequest = "タイトルは1〜200文字、補足メモは2000文字までです"
 internal const val TaskUnknown = "反映されたか確認できませんでした。タスクリストを更新して確かめてください"
 
+private fun LocalDate.millis() = atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
+/** Picks a day; キャンセル keeps the current due date. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun DueButton(due: String?, enabled: Boolean, change: (String?) -> Unit) {
+internal fun DueDatePickerDialog(initialDue: String?, today: LocalDate, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
+    val state = rememberDatePickerState((parseDue(initialDue) ?: today).millis())
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            OrcaTextButton(enabled = state.selectedDateMillis != null, onClick = {
+                state.selectedDateMillis?.let { onSelect(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString()) }
+                onDismiss()
+            }) { Text("決定") }
+        },
+        dismissButton = { OrcaTextButton(onClick = onDismiss) { Text("キャンセル") } },
+    ) { DatePicker(state) }
+}
+
+/** Pill in the shape of [ValueChip]; a chosen value gets an accent border and text. */
+@Composable
+private fun DuePill(label: String, enabled: Boolean, selected: Boolean, accent: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val tone = if (selected) accent else colors.onSurface
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = CircleShape,
+        color = Color.Transparent,
+        contentColor = if (enabled) tone else tone.copy(alpha = 0.38f),
+        border = when {
+            selected -> BorderStroke(1.5.dp, if (enabled) accent else accent.copy(alpha = 0.38f))
+            else -> BorderStroke(1.dp, if (enabled) colors.outline else colors.outlineVariant)
+        },
+    ) {
+        Text(label, Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelLarge,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** 今日・明日 toggle in one tap, the calendar chip picks any day. Emits its chips into the caller's FlowRow. */
+@Composable
+internal fun DueChips(due: String?, enabled: Boolean, change: (String?) -> Unit) {
     var picking by rememberSaveable { mutableStateOf(false) }
     val today = LocalDate.now()
-    ValueChip(dueLabel(due, today)?.first ?: "期限なし", enabled) { picking = true }
-    if (picking) {
-        val state = rememberDatePickerState(parseDue(due)?.atStartOfDay(ZoneOffset.UTC)?.toInstant()?.toEpochMilli())
-        DatePickerDialog(
-            onDismissRequest = { picking = false },
-            confirmButton = {
-                OrcaTextButton(onClick = {
-                    picking = false
-                    change(state.selectedDateMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString() })
-                }) { Text("決定") }
-            },
-            dismissButton = {
-                OrcaTextButton(onClick = {
-                    picking = false
-                    change(null)
-                }) { Text("期限なし") }
-            },
-        ) { DatePicker(state) }
+    val accent = orcaAccentText
+    val quick = listOf("今日" to today.toString(), "明日" to today.plusDays(1).toString())
+    quick.forEach { (label, day) ->
+        DuePill(label, enabled, selected = due == day, accent, Modifier.semantics { selected = due == day }) { change(toggleDue(due, day)) }
     }
+    val other = due?.takeIf { day -> quick.none { it.second == day } }?.let { dueLabel(it, today) }
+    DuePill((other?.first ?: "日付") + " ▾", enabled, selected = other != null,
+        if (dueUrgency(due, today) == DueUrgency.OVERDUE) MaterialTheme.colorScheme.error else accent) { picking = true }
+    if (due != null) DuePill("×", enabled, selected = false, accent, Modifier.semantics { contentDescription = "締切日をクリア" }) { change(null) }
+    if (picking) DueDatePickerDialog(due, today, onDismiss = { picking = false }) { change(it) }
+}
+
+@Composable
+private fun dueColor(urgency: DueUrgency?): Color = when (urgency) {
+    null -> MaterialTheme.colorScheme.outline
+    DueUrgency.OVERDUE -> MaterialTheme.colorScheme.error
+    DueUrgency.TODAY -> MaterialTheme.colorScheme.tertiary
+    DueUrgency.TOMORROW -> orcaAccentText
+    DueUrgency.UPCOMING -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+@Composable
+private fun DueMenuItem(text: String, current: Boolean, onClick: () -> Unit) = DropdownMenuItem(
+    text = { Text(text, fontWeight = if (current) FontWeight.Bold else null) },
+    trailingIcon = if (current) ({ Text("✓", color = MaterialTheme.colorScheme.primary) }) else null,
+    onClick = onClick,
+)
+
+/** Changes only the due date of a listed task; picking the current value sends nothing. */
+@Composable
+private fun DueQuickMenu(task: MemoTask, today: LocalDate, enabled: Boolean, change: (String?) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    var picking by rememberSaveable(task.id) { mutableStateOf(false) }
+    fun pick(due: String?) {
+        open = false
+        if (due != task.due) change(due)
+    }
+    val days = listOf("今日" to today.toString(), "明日" to today.plusDays(1).toString())
+    Box {
+        val tint = dueColor(dueUrgency(task.due, today))
+        IconButton(onClick = { open = true }, enabled = enabled) {
+            OrcaIcon(R.drawable.ic_calendar, "${task.title}の締切日を変更", tint = if (enabled) tint else tint.copy(alpha = 0.38f))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            days.forEach { (label, day) -> DueMenuItem(label, task.due == day) { pick(day) } }
+            DueMenuItem("カレンダーで選択…", task.due != null && days.none { it.second == task.due }) {
+                open = false
+                picking = true
+            }
+            if (task.due != null) DueMenuItem("期限をクリア", false) { pick(null) }
+        }
+    }
+    if (picking) DueDatePickerDialog(task.due, today, onDismiss = { picking = false }) { pick(it) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, ask: (bot: String, text: String) -> Unit) {
     val context = LocalContext.current.applicationContext
+    val prefs = context.connectionPreferences()
     val model = screenModel("tasks", refreshOnEnter = true) { api.tasks().tasks }
     // Optional: without bots the list still works, only icons and assignment choices are missing.
     val bots = screenModel("task bots") { api.bots().bots }.data.orEmpty()
@@ -176,13 +291,14 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
     var busy by remember { mutableStateOf(emptySet<String>()) }
     var editing by rememberSaveable { mutableStateOf<String?>(null) }
     var showDone by rememberSaveable { mutableStateOf(false) }
+    var sortOrder by remember { mutableStateOf(prefs.taskSortOrder()) }
     val due by adder.savedState.getStateFlow<String?>("due", null).collectAsState()
     val taskBot by adder.savedState.getStateFlow<String?>("bot", null).collectAsState()
     val added = adder.result
     LaunchedEffect(added) {
         if (added != null) {
             adder.resultShown()
-            model.update { replaceTask(it, added) }
+            model.update { replaceTask(it, added, sortOrder) }
         }
     }
     LaunchedEffect(message) {
@@ -198,7 +314,7 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
         model.viewModelScope.launch {
             try {
                 val task = action()
-                model.update { tasks -> if (task == null) tasks.filter { it.id != id } else replaceTask(tasks, task) }
+                model.update { tasks -> if (task == null) tasks.filter { it.id != id } else replaceTask(tasks, task, sortOrder) }
                 SecretaryBoardWidgetProvider.requestRefresh(context)
             } catch (failure: ApiFailure) {
                 message = taskError(failure.error)
@@ -209,6 +325,7 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
         }
     }
     val toggle = { task: MemoTask -> change(task.id) { api.setTaskDone(task.id, !task.done) } }
+    val setDue = { task: MemoTask, due: String? -> change(task.id) { api.setTaskDue(task.id, due) } }
 
     Page("タスクリスト", back, action = { RefreshAction(model) }, snackbar = snackbar) { modifier ->
         Column(modifier.imePadding()) {
@@ -219,8 +336,9 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
                     DraftField(adder, "タスクを追加（2行目以降は補足）", Modifier.weight(1f))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        DueButton(due, enabled) { adder.savedState["due"] = it }
+                    FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        itemVerticalAlignment = Alignment.CenterVertically) {
+                        DueChips(due, enabled) { adder.savedState["due"] = it }
                         TaskBotButton(taskBot, bots, enabled) { adder.savedState["bot"] = it }
                     }
                     SendButton(adder, label = "追加")
@@ -231,12 +349,20 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { tasks ->
                 val today = LocalDate.now()
-                val (open, done) = tasks.partition { !it.done }
+                val (open, done) = sortTasks(tasks, sortOrder).partition { !it.done }
                 PullToRefreshBox(isRefreshing = model.loading, onRefresh = { model.refresh() }, modifier = Modifier.fillMaxSize()) {
                     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
                         if (open.isEmpty()) item { Text("未完了のタスクはありません", Modifier.padding(OrcaInset)) }
+                        if (open.size >= 2) item(key = "sort") {
+                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                                ChoiceMenu(sortOrder.label, TaskSortOrder.entries.map { it.name to it.label }, sortOrder.name, enabled = true) {
+                                    sortOrder = taskSortOrder(it)
+                                    prefs.saveTaskSortOrder(sortOrder)
+                                }
+                            }
+                        }
                         items(open, key = { it.id }) { task ->
-                            TaskItem(task, bots, today, task.id in busy, { toggle(task) }) { editing = task.id }
+                            TaskItem(task, bots, today, task.id in busy, { toggle(task) }, { setDue(task, it) }) { editing = task.id }
                         }
                         if (done.isNotEmpty()) item(key = "done header") {
                             Text(
@@ -247,7 +373,7 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
                             )
                         }
                         if (showDone) items(done, key = { it.id }) { task ->
-                            TaskItem(task, bots, today, task.id in busy, { toggle(task) }) { editing = task.id }
+                            TaskItem(task, bots, today, task.id in busy, { toggle(task) }, {}) { editing = task.id }
                         }
                     }
                 }
@@ -263,7 +389,9 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
 }
 
 @Composable
-private fun TaskItem(task: MemoTask, bots: List<Bot>, today: LocalDate, busy: Boolean, toggle: () -> Unit, edit: () -> Unit) {
+private fun TaskItem(
+    task: MemoTask, bots: List<Bot>, today: LocalDate, busy: Boolean, toggle: () -> Unit, setDue: (String?) -> Unit, edit: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = edit).padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -292,12 +420,15 @@ private fun TaskItem(task: MemoTask, bots: List<Bot>, today: LocalDate, busy: Bo
                     Text(name + if (due != null) " · " else "", style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                due?.let { (label, urgent) ->
+                due?.let { (label, _) ->
+                    val urgency = dueUrgency(task.due, today).takeUnless { task.done }
                     Text(label, style = MaterialTheme.typography.labelMedium,
-                        color = if (urgent && !task.done) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                        color = if (urgency == null) MaterialTheme.colorScheme.onSurfaceVariant else dueColor(urgency),
+                        fontWeight = if (urgency == DueUrgency.OVERDUE || urgency == DueUrgency.TODAY) FontWeight.SemiBold else null)
                 }
             }
         }
+        if (!task.done) DueQuickMenu(task, today, enabled = !busy, setDue)
     }
 }
 
@@ -315,11 +446,11 @@ private fun TaskEditDialog(
         onDismissRequest = close,
         title = { Text("タスクを編集") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(title, { title = it }, label = { Text("タイトル") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(note, { note = it }, label = { Text("補足メモ") }, minLines = 2, maxLines = 5, modifier = Modifier.fillMaxWidth())
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DueButton(due, enabled = true) { due = it }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+                    DueChips(due, enabled = true) { due = it }
                     TaskBotButton(bot, bots, enabled = true) { bot = it }
                 }
                 taskAskTarget(bot, bots)?.let { target ->

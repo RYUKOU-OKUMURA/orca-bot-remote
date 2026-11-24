@@ -71,4 +71,39 @@ class TasksTest {
         assertEquals(listOf("done2", "soon", "late", "new", "old", "done1"), reopened.map { it.id })
         assertEquals(6, reopened.size)
     }
+
+    @Test fun dueUrgencyAndOneTapToggle() {
+        val today = LocalDate.of(2026, 12, 31)
+        assertEquals(DueUrgency.OVERDUE, dueUrgency("2026-12-30", today))
+        assertEquals(DueUrgency.TODAY, dueUrgency("2026-12-31", today))
+        assertEquals(DueUrgency.TOMORROW, dueUrgency("2027-01-01", today))
+        assertEquals(DueUrgency.UPCOMING, dueUrgency("2027-01-02", today))
+        assertNull(dueUrgency(null, today))
+        assertNull(dueUrgency("2026-02-30", today))
+        assertEquals("2026-12-31", toggleDue(null, "2026-12-31"))
+        assertNull(toggleDue("2026-12-31", "2026-12-31"))
+        assertEquals("2027-01-01", toggleDue("2026-12-31", "2027-01-01"))
+    }
+
+    @Test fun sortOrdersBreakTiesLikeTheServerAndFallBackToDue() {
+        val tasks = listOf(
+            MemoTask("sameOld", "同日・古い", due = "2026-12-01", createdAt = 1),
+            MemoTask("undated", "期限なし", createdAt = 5),
+            MemoTask("sameNew", "同日・新しい", due = "2026-12-01", createdAt = 3),
+            MemoTask("bad", "不正な期限", due = "2026-02-30", createdAt = 4),
+            MemoTask("done", "完了", done = true, updatedAt = 9, doneAt = 2),
+            MemoTask("soon", "近い", due = "2026-11-26", createdAt = 2),
+        )
+        assertEquals(listOf("soon", "sameNew", "sameOld", "undated", "bad", "done"), sortTasks(tasks).map { it.id })
+        assertEquals(sortTasks(tasks), sortTasks(tasks, TaskSortOrder.DUE))
+        assertEquals(listOf("undated", "bad", "sameNew", "soon", "sameOld", "done"), sortTasks(tasks, TaskSortOrder.CREATED).map { it.id })
+        val moved = MemoTask("sameOld", "同日・古い", due = "2026-11-20", createdAt = 1)
+        assertEquals("sameOld", replaceTask(tasks, moved).first().id)
+        assertEquals(listOf("undated", "bad", "sameNew", "soon", "sameOld", "done"),
+            replaceTask(tasks, moved, TaskSortOrder.CREATED).map { it.id })
+        assertEquals(TaskSortOrder.DUE, taskSortOrder(null))
+        assertEquals(TaskSortOrder.DUE, taskSortOrder("bogus"))
+        assertEquals(TaskSortOrder.CREATED, taskSortOrder(TaskSortOrder.CREATED.name))
+        assertEquals(listOf("期限順", "新しい順"), TaskSortOrder.entries.map { it.label })
+    }
 }

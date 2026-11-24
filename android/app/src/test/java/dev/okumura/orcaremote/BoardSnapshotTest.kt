@@ -37,10 +37,21 @@ class BoardSnapshotTest {
         assertEquals(listOf(
             TaskRow("t1", "期限切れ", "期限切れ 11/20 · 補足の1行目", true),
             TaskRow("t2", "あした", "明日まで", false),
-            TaskRow("t3", "期限なし", "", false),
             TaskRow("t5", "担当つき", "B · 11/25まで", false, "B", "mascot:T1"),
+            TaskRow("t3", "期限なし", "", false),
             TaskRow("t6", "消えたBot", "Z", false, "Z", null),
         ), board.taskRows(today))
+    }
+
+    @Test fun widgetRowsFollowDueOrderEvenWhenTheCacheIsUnsorted() {
+        val board = BoardSnapshot(memoTasks = listOf(
+            MemoTask("none", "期限なし", createdAt = 9),
+            MemoTask("done", "完了", due = "2026-11-01", done = true),
+            MemoTask("late", "遅い", due = "2026-12-01", createdAt = 8),
+            MemoTask("oldSame", "同日・古い", due = "2026-11-25", createdAt = 1),
+            MemoTask("newSame", "同日・新しい", due = "2026-11-25", createdAt = 2),
+        ))
+        assertEquals(listOf("newSame", "oldSame", "late", "none"), board.taskRows(LocalDate.of(2026, 11, 22)).map { it.id })
     }
 
     @Test fun widgetLinksRoundTripTaskIds() {

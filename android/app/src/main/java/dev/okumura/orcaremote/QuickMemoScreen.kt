@@ -120,19 +120,17 @@ internal fun QuickMemoScreen(
                     if (name != null && name != bot && chat.changeDestination(chat.limits)) destination["bot"] = name
                 }
             }
-            when (mode) {
-                // Bots that fail to load leave only 担当なし, which still adds the task.
-                MemoMode.Task -> TaskBotButton(taskBot, list, enabled) { destination["taskBot"] = it }
-                MemoMode.Inbox -> Unit
-                MemoMode.New -> if (bot != null) ModelPicker(api, bot, destination, canSelect)
-                MemoMode.Home -> Unit
-            }
+            if (mode == MemoMode.New && bot != null) ModelPicker(api, bot, destination, canSelect)
             DraftField(sender, if (task) "タイトル（2行目以降は補足）" else "メモ", Modifier.fillMaxWidth(), minLines = 4)
+            if (task) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+                DueChips(due, enabled) { destination["due"] = it }
+                // Bots that fail to load leave only 担当なし, which still adds the task.
+                TaskBotButton(taskBot, list, enabled) { destination["taskBot"] = it }
+            }
             AttachmentPreview(chat, enabled)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (!task) AttachmentPicker(chat, enabled)
                 VoiceInput(sender, enabled, autoStart = route.voice)
-                if (task) DueButton(due, enabled) { destination["due"] = it }
                 Spacer(Modifier.width(8.dp))
                 SendButton(sender, Modifier.weight(1f), label = if (task) "追加" else "送信",
                     enabled = task || (bot != null && list.any { it.name == bot }))

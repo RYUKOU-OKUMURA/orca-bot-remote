@@ -432,6 +432,8 @@ class WriteApiTest {
             assertTrue(api.setTaskDone("t 1", true).done)
             api.editTask("t 1", TaskEdit("牛乳", null, null, null))
             api.editTask("t 1", TaskEdit("牛乳", null, null, "整体院発信"))
+            api.setTaskDue("t 1", "2026-12-05")
+            api.setTaskDue("t 1", null)
             assertEquals("牛乳", api.createTask(NewTask("牛乳", bot = "B")).title)
             api.deleteTask("t 1")
             assertEquals(ApiError.TASKS, failureFrom { api.setTaskDone("broken", false) })
@@ -448,6 +450,8 @@ class WriteApiTest {
             """PATCH /api/tasks/t%201 {"done":true}""",
             """PATCH /api/tasks/t%201 {"title":"牛乳","note":null,"due":null,"bot":null}""",
             """PATCH /api/tasks/t%201 {"title":"牛乳","note":null,"due":null,"bot":"整体院発信"}""",
+            """PATCH /api/tasks/t%201 {"due":"2026-12-05"}""",
+            """PATCH /api/tasks/t%201 {"due":null}""",
             """POST /api/tasks {"title":"牛乳","bot":"B"}""",
             "DELETE /api/tasks/t%201",
             """PATCH /api/tasks/broken {"done":false}""",
