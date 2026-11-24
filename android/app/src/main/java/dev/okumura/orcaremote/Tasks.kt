@@ -58,12 +58,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.time.ZonedDateTime
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 internal const val MaxTaskTitle = 200
@@ -133,6 +138,50 @@ internal fun dueUrgency(due: String?, today: LocalDate): DueUrgency? {
 /** A second tap on the chosen day clears it. */
 internal fun toggleDue(current: String?, target: String): String? = if (current == target) null else target
 
+/** 今日 (0) or 明日 (1) counted from [today], which the caller reads at tap time. */
+internal fun quickDue(current: String?, days: Long, today: LocalDate): String? = toggleDue(current, today.plusDays(days).toString())
+
+internal fun millisUntilNextDay(now: ZonedDateTime): Long =
+    Duration.between(now, now.toLocalDate().plusDays(1).atStartOfDay(now.zone)).toMillis()
+
+/** Today's date that moves on at local midnight and when the screen comes back. */
+@Composable
+internal fun rememberToday(): LocalDate {
+    var today by remember { mutableStateOf(LocalDate.now()) }
+    LifecycleResumeEffect(Unit) {
+        today = LocalDate.now()
+        onPauseOrDispose {}
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(millisUntilNextDay(ZonedDateTime.now()))
+            today = LocalDate.now()
+        }
+    }
+    return today
+}
+
+/** Changes in flight by task id; kept across rotation so a running change still blocks the same task. */
+internal class TaskMutations : ViewModel() {
+    var busy by mutableStateOf(emptySet<String>())
+        private set
+    var message by mutableStateOf<String?>(null)
+
+    /** Starts [action] unless [id] already has a change in flight; false means nothing was started. */
+    fun run(id: String, action: suspend () -> Unit): Boolean {
+        if (id in busy) return false
+        busy = busy + id
+        viewModelScope.launch {
+            try {
+                action()
+            } finally {
+                busy = busy - id
+            }
+        }
+        return true
+    }
+}
+
 internal enum class TaskSortOrder(val label: String) { DUE("期限順"), CREATED("新しい順") }
 
 private const val TaskSortOrderKey = "taskSortOrder"
@@ -172,7 +221,8 @@ private fun LocalDate.millis() = atStartOfDay(ZoneOffset.UTC).toInstant().toEpoc
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DueDatePickerDialog(initialDue: String?, today: LocalDate, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
-    val state = rememberDatePickerState((parseDue(initialDue) ?: today).millis())
+    val initial = parseDue(initialDue) ?: today
+    val state = rememberDatePickerState(initial.millis(), yearRange = minOf(1900, initial.year)..maxOf(2100, initial.year))
     DatePickerDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
@@ -209,18 +259,20 @@ private fun DuePill(label: String, enabled: Boolean, selected: Boolean, accent: 
 
 /** 今日・明日 toggle in one tap, the calendar chip picks any day. Emits its chips into the caller's FlowRow. */
 @Composable
-internal fun DueChips(due: String?, enabled: Boolean, change: (String?) -> Unit) {
+internal fun DueChips(due: String?, today: LocalDate, enabled: Boolean, change: (String?) -> Unit) {
     var picking by rememberSaveable { mutableStateOf(false) }
-    val today = LocalDate.now()
     val accent = orcaAccentText
-    val quick = listOf("今日" to today.toString(), "明日" to today.plusDays(1).toString())
-    quick.forEach { (label, day) ->
-        DuePill(label, enabled, selected = due == day, accent, Modifier.semantics { selected = due == day }) { change(toggleDue(due, day)) }
+    val quick = listOf("今日" to 0L, "明日" to 1L)
+    quick.forEach { (label, days) ->
+        val chosen = due == today.plusDays(days).toString()
+        DuePill(label, enabled, selected = chosen, accent, Modifier.semantics { selected = chosen }) {
+            change(quickDue(due, days, LocalDate.now()))
+        }
     }
-    val other = due?.takeIf { day -> quick.none { it.second == day } }?.let { dueLabel(it, today) }
+    val other = due?.takeIf { day -> quick.none { today.plusDays(it.second).toString() == day } }?.let { dueLabel(it, today) }
     DuePill((other?.first ?: "日付") + " ▾", enabled, selected = other != null,
         if (dueUrgency(due, today) == DueUrgency.OVERDUE) MaterialTheme.colorScheme.error else accent) { picking = true }
-    if (due != null) DuePill("×", enabled, selected = false, accent, Modifier.semantics { contentDescription = "締切日をクリア" }) { change(null) }
+    if (due != null) DuePill("×", enabled, selected = false, accent, Modifier.semantics { contentDescription = "期限をクリア" }) { change(null) }
     if (picking) DueDatePickerDialog(due, today, onDismiss = { picking = false }) { change(it) }
 }
 
@@ -249,15 +301,17 @@ private fun DueQuickMenu(task: MemoTask, today: LocalDate, enabled: Boolean, cha
         open = false
         if (due != task.due) change(due)
     }
-    val days = listOf("今日" to today.toString(), "明日" to today.plusDays(1).toString())
+    val days = listOf("今日" to 0L, "明日" to 1L)
     Box {
         val tint = dueColor(dueUrgency(task.due, today))
         IconButton(onClick = { open = true }, enabled = enabled) {
-            OrcaIcon(R.drawable.ic_calendar, "${task.title}の締切日を変更", tint = if (enabled) tint else tint.copy(alpha = 0.38f))
+            OrcaIcon(R.drawable.ic_calendar, "${task.title}の期限を変更", tint = if (enabled) tint else tint.copy(alpha = 0.38f))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            days.forEach { (label, day) -> DueMenuItem(label, task.due == day) { pick(day) } }
-            DueMenuItem("カレンダーで選択…", task.due != null && days.none { it.second == task.due }) {
+            days.forEach { (label, offset) ->
+                DueMenuItem(label, task.due == today.plusDays(offset).toString()) { pick(LocalDate.now().plusDays(offset).toString()) }
+            }
+            DueMenuItem("カレンダーで選択…", task.due != null && days.none { today.plusDays(it.second).toString() == task.due }) {
                 open = false
                 picking = true
             }
@@ -286,9 +340,10 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
             }
         }
     }
+    val mutations: TaskMutations = viewModel(key = "task mutations")
+    val busy = mutations.busy
+    val today = rememberToday()
     val snackbar = remember { SnackbarHostState() }
-    var message by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(emptySet<String>()) }
     var editing by rememberSaveable { mutableStateOf<String?>(null) }
     var showDone by rememberSaveable { mutableStateOf(false) }
     var sortOrder by remember { mutableStateOf(prefs.taskSortOrder()) }
@@ -301,27 +356,21 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
             model.update { replaceTask(it, added, sortOrder) }
         }
     }
-    LaunchedEffect(message) {
-        message?.let {
+    LaunchedEffect(mutations.message) {
+        mutations.message?.let {
             snackbar.showSnackbar(it)
-            message = null
+            mutations.message = null
         }
     }
-    // A null result means the task was deleted.
-    fun change(id: String, action: suspend () -> MemoTask?) {
-        if (id in busy) return
-        busy = busy + id
-        model.viewModelScope.launch {
-            try {
-                val task = action()
-                model.update { tasks -> if (task == null) tasks.filter { it.id != id } else replaceTask(tasks, task, sortOrder) }
-                SecretaryBoardWidgetProvider.requestRefresh(context)
-            } catch (failure: ApiFailure) {
-                message = taskError(failure.error)
-                if (failure.error == ApiError.NOT_FOUND || failure.error == ApiError.UNKNOWN_RESULT) model.refresh(afterCurrent = true)
-            } finally {
-                busy = busy - id
-            }
+    // A null result means the task was deleted. False when the task already has a change in flight.
+    fun change(id: String, action: suspend () -> MemoTask?) = mutations.run(id) {
+        try {
+            val task = action()
+            model.update { tasks -> if (task == null) tasks.filter { it.id != id } else replaceTask(tasks, task, sortOrder) }
+            SecretaryBoardWidgetProvider.requestRefresh(context)
+        } catch (failure: ApiFailure) {
+            mutations.message = taskError(failure.error)
+            if (failure.error == ApiError.NOT_FOUND || failure.error == ApiError.UNKNOWN_RESULT) model.refresh(afterCurrent = true)
         }
     }
     val toggle = { task: MemoTask -> change(task.id) { api.setTaskDone(task.id, !task.done) } }
@@ -338,7 +387,7 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp),
                         itemVerticalAlignment = Alignment.CenterVertically) {
-                        DueChips(due, enabled) { adder.savedState["due"] = it }
+                        DueChips(due, today, enabled) { adder.savedState["due"] = it }
                         TaskBotButton(taskBot, bots, enabled) { adder.savedState["bot"] = it }
                     }
                     SendButton(adder, label = "追加")
@@ -348,12 +397,11 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             DataContent(Modifier.weight(1f).fillMaxWidth(), model, settings, keepDataOnError = true) { tasks ->
-                val today = LocalDate.now()
                 val (open, done) = sortTasks(tasks, sortOrder).partition { !it.done }
                 PullToRefreshBox(isRefreshing = model.loading, onRefresh = { model.refresh() }, modifier = Modifier.fillMaxSize()) {
                     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
-                        if (open.isEmpty()) item { Text("未完了のタスクはありません", Modifier.padding(OrcaInset)) }
-                        if (open.size >= 2) item(key = "sort") {
+                        if (open.isEmpty()) item(key = "header:empty") { Text("未完了のタスクはありません", Modifier.padding(OrcaInset)) }
+                        if (open.size >= 2) item(key = "header:sort") {
                             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                                 ChoiceMenu(sortOrder.label, TaskSortOrder.entries.map { it.name to it.label }, sortOrder.name, enabled = true) {
                                     sortOrder = taskSortOrder(it)
@@ -361,10 +409,10 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
                                 }
                             }
                         }
-                        items(open, key = { it.id }) { task ->
+                        items(open, key = { "task:${it.id}" }) { task ->
                             TaskItem(task, bots, today, task.id in busy, { toggle(task) }, { setDue(task, it) }) { editing = task.id }
                         }
-                        if (done.isNotEmpty()) item(key = "done header") {
+                        if (done.isNotEmpty()) item(key = "header:done") {
                             Text(
                                 (if (showDone) "▾ " else "▸ ") + "完了済み (${done.size}件)",
                                 Modifier.fillMaxWidth().clickable { showDone = !showDone }.padding(OrcaInset).semantics { heading() },
@@ -372,7 +420,7 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        if (showDone) items(done, key = { it.id }) { task ->
+                        if (showDone) items(done, key = { "task:${it.id}" }) { task ->
                             TaskItem(task, bots, today, task.id in busy, { toggle(task) }, {}) { editing = task.id }
                         }
                     }
@@ -382,7 +430,7 @@ internal fun TasksScreen(api: OrcaApi, back: () -> Unit, settings: () -> Unit, a
     }
 
     model.data?.firstOrNull { it.id == editing }?.let { task ->
-        TaskEditDialog(task, bots, close = { editing = null }, ask = ask,
+        TaskEditDialog(task, bots, today, task.id in busy, close = { editing = null }, ask = ask,
             save = { edit -> change(task.id) { api.editTask(task.id, edit) } },
             delete = { change(task.id) { api.deleteTask(task.id).let { null } } })
     }
@@ -393,7 +441,7 @@ private fun TaskItem(
     task: MemoTask, bots: List<Bot>, today: LocalDate, busy: Boolean, toggle: () -> Unit, setDue: (String?) -> Unit, edit: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = edit).padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().clickable(enabled = !busy, onClick = edit).padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(checked = task.done, onCheckedChange = { toggle() }, enabled = !busy)
@@ -417,14 +465,15 @@ private fun TaskItem(
                         Image(painterResource(it), contentDescription = null,
                             modifier = Modifier.padding(end = 4.dp).size(18.dp).clip(MaterialTheme.shapes.extraSmall))
                     }
-                    Text(name + if (due != null) " · " else "", style = MaterialTheme.typography.labelMedium,
+                    Text(name + if (due != null) " · " else "", Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 due?.let { (label, _) ->
                     val urgency = dueUrgency(task.due, today).takeUnless { task.done }
                     Text(label, style = MaterialTheme.typography.labelMedium,
                         color = if (urgency == null) MaterialTheme.colorScheme.onSurfaceVariant else dueColor(urgency),
-                        fontWeight = if (urgency == DueUrgency.OVERDUE || urgency == DueUrgency.TODAY) FontWeight.SemiBold else null)
+                        fontWeight = if (urgency == DueUrgency.OVERDUE || urgency == DueUrgency.TODAY) FontWeight.SemiBold else null,
+                        maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -434,8 +483,8 @@ private fun TaskItem(
 
 @Composable
 private fun TaskEditDialog(
-    task: MemoTask, bots: List<Bot>, close: () -> Unit, ask: (String, String) -> Unit,
-    save: (TaskEdit) -> Unit, delete: () -> Unit,
+    task: MemoTask, bots: List<Bot>, today: LocalDate, busy: Boolean, close: () -> Unit, ask: (String, String) -> Unit,
+    save: (TaskEdit) -> Boolean, delete: () -> Boolean,
 ) {
     var title by rememberSaveable(task.id) { mutableStateOf(task.title) }
     var note by rememberSaveable(task.id) { mutableStateOf(task.note.orEmpty()) }
@@ -450,7 +499,7 @@ private fun TaskEditDialog(
                 OutlinedTextField(title, { title = it }, label = { Text("タイトル") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(note, { note = it }, label = { Text("補足メモ") }, minLines = 2, maxLines = 5, modifier = Modifier.fillMaxWidth())
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
-                    DueChips(due, enabled = true) { due = it }
+                    DueChips(due, today, enabled = true) { due = it }
                     TaskBotButton(bot, bots, enabled = true) { bot = it }
                 }
                 taskAskTarget(bot, bots)?.let { target ->
@@ -460,18 +509,15 @@ private fun TaskEditDialog(
                         ask(target, taskRequest(title, note))
                     }, enabled = title.isNotBlank()) { Text("${target}に頼む") }
                 }
-                OrcaTextButton(onClick = {
-                    if (confirmDelete) {
-                        close()
-                        delete()
-                    } else confirmDelete = true
+                OrcaTextButton(enabled = !busy, onClick = {
+                    if (!confirmDelete) confirmDelete = true
+                    else if (delete()) close()
                 }) { Text(if (confirmDelete) "もう一度押すと削除します" else "削除", color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
-            OrcaTextButton(enabled = taskInputValid(title, note), onClick = {
-                close()
-                save(TaskEdit(title.trim(), note.trim().ifEmpty { null }, due, bot))
+            OrcaTextButton(enabled = !busy && taskInputValid(title, note), onClick = {
+                if (save(TaskEdit(title.trim(), note.trim().ifEmpty { null }, due, bot))) close()
             }) { Text("保存") }
         },
         dismissButton = { OrcaTextButton(onClick = close) { Text("やめる") } },

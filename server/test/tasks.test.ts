@@ -166,6 +166,12 @@ test('REST endpoints create, list, patch and delete tasks and board shows open o
   const cleared = (await call('/api/tasks/' + task.id, 'PATCH', { due: null })).task;
   assert.equal(cleared.due, null);
   assert.deepEqual((await call('/api/board')).memoTasks, [cleared]);
+  const full = (await call('/api/tasks', 'POST', { title: '見積もり', note: '金額を確認', bot: '整体院発信' }, 201)).task;
+  for (const due of ['2026-12-24', null]) {
+    const kept = (await call('/api/tasks/' + full.id, 'PATCH', { due })).task;
+    assert.deepEqual([kept.due, kept.title, kept.note, kept.bot], [due, '見積もり', '金額を確認', '整体院発信']);
+  }
+  assert.deepEqual(await call('/api/tasks/' + full.id, 'DELETE'), { ok: true, id: full.id });
   const patched = (await call('/api/tasks/' + task.id, 'PATCH', { done: true })).task;
   assert.equal(patched.done, true);
   assert.deepEqual((await call('/api/board')).memoTasks, []);

@@ -1,9 +1,20 @@
 package dev.okumura.orcaremote
 
+import android.content.SharedPreferences
+import java.lang.reflect.Proxy
 import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
 import org.junit.Assert.*
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class TasksTest {
     @Test fun memoTaskSerializesWithServerShape() {
         val json = """{"id":"a","title":"牛乳","note":null,"due":"2026-11-30","done":true,"createdAt":1,"updatedAt":2,"doneAt":3,"extra":1}"""
@@ -105,5 +116,70 @@ class TasksTest {
         assertEquals(TaskSortOrder.DUE, taskSortOrder("bogus"))
         assertEquals(TaskSortOrder.CREATED, taskSortOrder(TaskSortOrder.CREATED.name))
         assertEquals(listOf("期限順", "新しい順"), TaskSortOrder.entries.map { it.label })
+    }
+
+    @Test fun quickDueCountsFromTheTapDayAndMidnightWaitIsLocal() {
+        val newYear = LocalDate.of(2027, 1, 1)
+        // A chip drawn on 12/31 but tapped after midnight sets the new day.
+        assertEquals("2027-01-01", quickDue("2026-12-31", 0, newYear))
+        assertEquals("2027-01-02", quickDue(null, 1, newYear))
+        assertNull(quickDue("2027-01-02", 1, newYear))
+        val tokyo = ZoneId.of("Asia/Tokyo")
+        assertEquals(500L, millisUntilNextDay(ZonedDateTime.of(2026, 12, 31, 23, 59, 59, 500_000_000, tokyo)))
+        assertEquals(86_400_000L, millisUntilNextDay(ZonedDateTime.of(2026, 11, 25, 0, 0, 0, 0, tokyo)))
+        // A 23-hour day: New York skips 2:00-3:00 on 2026-03-08.
+        val newYork = ZoneId.of("America/New_York")
+        assertEquals(23 * 3_600_000L, millisUntilNextDay(ZonedDateTime.of(2026, 3, 8, 0, 0, 0, 0, newYork)))
+    }
+
+    @Test fun sortOrderIsSavedAndReadBack() {
+        val values = mutableMapOf<String, Any?>()
+        lateinit var editor: SharedPreferences.Editor
+        editor = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(SharedPreferences.Editor::class.java)) { _, method, args ->
+            when (method.name) {
+                "putString" -> { values[args[0] as String] = args[1]; editor }
+                "apply" -> null
+                else -> error(method.name)
+            }
+        } as SharedPreferences.Editor
+        val prefs = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(SharedPreferences::class.java)) { _, method, args ->
+            when (method.name) {
+                "getString" -> values[args[0] as String] ?: args[1]
+                "edit" -> editor
+                else -> error(method.name)
+            }
+        } as SharedPreferences
+        assertEquals(TaskSortOrder.DUE, prefs.taskSortOrder())
+        prefs.saveTaskSortOrder(TaskSortOrder.CREATED)
+        assertEquals(mapOf("taskSortOrder" to "CREATED"), values)
+        assertEquals(TaskSortOrder.CREATED, prefs.taskSortOrder())
+        values["taskSortOrder"] = "removed"
+        assertEquals(TaskSortOrder.DUE, prefs.taskSortOrder())
+    }
+
+    @Test fun aTaskTakesOneChangeAtATime() {
+        val main = StandardTestDispatcher()
+        Dispatchers.setMain(main)
+        try {
+            val mutations = TaskMutations()
+            val gate = CompletableDeferred<Unit>()
+            var runs = 0
+            assertTrue(mutations.run("a") { runs++; gate.await() })
+            main.scheduler.runCurrent()
+            assertEquals(setOf("a"), mutations.busy)
+            assertFalse(mutations.run("a") { runs++ })
+            assertTrue(mutations.run("b") { runs++ })
+            main.scheduler.runCurrent()
+            assertEquals(setOf("a"), mutations.busy)
+            gate.complete(Unit)
+            main.scheduler.runCurrent()
+            assertEquals(emptySet<String>(), mutations.busy)
+            assertEquals(2, runs)
+            // A failed change also frees the task.
+            assertTrue(mutations.run("a") { throw IllegalStateException() }.also { runCatching { main.scheduler.runCurrent() } })
+            assertEquals(emptySet<String>(), mutations.busy)
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 }

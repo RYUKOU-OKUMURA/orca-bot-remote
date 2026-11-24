@@ -43,6 +43,7 @@ internal fun QuickMemoScreen(
     val due by destination.getStateFlow<String?>("due", null).collectAsState()
     val taskBot by destination.getStateFlow<String?>("taskBot", null).collectAsState()
     val list = bots.data.orEmpty()
+    val today = rememberToday()
     fun target(mode: MemoMode, selectedBot: String?): String? {
         val previous = if (mode == MemoMode.Inbox) null else selectedBot ?: prefs.getString("lastMemoBot", null)
         return memoBot(bots.data.orEmpty(), previous)?.name
@@ -123,7 +124,7 @@ internal fun QuickMemoScreen(
             if (mode == MemoMode.New && bot != null) ModelPicker(api, bot, destination, canSelect)
             DraftField(sender, if (task) "タイトル（2行目以降は補足）" else "メモ", Modifier.fillMaxWidth(), minLines = 4)
             if (task) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
-                DueChips(due, enabled) { destination["due"] = it }
+                DueChips(due, today, enabled) { destination["due"] = it }
                 // Bots that fail to load leave only 担当なし, which still adds the task.
                 TaskBotButton(taskBot, list, enabled) { destination["taskBot"] = it }
             }
