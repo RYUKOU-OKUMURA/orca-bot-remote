@@ -149,6 +149,17 @@ if [ -f "$agent_plist" ]; then cp -p "$agent_plist" "$stage/previous.plist"; fi
 if /bin/launchctl print "$domain/$label" >/dev/null 2>&1; then
     /bin/launchctl bootout "$domain/$label"
     restart_old=true
+    # bootout returns before the job exits; bootstrap fails with 5 until it is gone.
+    # launchd sends SIGKILL after ExitTimeOut (default 20s), so 30s is enough.
+    tries=0
+    while /bin/launchctl print "$domain/$label" >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [ "$tries" -gt 60 ]; then
+            printf '旧ジョブが30秒以内に停止しません  %s\n' "$domain/$label" >&2
+            exit 1
+        fi
+        sleep 0.5
+    done
 fi
 rollback=true
 if [ -e "$install_dir" ] || [ -L "$install_dir" ]; then mv "$install_dir" "$stage/previous"; fi
