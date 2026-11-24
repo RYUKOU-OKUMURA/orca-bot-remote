@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -68,6 +69,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -142,17 +144,20 @@ internal fun toggleDue(current: String?, target: String): String? = if (current 
 internal fun quickDue(current: String?, days: Long, today: LocalDate): String? = toggleDue(current, today.plusDays(days).toString())
 
 internal fun millisUntilNextDay(now: ZonedDateTime): Long =
-    Duration.between(now, now.toLocalDate().plusDays(1).atStartOfDay(now.zone)).toMillis()
+    Duration.between(now, now.toLocalDate().plusDays(1).atStartOfDay(now.zone)).toMillis().coerceAtLeast(1L)
 
 /** Today's date that moves on at local midnight and when the screen comes back. */
 @Composable
 internal fun rememberToday(): LocalDate {
     var today by remember { mutableStateOf(LocalDate.now()) }
+    var resumeTick by remember { mutableIntStateOf(0) }
     LifecycleResumeEffect(Unit) {
         today = LocalDate.now()
+        resumeTick++
         onPauseOrDispose {}
     }
-    LaunchedEffect(Unit) {
+    // Restarted on resume so a time zone change re-times the wait.
+    LaunchedEffect(resumeTick) {
         while (true) {
             delay(millisUntilNextDay(ZonedDateTime.now()))
             today = LocalDate.now()
@@ -162,7 +167,7 @@ internal fun rememberToday(): LocalDate {
 }
 
 /** Changes in flight by task id; kept across rotation so a running change still blocks the same task. */
-internal class TaskMutations : ViewModel() {
+internal class TaskMutations(private val scope: CoroutineScope? = null) : ViewModel() {
     var busy by mutableStateOf(emptySet<String>())
         private set
     var message by mutableStateOf<String?>(null)
@@ -171,7 +176,7 @@ internal class TaskMutations : ViewModel() {
     fun run(id: String, action: suspend () -> Unit): Boolean {
         if (id in busy) return false
         busy = busy + id
-        viewModelScope.launch {
+        (scope ?: viewModelScope).launch {
             try {
                 action()
             } finally {

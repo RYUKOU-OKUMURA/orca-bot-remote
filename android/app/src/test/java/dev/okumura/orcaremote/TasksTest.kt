@@ -6,11 +6,15 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -126,6 +130,7 @@ class TasksTest {
         assertNull(quickDue("2027-01-02", 1, newYear))
         val tokyo = ZoneId.of("Asia/Tokyo")
         assertEquals(500L, millisUntilNextDay(ZonedDateTime.of(2026, 12, 31, 23, 59, 59, 500_000_000, tokyo)))
+        assertEquals(1L, millisUntilNextDay(ZonedDateTime.of(2026, 12, 31, 23, 59, 59, 999_999_999, tokyo)))
         assertEquals(86_400_000L, millisUntilNextDay(ZonedDateTime.of(2026, 11, 25, 0, 0, 0, 0, tokyo)))
         // A 23-hour day: New York skips 2:00-3:00 on 2026-03-08.
         val newYork = ZoneId.of("America/New_York")
@@ -159,9 +164,10 @@ class TasksTest {
 
     @Test fun aTaskTakesOneChangeAtATime() {
         val main = StandardTestDispatcher()
-        Dispatchers.setMain(main)
+        val caught = mutableListOf<Throwable>()
+        val scope = CoroutineScope(SupervisorJob() + main + CoroutineExceptionHandler { _, error -> caught += error })
         try {
-            val mutations = TaskMutations()
+            val mutations = TaskMutations(scope)
             val gate = CompletableDeferred<Unit>()
             var runs = 0
             assertTrue(mutations.run("a") { runs++; gate.await() })
@@ -176,10 +182,35 @@ class TasksTest {
             assertEquals(emptySet<String>(), mutations.busy)
             assertEquals(2, runs)
             // A failed change also frees the task.
-            assertTrue(mutations.run("a") { throw IllegalStateException() }.also { runCatching { main.scheduler.runCurrent() } })
+            assertTrue(mutations.run("a") { throw IllegalStateException("失敗") })
+            main.scheduler.runCurrent()
+            assertEquals(listOf("失敗"), caught.map { (it as IllegalStateException).message })
             assertEquals(emptySet<String>(), mutations.busy)
         } finally {
-            Dispatchers.resetMain()
+            scope.cancel()
         }
+    }
+
+    @Test fun aSlowListReadDoesNotUndoAChangeMadeMeanwhile() = runBlocking {
+        val before = MemoTask("a", "牛乳", due = "2026-11-25")
+        val after = before.copy(due = "2026-11-29")
+        val slowRead = CompletableDeferred<List<MemoTask>>()
+        var reads = 0
+        val model = ScreenModel {
+            when (++reads) {
+                1 -> listOf(before, MemoTask("b", "卵", due = "2026-11-27"))
+                2 -> slowRead.await()
+                else -> listOf(MemoTask("b", "卵", due = "2026-11-27"), after)
+            }
+        }
+        model.load()
+        val refresh = launch(start = CoroutineStart.UNDISPATCHED) { model.load() }
+        model.update { replaceTask(it, after) }
+        assertEquals(listOf("b", "a"), model.data?.map { it.id })
+        // The read that began before the change answers with the old due date.
+        slowRead.complete(listOf(before, MemoTask("b", "卵", due = "2026-11-27")))
+        refresh.join()
+        assertEquals(3, reads)
+        assertEquals(listOf("2026-11-27", "2026-11-29"), model.data?.map { it.due })
     }
 }
