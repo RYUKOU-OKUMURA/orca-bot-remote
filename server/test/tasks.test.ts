@@ -155,6 +155,17 @@ test('REST endpoints create, list, patch and delete tasks and board shows open o
   const reassigned = (await call('/api/tasks/' + task.id, 'PATCH', { bot: null })).task;
   assert.equal(reassigned.bot, null);
   assert.deepEqual((await call('/api/board')).memoTasks, [reassigned]);
+  const moved = (await call('/api/tasks/' + task.id, 'PATCH', { due: '2026-12-05' })).task;
+  assert.equal(moved.due, '2026-12-05');
+  assert.equal(moved.title, '牛乳');
+  assert.equal((await call('/api/tasks')).tasks[0].due, '2026-12-05');
+  for (const due of ['2026-02-30', '2026-2-3', '', 20261205]) {
+    assert.equal((await call('/api/tasks/' + task.id, 'PATCH', { due }, 400)).error, 'bad_request');
+  }
+  assert.equal((await call('/api/tasks')).tasks[0].due, '2026-12-05');
+  const cleared = (await call('/api/tasks/' + task.id, 'PATCH', { due: null })).task;
+  assert.equal(cleared.due, null);
+  assert.deepEqual((await call('/api/board')).memoTasks, [cleared]);
   const patched = (await call('/api/tasks/' + task.id, 'PATCH', { done: true })).task;
   assert.equal(patched.done, true);
   assert.deepEqual((await call('/api/board')).memoTasks, []);
