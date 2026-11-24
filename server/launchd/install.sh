@@ -92,7 +92,7 @@ wait_until_unloaded() {
     while /bin/launchctl print "$domain/$label" >/dev/null 2>&1; do
         tries=$((tries + 1))
         if [ "$tries" -gt 60 ]; then
-            printf '旧ジョブが30秒以内に停止しません  %s\n' "$domain/$label" >&2
+            printf '旧ジョブが約30秒待っても停止しません  %s\n' "$domain/$label" >&2
             return 1
         fi
         sleep 0.5

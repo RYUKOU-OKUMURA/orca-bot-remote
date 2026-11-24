@@ -130,12 +130,14 @@ function installedFixture(t: TestContext) {
   writeFileSync(join(destination, 'obsolete.ts'), 'test');
 
   // Redirect the two fixed external programs in the sandbox copy.
-  // print succeeds while the job is loaded; bootout unloads it, a successful bootstrap reloads it.
+  // Like launchd, bootout returns while the job is still exiting: it stays visible to one more print,
+  // and bootstrap fails with 5 until it is gone.
   const launchctl = (bootstrap = 'true') => script(join(home, 'launchctl'), `echo "$1" >> "$HOME/launchctl.calls"
+    job=$(cat "$HOME/job" 2>/dev/null || echo loaded)
     case "$1" in
-      print) [ ! -e "$HOME/unloaded" ];;
-      bootout) touch "$HOME/unloaded";;
-      bootstrap) ${bootstrap} && rm -f "$HOME/unloaded";;
+      print) if [ "$job" = stopping ]; then echo unloaded > "$HOME/job"; fi; [ "$job" != unloaded ];;
+      bootout) echo stopping > "$HOME/job";;
+      bootstrap) [ "$job" = unloaded ] || exit 5; ${bootstrap} && rm -f "$HOME/job";;
     esac`);
   launchctl();
   const isolatedInstall = join(checkout, 'launchd/install.sh');
@@ -161,7 +163,7 @@ test('更新は稼働用ファイルだけを配置し、旧版のファイル�
   assert.ok(existsSync(join(destination, 'src/main.ts')));
   assert.ok(existsSync(join(destination, 'node_modules/tweetnacl')));
   assert.deepEqual(readdirSync(dirname(destination)), ['server']);
-  assert.deepEqual(calls(), ['print', 'bootout', 'print', 'bootstrap']);
+  assert.deepEqual(calls(), ['print', 'bootout', 'print', 'print', 'bootstrap']);
 });
 
 for (const failure of ['mv', 'bootstrap']) {
@@ -178,7 +180,7 @@ for (const failure of ['mv', 'bootstrap']) {
     assert.equal(readFileSync(plist, 'utf8'), 'old plist');
     assert.deepEqual(readdirSync(dirname(destination)), ['server']);
     assert.deepEqual(calls(), failure === 'mv'
-      ? ['print', 'bootout', 'print', 'print', 'bootstrap']
-      : ['print', 'bootout', 'print', 'bootstrap', 'print', 'bootstrap']);
+      ? ['print', 'bootout', 'print', 'print', 'print', 'bootstrap']
+      : ['print', 'bootout', 'print', 'print', 'bootstrap', 'print', 'bootstrap']);
   });
 }
