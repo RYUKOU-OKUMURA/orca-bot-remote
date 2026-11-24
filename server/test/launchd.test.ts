@@ -130,7 +130,16 @@ function installedFixture(t: TestContext) {
   writeFileSync(join(destination, 'obsolete.ts'), 'test');
 
   // Redirect the two fixed external programs in the sandbox copy.
-  script(join(home, 'launchctl'), 'echo "$1" >> "$HOME/launchctl.calls"');
+  // Like launchd, bootout returns while the job is still exiting: it stays visible to one more print,
+  // and bootstrap fails with 5 until it is gone.
+  const launchctl = (bootstrap = 'true') => script(join(home, 'launchctl'), `echo "$1" >> "$HOME/launchctl.calls"
+    job=$(cat "$HOME/job" 2>/dev/null || echo loaded)
+    case "$1" in
+      print) if [ "$job" = stopping ]; then echo unloaded > "$HOME/job"; fi; [ "$job" != unloaded ];;
+      bootout) echo stopping > "$HOME/job";;
+      bootstrap) [ "$job" = unloaded ] || exit 5; ${bootstrap} && rm -f "$HOME/job";;
+    esac`);
+  launchctl();
   const isolatedInstall = join(checkout, 'launchd/install.sh');
   writeFileSync(isolatedInstall, readFileSync(install, 'utf8')
     .replaceAll('/bin/launchctl', '"$HOME/launchctl"')
@@ -143,7 +152,7 @@ function installedFixture(t: TestContext) {
   writeFileSync(plist, 'old plist');
   const run = () => spawnSync(isolatedInstall, { env: { ...env, NODE_BIN: node }, encoding: 'utf8' });
   const calls = () => readFileSync(join(home, 'launchctl.calls'), 'utf8').trim().split('\n');
-  return { home, script, destination, plist, run, calls };
+  return { home, script, launchctl, destination, plist, run, calls };
 }
 
 test('更新は稼働用ファイルだけを配置し、旧版のファイルを除く', darwin, t => {
@@ -154,17 +163,16 @@ test('更新は稼働用ファイルだけを配置し、旧版のファイル�
   assert.ok(existsSync(join(destination, 'src/main.ts')));
   assert.ok(existsSync(join(destination, 'node_modules/tweetnacl')));
   assert.deepEqual(readdirSync(dirname(destination)), ['server']);
-  assert.deepEqual(calls(), ['print', 'bootout', 'bootstrap']);
+  assert.deepEqual(calls(), ['print', 'bootout', 'print', 'print', 'bootstrap']);
 });
 
 for (const failure of ['mv', 'bootstrap']) {
   test(`更新の ${failure} 失敗時に旧版と plist を復元して再登録する`, darwin, t => {
-    const { home, script, destination, plist, run, calls } = installedFixture(t);
+    const { home, script, launchctl, destination, plist, run, calls } = installedFixture(t);
     if (failure === 'mv') {
       script(join(home, 'mv'), 'case "$1" in */new) exit 1;; esac\nexec /bin/mv "$@"');
     } else {
-      script(join(home, 'launchctl'), `echo "$1" >> "$HOME/launchctl.calls"
-        if [ "$1" = bootstrap ]; then [ "$(cat "$3")" = 'old plist' ]; fi`);
+      launchctl(`[ "$(cat "$3")" = 'old plist' ]`);
     }
     const result = run();
     assert.equal(result.status, 1);
@@ -172,6 +180,7 @@ for (const failure of ['mv', 'bootstrap']) {
     assert.equal(readFileSync(plist, 'utf8'), 'old plist');
     assert.deepEqual(readdirSync(dirname(destination)), ['server']);
     assert.deepEqual(calls(), failure === 'mv'
-      ? ['print', 'bootout', 'bootstrap'] : ['print', 'bootout', 'bootstrap', 'bootstrap']);
+      ? ['print', 'bootout', 'print', 'print', 'print', 'bootstrap']
+      : ['print', 'bootout', 'print', 'print', 'bootstrap', 'print', 'bootstrap']);
   });
 }

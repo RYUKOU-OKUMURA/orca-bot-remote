@@ -13,7 +13,7 @@ server/launchd/install.sh
 
 `--dry-run` は生成した plist を標準出力に表示します。`ProgramArguments` は Node と `main.ts` の絶対パスの2要素です。トークンの発行や LaunchAgent の登録は通常実行で行います。初回の通常実行でランダムなトークンを `~/.config/orca-bot-remote/token` に権限 `600` で保存します。インストーラーは保存場所を表示します。Android に設定する際は、そのファイルを信頼できる方法で開き、値を Android のトークン欄へ入力します。
 
-インストーラーは一時ディレクトリに実行用のファイルと本番依存を揃え、`~/Library/Application Support/orca-bot-remote/server/` を置き換えます。この配置なら LaunchAgent が macOS の TCC で保護された Desktop にアクセスする必要がありません。plist は `~/Library/LaunchAgents/dev.okumura.orca-bot-remote.plist` に置きます。更新時は通常のインストールコマンドを再実行します。配置の準備が済んだら既存のジョブを停止し、旧版を一時退避して更新します。新しいジョブの登録に成功すると退避先を削除します。配置や登録に失敗した場合は旧版を戻し、更新前に稼働していたジョブを再登録します。
+インストーラーは一時ディレクトリに実行用のファイルと本番依存を揃え、`~/Library/Application Support/orca-bot-remote/server/` を置き換えます。この配置なら LaunchAgent が macOS の TCC で保護された Desktop にアクセスする必要がありません。plist は `~/Library/LaunchAgents/dev.okumura.orca-bot-remote.plist` に置きます。更新時は通常のインストールコマンドを再実行します。配置の準備が済んだら既存のジョブを停止し、launchd から消えるまで最大30秒待ってから旧版を一時退避して更新します。新しいジョブの登録に成功すると退避先を削除します。配置や登録に失敗した場合は旧版を戻し、更新前に稼働していたジョブを再登録します。
 
 インストール時に環境変数 `SUMMARY_AUTOMATION_ID` が非空なら、その ID を plist に書きます。未指定または空の場合は、Orca の自動化一覧から「秘書まとめ（朝8:00・昼12:00・夕18:00＋放置リマインド）」、旧名「専門Botの状況まとめ（毎日12:00）」の順で完全一致を探します。両方とも見つからなければ、名前に「まとめ」を含み、無効化されていない最初の自動化を選びます。候補が無い場合は警告を表示し、まとめを未設定にして設置を続けます。設定を反映するにはインストーラーを再実行してください。
 

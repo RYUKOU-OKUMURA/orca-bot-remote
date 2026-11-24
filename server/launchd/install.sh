@@ -85,6 +85,19 @@ stage=
 agent_plist="$agent_dir/$label.plist"
 rollback=false
 restart_old=false
+# bootout returns before the job exits; bootstrap fails with 5 until it is gone.
+# launchd sends SIGKILL after ExitTimeOut (default 20s), so 30s is enough.
+wait_until_unloaded() {
+    tries=0
+    while /bin/launchctl print "$domain/$label" >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [ "$tries" -gt 60 ]; then
+            printf '旧ジョブが約30秒待っても停止しません  %s\n' "$domain/$label" >&2
+            return 1
+        fi
+        sleep 0.5
+    done
+}
 restore_previous() {
     if [ ! -d "$stage/new" ]; then
         mv "$install_dir" "$stage/new" || return 1
@@ -94,7 +107,10 @@ restore_previous() {
     fi
     if [ -f "$stage/previous.plist" ]; then
         cp -p "$stage/previous.plist" "$agent_plist" || return 1
-        if "$restart_old"; then /bin/launchctl bootstrap "$domain" "$agent_plist" || return 1; fi
+        if "$restart_old"; then
+            wait_until_unloaded || return 1
+            /bin/launchctl bootstrap "$domain" "$agent_plist" || return 1
+        fi
     else
         rm -f "$agent_plist" || return 1
     fi
@@ -149,6 +165,8 @@ if [ -f "$agent_plist" ]; then cp -p "$agent_plist" "$stage/previous.plist"; fi
 if /bin/launchctl print "$domain/$label" >/dev/null 2>&1; then
     /bin/launchctl bootout "$domain/$label"
     restart_old=true
+    rollback=true
+    wait_until_unloaded
 fi
 rollback=true
 if [ -e "$install_dir" ] || [ -L "$install_dir" ]; then mv "$install_dir" "$stage/previous"; fi
