@@ -1,9 +1,24 @@
 package dev.okumura.orcaremote
 
+import android.content.SharedPreferences
+import java.lang.reflect.Proxy
 import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.Assert.*
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class TasksTest {
     @Test fun memoTaskSerializesWithServerShape() {
         val json = """{"id":"a","title":"牛乳","note":null,"due":"2026-11-30","done":true,"createdAt":1,"updatedAt":2,"doneAt":3,"extra":1}"""
@@ -70,5 +85,132 @@ class TasksTest {
         val reopened = replaceTask(tasks, MemoTask("done2", "完了2", due = "2026-11-24"))
         assertEquals(listOf("done2", "soon", "late", "new", "old", "done1"), reopened.map { it.id })
         assertEquals(6, reopened.size)
+    }
+
+    @Test fun dueUrgencyAndOneTapToggle() {
+        val today = LocalDate.of(2026, 12, 31)
+        assertEquals(DueUrgency.OVERDUE, dueUrgency("2026-12-30", today))
+        assertEquals(DueUrgency.TODAY, dueUrgency("2026-12-31", today))
+        assertEquals(DueUrgency.TOMORROW, dueUrgency("2027-01-01", today))
+        assertEquals(DueUrgency.UPCOMING, dueUrgency("2027-01-02", today))
+        assertNull(dueUrgency(null, today))
+        assertNull(dueUrgency("2026-02-30", today))
+        assertEquals("2026-12-31", toggleDue(null, "2026-12-31"))
+        assertNull(toggleDue("2026-12-31", "2026-12-31"))
+        assertEquals("2027-01-01", toggleDue("2026-12-31", "2027-01-01"))
+    }
+
+    @Test fun sortOrdersBreakTiesLikeTheServerAndFallBackToDue() {
+        val tasks = listOf(
+            MemoTask("sameOld", "同日・古い", due = "2026-12-01", createdAt = 1),
+            MemoTask("undated", "期限なし", createdAt = 5),
+            MemoTask("sameNew", "同日・新しい", due = "2026-12-01", createdAt = 3),
+            MemoTask("bad", "不正な期限", due = "2026-02-30", createdAt = 4),
+            MemoTask("done", "完了", done = true, updatedAt = 9, doneAt = 2),
+            MemoTask("soon", "近い", due = "2026-11-26", createdAt = 2),
+        )
+        assertEquals(listOf("soon", "sameNew", "sameOld", "undated", "bad", "done"), sortTasks(tasks).map { it.id })
+        assertEquals(sortTasks(tasks), sortTasks(tasks, TaskSortOrder.DUE))
+        assertEquals(listOf("undated", "bad", "sameNew", "soon", "sameOld", "done"), sortTasks(tasks, TaskSortOrder.CREATED).map { it.id })
+        val moved = MemoTask("sameOld", "同日・古い", due = "2026-11-20", createdAt = 1)
+        assertEquals("sameOld", replaceTask(tasks, moved).first().id)
+        assertEquals(listOf("undated", "bad", "sameNew", "soon", "sameOld", "done"),
+            replaceTask(tasks, moved, TaskSortOrder.CREATED).map { it.id })
+        assertEquals(TaskSortOrder.DUE, taskSortOrder(null))
+        assertEquals(TaskSortOrder.DUE, taskSortOrder("bogus"))
+        assertEquals(TaskSortOrder.CREATED, taskSortOrder(TaskSortOrder.CREATED.name))
+        assertEquals(listOf("期限順", "新しい順"), TaskSortOrder.entries.map { it.label })
+    }
+
+    @Test fun quickDueCountsFromTheTapDayAndMidnightWaitIsLocal() {
+        val newYear = LocalDate.of(2027, 1, 1)
+        // A chip drawn on 12/31 but tapped after midnight sets the new day.
+        assertEquals("2027-01-01", quickDue("2026-12-31", 0, newYear))
+        assertEquals("2027-01-02", quickDue(null, 1, newYear))
+        assertNull(quickDue("2027-01-02", 1, newYear))
+        val tokyo = ZoneId.of("Asia/Tokyo")
+        assertEquals(500L, millisUntilNextDay(ZonedDateTime.of(2026, 12, 31, 23, 59, 59, 500_000_000, tokyo)))
+        assertEquals(1L, millisUntilNextDay(ZonedDateTime.of(2026, 12, 31, 23, 59, 59, 999_999_999, tokyo)))
+        assertEquals(86_400_000L, millisUntilNextDay(ZonedDateTime.of(2026, 11, 25, 0, 0, 0, 0, tokyo)))
+        // A 23-hour day: New York skips 2:00-3:00 on 2026-03-08.
+        val newYork = ZoneId.of("America/New_York")
+        assertEquals(23 * 3_600_000L, millisUntilNextDay(ZonedDateTime.of(2026, 3, 8, 0, 0, 0, 0, newYork)))
+    }
+
+    @Test fun sortOrderIsSavedAndReadBack() {
+        val values = mutableMapOf<String, Any?>()
+        lateinit var editor: SharedPreferences.Editor
+        editor = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(SharedPreferences.Editor::class.java)) { _, method, args ->
+            when (method.name) {
+                "putString" -> { values[args[0] as String] = args[1]; editor }
+                "apply" -> null
+                else -> error(method.name)
+            }
+        } as SharedPreferences.Editor
+        val prefs = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(SharedPreferences::class.java)) { _, method, args ->
+            when (method.name) {
+                "getString" -> values[args[0] as String] ?: args[1]
+                "edit" -> editor
+                else -> error(method.name)
+            }
+        } as SharedPreferences
+        assertEquals(TaskSortOrder.DUE, prefs.taskSortOrder())
+        prefs.saveTaskSortOrder(TaskSortOrder.CREATED)
+        assertEquals(mapOf("taskSortOrder" to "CREATED"), values)
+        assertEquals(TaskSortOrder.CREATED, prefs.taskSortOrder())
+        values["taskSortOrder"] = "removed"
+        assertEquals(TaskSortOrder.DUE, prefs.taskSortOrder())
+    }
+
+    @Test fun aTaskTakesOneChangeAtATime() {
+        val main = StandardTestDispatcher()
+        val caught = mutableListOf<Throwable>()
+        val scope = CoroutineScope(SupervisorJob() + main + CoroutineExceptionHandler { _, error -> caught += error })
+        try {
+            val mutations = TaskMutations(scope)
+            val gate = CompletableDeferred<Unit>()
+            var runs = 0
+            assertTrue(mutations.run("a") { runs++; gate.await() })
+            main.scheduler.runCurrent()
+            assertEquals(setOf("a"), mutations.busy)
+            assertFalse(mutations.run("a") { runs++ })
+            assertTrue(mutations.run("b") { runs++ })
+            main.scheduler.runCurrent()
+            assertEquals(setOf("a"), mutations.busy)
+            gate.complete(Unit)
+            main.scheduler.runCurrent()
+            assertEquals(emptySet<String>(), mutations.busy)
+            assertEquals(2, runs)
+            // A failed change also frees the task.
+            assertTrue(mutations.run("a") { throw IllegalStateException("失敗") })
+            main.scheduler.runCurrent()
+            assertEquals(listOf("失敗"), caught.map { (it as IllegalStateException).message })
+            assertEquals(emptySet<String>(), mutations.busy)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test fun aSlowListReadDoesNotUndoAChangeMadeMeanwhile() = runBlocking {
+        val before = MemoTask("a", "牛乳", due = "2026-11-25")
+        val after = before.copy(due = "2026-11-29")
+        val slowRead = CompletableDeferred<List<MemoTask>>()
+        var reads = 0
+        val model = ScreenModel {
+            when (++reads) {
+                1 -> listOf(before, MemoTask("b", "卵", due = "2026-11-27"))
+                2 -> slowRead.await()
+                else -> listOf(MemoTask("b", "卵", due = "2026-11-27"), after)
+            }
+        }
+        model.load()
+        val refresh = launch(start = CoroutineStart.UNDISPATCHED) { model.load() }
+        model.update { replaceTask(it, after) }
+        assertEquals(listOf("b", "a"), model.data?.map { it.id })
+        // The read that began before the change answers with the old due date.
+        slowRead.complete(listOf(before, MemoTask("b", "卵", due = "2026-11-27")))
+        refresh.join()
+        assertEquals(3, reads)
+        assertEquals(listOf("2026-11-27", "2026-11-29"), model.data?.map { it.due })
     }
 }

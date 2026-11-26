@@ -67,7 +67,7 @@ internal data class TaskRow(
     val bot: String? = null, val avatar: String? = null, val link: String = TasksLink,
 )
 
-internal fun BoardSnapshot.taskRows(today: LocalDate): List<TaskRow> = memoTasks.orEmpty().filter { !it.done }.map { task ->
+internal fun BoardSnapshot.taskRows(today: LocalDate): List<TaskRow> = sortTasks(memoTasks.orEmpty()).filter { !it.done }.map { task ->
     val due = dueLabel(task.due, today)
     TaskRow(task.id, task.title, listOfNotNull(task.bot, due?.first, task.note?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim())
         .joinToString(" · "), due?.second == true, task.bot, bots.firstOrNull { it.name == task.bot }?.avatar)

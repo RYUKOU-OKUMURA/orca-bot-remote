@@ -21,7 +21,11 @@ internal class ScreenModel<T>(private val fetch: suspend () -> T) : ViewModel() 
     var error by mutableStateOf<ApiError?>(null)
         private set
 
+    // Bumped by every local change so a list read that started earlier is fetched again instead of undoing it.
+    private var revision = 0L
+
     fun update(transform: (T) -> T) {
+        revision++
         data = data?.let(transform)
     }
 
@@ -33,8 +37,15 @@ internal class ScreenModel<T>(private val fetch: suspend () -> T) : ViewModel() 
         if (afterCurrent) loadMutex.lock() else if (!loadMutex.tryLock()) return
         loading = true
         try {
-            data = fetch()
-            error = null
+            while (true) {
+                val started = revision
+                val fetched = fetch()
+                if (revision == started) {
+                    data = fetched
+                    error = null
+                    break
+                }
+            }
         } catch (failure: ApiFailure) {
             error = failure.error
         } finally {

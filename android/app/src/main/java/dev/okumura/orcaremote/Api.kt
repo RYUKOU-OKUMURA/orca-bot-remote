@@ -189,6 +189,10 @@ internal data class TaskEdit(val title: String, val note: String?, val due: Stri
 @Serializable
 private data class TaskDone(val done: Boolean)
 
+// No default: null is sent so the server clears the due date.
+@Serializable
+private data class TaskDue(val due: String?)
+
 @Serializable
 private data class TaskReceipt(val task: MemoTask)
 
@@ -402,6 +406,9 @@ internal class OrcaApi(
 
     suspend fun setTaskDone(id: String, done: Boolean): MemoTask =
         post<TaskReceipt>(200, request("tasks", id).patch(jsonBody(apiJson.encodeToString(TaskDone(done))))).task
+
+    suspend fun setTaskDue(id: String, due: String?): MemoTask =
+        post<TaskReceipt>(200, request("tasks", id).patch(jsonBody(apiJson.encodeToString(TaskDue(due))))).task
 
     suspend fun deleteTask(id: String) {
         if (!post<OkReceipt>(200, request("tasks", id).delete()).ok) throw ApiFailure(ApiError.UNKNOWN_RESULT)
